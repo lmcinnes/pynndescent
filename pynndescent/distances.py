@@ -37,7 +37,7 @@ def standardised_euclidean(x, y, sigma=_mock_ones):
 
 @numba.njit()
 def manhattan(x, y):
-    """Manhatten, taxicab, or l1 distance.
+    """Manhattan, taxicab, or l1 distance.
 
     ..math::
         D(x, y) = \sum_i |x_i - y_i|

@@ -264,16 +264,29 @@ def deheap_sort(heap):
                         indices[i, swap], indices[i, root]
 
                     root = swap
+
     return indices.astype(np.int64), weights
+
 
 @numba.njit('i8(f8[:, :, :],i8)')
 def smallest_flagged(heap, row):
-    order = np.argsort(heap[1, row])
-    for i in order:
-        if heap[2, row, i]:
-            heap[2, row, i] = 0
-            return heap[0, row, i]
-    return -1.0
+    ind = heap[0, row]
+    dist = heap[1, row]
+    flag = heap[2, row]
+
+    min_dist = np.inf
+    result_index = -1
+
+    for i in range(ind.shape[0]):
+        if flag[i] and dist[i] < min_dist:
+            min_dist = dist[i]
+            result_index = i
+
+    if result_index >= 0:
+        flag[result_index] = 0
+        return int(ind[result_index])
+    else:
+        return -1
 
 @numba.njit(parallel=True)
 def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
