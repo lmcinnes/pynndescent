@@ -4,10 +4,11 @@
 
 import numba
 import numpy as np
+from sklearn.utils import check_random_state, check_array
 
+import pynndescent.distances as dist
 
 from pynndescent.utils import (tau_rand,
-                               tau_rand_int,
                                rejection_sample,
                                make_heap,
                                heap_push,
@@ -15,21 +16,27 @@ from pynndescent.utils import (tau_rand,
                                smallest_flagged,
                                build_candidates)
 
-from pynndescent.rp_trees import search_flat_tree
+from pynndescent.rp_trees import (make_euclidean_tree,
+                                  make_angular_tree,
+                                  flatten_tree,
+                                  search_flat_tree)
+
+INT32_MIN = np.iinfo(np.int32).min + 1
+INT32_MAX = np.iinfo(np.int32).max - 1
+
 
 def make_initialisations(dist, dist_args):
     @numba.njit()
     def init_from_random(n_neighbors, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = rejection_sample(n_neighbors, data.shape[0],
-                                                  rng_state)
+                                       rng_state)
             for j in range(indices.shape[0]):
                 if indices[j] < 0:
                     continue
                 d = dist(data[indices[j]], query_points[i], dist_args)
                 heap_push(heap, i, d, indices[j], 1)
         return
-
 
     @numba.njit()
     def init_from_tree(tree, data, query_points, heap, rng_state):
@@ -62,8 +69,7 @@ def make_initialized_nnd_search(dist, dist_args):
     def initialized_nnd_search(data,
                                knn_graph,
                                initialization,
-                               query_points,
-                               rng_state):
+                               query_points):
 
         for i in range(query_points.shape[0]):
 
@@ -107,6 +113,7 @@ def make_nn_descent(dist, dist_args):
     A numba JITd function for nearest neighbor descent computation that is
     specialised to the given metric.
     """
+
     @numba.njit(parallel=True)
     def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
                    n_iters=10, delta=0.001, rho=0.5,
@@ -170,12 +177,88 @@ def make_nn_descent(dist, dist_args):
     return nn_descent
 
 
-class NNDescent (object):
+class NNDescent(object):
+    def __init__(self, data,
+                 metric='euclidean',
+                 n_trees=10,
+                 n_neighbors=15,
+                 leaf_size=30,
+                 tree_init=True,
+                 random_state=None,
+                 metric_kwds={},
+                 max_candidates=50,
+                 n_iters=10,
+                 delta=0.001,
+                 rho=0.5,
+                 verbose=False):
 
-    def __init__(self, data, metric='euclidean'):
+        self.n_trees = n_trees
+        self.n_neighbors = n_neighbors
         self.metric = metric
-        self._rp_forest = []
-        self._neighbor_graph = None
+        self.metric_args = tuple(metric_kwds.values())
+        self.leaf_size = leaf_size
+        self.max_candidates = max_candidates
+        self.n_iters = n_iters
+        self.delta = delta
+        self.rho = rho
+        self.verbose = verbose
+        if not tree_init or n_trees == 0:
+            self.tree_init = False
+        else:
+            self.tree_init = True
+
+        self.random_state = check_random_state(random_state)
+
+        data = check_array(data)
+
+        if callable(metric):
+            self._distance_func = metric
+        elif metric in dist.named_distances:
+            self._distance_func = dist.named_distances[metric]
+
+        if metric in ('cosine', 'correlation', 'dice', 'jaccard'):
+            self._angular_trees = True
+
+        self.rng_state = \
+            random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
+
+        indices = np.arange(data.shape[0])
+
+        if self.tree_init:
+            if self._angular_trees:
+                self._rp_forest = [
+                    flatten_tree(make_angular_tree(data, indices,
+                                                   self.rng_state,
+                                                   self.leaf_size),
+                                 self.leaf_size)
+                    for i in range(n_trees)
+                    ]
+            else:
+                self._rp_forest = [
+                    flatten_tree(make_euclidean_tree(data, indices,
+                                                     self.rng_state,
+                                                     self.leaf_size),
+                                 self.leaf_size)
+                    for i in range(n_trees)
+                    ]
+
+            leaf_array = np.vstack([tree.indices for tree in self._rp_forest])
+        else:
+            leaf_array = np.array([[-1]])
+
+        nn_descent = make_nn_descent(self._distance_func, self.metric_args)
+        self._neighbor_graph = nn_descent(data,
+                                          self.n_neighbors,
+                                          self.rng_state,
+                                          self.max_candidates,
+                                          self.n_iters,
+                                          self.delta,
+                                          self.rho,
+                                          True,
+                                          leaf_array,
+                                          self.verbose)
+
+        return
 
     def query(self, query_data, k=10):
         pass
