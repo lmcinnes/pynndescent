@@ -195,7 +195,7 @@ class NNDescent(object):
         self.n_trees = n_trees
         self.n_neighbors = n_neighbors
         self.metric = metric
-        self.metric_args = tuple(metric_kwds.values())
+        self.metric_kwds = metric_kwds
         self.leaf_size = leaf_size
         self.max_candidates = max_candidates
         self.n_iters = n_iters
@@ -207,9 +207,11 @@ class NNDescent(object):
         else:
             self.tree_init = True
 
+        self._dist_args = tuple(metric_kwds.values())
+
         self.random_state = check_random_state(random_state)
 
-        data = check_array(data)
+        self._raw_data = check_array(data)
 
         if callable(metric):
             self._distance_func = metric
@@ -246,8 +248,8 @@ class NNDescent(object):
         else:
             leaf_array = np.array([[-1]])
 
-        nn_descent = make_nn_descent(self._distance_func, self.metric_args)
-        self._neighbor_graph = nn_descent(data,
+        nn_descent = make_nn_descent(self._distance_func, self._dist_args)
+        self._neighbor_graph = nn_descent(self._raw_data,
                                           self.n_neighbors,
                                           self.rng_state,
                                           self.max_candidates,
@@ -261,4 +263,18 @@ class NNDescent(object):
         return
 
     def query(self, query_data, k=10):
-        pass
+        random_init, tree_init = make_initialisations(self._distance_func,
+                                                      self._dist_args)
+        init = initialise_search(self._rp_forest, self._raw_data,
+                                 query_data, k,
+                                 random_init, tree_init,
+                                 self.rng_state)
+        search = make_initialized_nnd_search(self._distance_func,
+                                             self._dist_args)
+        result = search(self._raw_data,
+                        self._neighbor_graph[0],
+                        init,
+                        query_data,
+                        self.rng_state)
+
+        return deheap_sort(result)
