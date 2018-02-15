@@ -30,7 +30,7 @@ configuration = {
     'maintainer' : 'Leland McInnes',
     'maintainer_email' : 'leland.mcinnes@gmail.com',
     'license' : 'BSD',
-    'packages' : ['umap'],
+    'packages' : ['pynndescent'],
     'install_requires' : ['scikit-learn >= 0.19',
                           'scipy >= 1.0',
                           'numba >= 0.34'],

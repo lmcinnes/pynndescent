@@ -34,7 +34,7 @@ def make_initialisations(dist, dist_args):
             for j in range(indices.shape[0]):
                 if indices[j] < 0:
                     continue
-                d = dist(data[indices[j]], query_points[i], dist_args)
+                d = dist(data[indices[j]], query_points[i], *dist_args)
                 heap_push(heap, i, d, indices[j], 1)
         return
 
@@ -46,7 +46,7 @@ def make_initialisations(dist, dist_args):
             for j in range(indices.shape[0]):
                 if indices[j] < 0:
                     continue
-                d = dist(data[indices[j]], query_points[i], dist_args)
+                d = dist(data[indices[j]], query_points[i], *dist_args)
                 heap_push(heap, i, d, indices[j], 1)
         return
 
@@ -246,6 +246,7 @@ class NNDescent(object):
 
             leaf_array = np.vstack([tree.indices for tree in self._rp_forest])
         else:
+            self._rp_forest = None
             leaf_array = np.array([[-1]])
 
         nn_descent = make_nn_descent(self._distance_func, self._dist_args)
@@ -274,7 +275,6 @@ class NNDescent(object):
         result = search(self._raw_data,
                         self._neighbor_graph[0],
                         init,
-                        query_data,
-                        self.rng_state)
+                        query_data)
 
         return deheap_sort(result)
