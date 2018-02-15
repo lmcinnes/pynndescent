@@ -41,7 +41,12 @@ def make_initialisations(dist, dist_args):
     @numba.njit()
     def init_from_tree(tree, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
-            indices = search_flat_tree(tree, query_points[i], rng_state)
+            indices = search_flat_tree(query_points[i],
+                                       tree.huperplanes,
+                                       tree.offsets,
+                                       tree.children,
+                                       tree.indices,
+                                       rng_state)
 
             for j in range(indices.shape[0]):
                 if indices[j] < 0:
@@ -220,6 +225,8 @@ class NNDescent(object):
 
         if metric in ('cosine', 'correlation', 'dice', 'jaccard'):
             self._angular_trees = True
+        else:
+            self._angular_trees = False
 
         self.rng_state = \
             random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
