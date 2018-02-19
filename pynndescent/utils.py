@@ -278,12 +278,12 @@ def smallest_flagged(heap, row):
     result_index = -1
 
     for i in range(ind.shape[0]):
-        if flag[i] and dist[i] < min_dist:
+        if flag[i] == 1.0 and dist[i] < min_dist:
             min_dist = dist[i]
             result_index = i
 
     if result_index >= 0:
-        flag[result_index] = 0
+        flag[result_index] = 0.0
         return int(ind[result_index])
     else:
         return -1
