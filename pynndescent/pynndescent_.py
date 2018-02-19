@@ -42,7 +42,7 @@ def make_initialisations(dist, dist_args):
     def init_from_tree(tree, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = search_flat_tree(query_points[i],
-                                       tree.huperplanes,
+                                       tree.hyperplanes,
                                        tree.offsets,
                                        tree.children,
                                        tree.indices,
@@ -70,7 +70,7 @@ def initialise_search(forest, data, query_points, n_neighbors,
 
 
 def make_initialized_nnd_search(dist, dist_args):
-    @numba.njit(parallel=True)
+    #@numba.njit(parallel=True)
     def initialized_nnd_search(data,
                                knn_graph,
                                initialization,
@@ -78,18 +78,18 @@ def make_initialized_nnd_search(dist, dist_args):
 
         for i in range(query_points.shape[0]):
 
-            converged = False
+            point = query_points[i]
 
-            while not converged:
+            while True:
                 # Find smallest flagged vertex
                 vertex = smallest_flagged(initialization, i)
                 if vertex == -1:
-                    converged = True
+                    break
                 candidates = knn_graph[vertex]
                 for j in range(candidates.shape[0]):
                     if candidates[j] == vertex or candidates[j] == -1:
                         continue
-                    d = dist(data[candidates[j]], query_points[i], *dist_args)
+                    d = dist(data[candidates[j]], point, *dist_args)
                     heap_push(initialization, i, d, candidates[j], 1)
 
         return initialization
@@ -189,7 +189,7 @@ class NNDescent(object):
                  n_neighbors=15,
                  leaf_size=30,
                  tree_init=True,
-                 random_state=None,
+                 random_state=np.random,
                  metric_kwds={},
                  max_candidates=50,
                  n_iters=10,
