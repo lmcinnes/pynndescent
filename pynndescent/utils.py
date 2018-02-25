@@ -215,6 +215,30 @@ def heap_push(heap, row, weight, index, flag):
 
 
 @numba.njit()
+def siftdown(heap1, heap2, elt):
+    """Restore the heap property for a heap with an out of place element
+    at position ``elt``. This works with a heap pair where heap1 carries
+    the weights and heap2 holds the corresponding elements."""
+    while elt * 2 + 1 < heap1.shape[0]:
+        left_child = elt * 2 + 1
+        right_child = left_child + 1
+        swap = elt
+
+        if heap1[swap] < heap1[left_child]:
+            swap = left_child
+
+        if right_child < heap1.shape[0] and heap1[swap] < heap1[right_child]:
+            swap = right_child
+
+        if swap == elt:
+            break
+        else:
+            heap1[elt], heap1[swap] = heap1[swap], heap1[elt]
+            heap2[elt], heap2[swap] = heap2[swap], heap2[elt]
+            elt = swap
+
+
+@numba.njit()
 def deheap_sort(heap):
     """Given an array of heaps (of indices and weights), unpack the heap
     out to give and array of sorted lists of indices and weights by increasing
@@ -235,35 +259,18 @@ def deheap_sort(heap):
     weights = heap[1]
 
     for i in range(indices.shape[0]):
-        heap_end = indices.shape[1] - 1
-        while heap_end >= 0:
-            indices[i, 0], indices[i, heap_end] = \
-                indices[i, heap_end], indices[i, 0]
-            weights[i, 0], weights[i, heap_end] = \
-                weights[i, heap_end], weights[i, 0]
-            heap_end -= 1
 
-            root = 0
-            while root * 2 + 1 < heap_end:
-                left_child = root * 2 + 1
-                right_child = left_child + 1
-                swap = root
+        ind_heap = indices[i]
+        dist_heap = weights[i]
 
-                if weights[i, swap] < weights[i, left_child]:
-                    swap = left_child
-                if right_child < heap_end and weights[i, swap] < weights[
-                    i, right_child]:
-                    swap = right_child
+        for j in range(ind_heap.shape[0] - 1):
+            ind_heap[0], ind_heap[ind_heap.shape[0] - j - 1] = \
+                ind_heap[ind_heap.shape[0] - j - 1], ind_heap[0]
+            dist_heap[0], dist_heap[dist_heap.shape[0] - j - 1] = \
+                dist_heap[dist_heap.shape[0] - j - 1], dist_heap[0]
 
-                if swap == root:
-                    break
-                else:
-                    weights[i, root], weights[i, swap] = \
-                        weights[i, swap], weights[i, root]
-                    indices[i, root], indices[i, swap] = \
-                        indices[i, swap], indices[i, root]
-
-                    root = swap
+            siftdown(dist_heap[:dist_heap.shape[0] - j - 1],
+                     ind_heap[:ind_heap.shape[0] - j - 1], 0)
 
     return indices.astype(np.int64), weights
 
