@@ -88,7 +88,7 @@ def make_initialized_nnd_search(dist, dist_args):
                     if candidates[j] == vertex or candidates[j] == -1:
                         continue
                     d = dist(data[candidates[j]], query_points[i], *dist_args)
-                    pushed = heap_push(initialization, i, d, candidates[j], 1)
+                    heap_push(initialization, i, d, candidates[j], 1)
 
         return initialization
 
