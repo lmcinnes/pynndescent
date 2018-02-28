@@ -33,7 +33,7 @@ configuration = {
     'packages' : ['pynndescent'],
     'install_requires' : ['scikit-learn >= 0.18',
                           'scipy >= 0.19',
-                          'numba >= 0.34'],
+                          'numba >= 0.37'],
     'ext_modules' : [],
     'cmdclass' : {},
     'test_suite' : 'nose.collector',
