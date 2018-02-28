@@ -93,6 +93,7 @@ def make_initialized_nnd_search(dist, dist_args):
                         continue
                     d = dist(data[candidates[j]], query_points[i], *dist_args)
                     unchecked_heap_push(initialization, i, d, candidates[j], 1)
+                    tried.add(candidates[j])
 
         return initialization
 
