@@ -12,6 +12,7 @@ from pynndescent.utils import (tau_rand,
                                rejection_sample,
                                make_heap,
                                heap_push,
+                               unchecked_heap_push,
                                deheap_sort,
                                smallest_flagged,
                                build_candidates)
@@ -76,6 +77,8 @@ def make_initialized_nnd_search(dist, dist_args):
 
         for i in range(query_points.shape[0]):
 
+            tried = set(initialization[0, i])
+
             while True:
 
                 # Find smallest flagged vertex
@@ -85,10 +88,11 @@ def make_initialized_nnd_search(dist, dist_args):
                     break
                 candidates = knn_graph[vertex]
                 for j in range(candidates.shape[0]):
-                    if candidates[j] == vertex or candidates[j] == -1:
+                    if candidates[j] == vertex or candidates[j] == -1 or \
+                            candidates[j] in tried:
                         continue
                     d = dist(data[candidates[j]], query_points[i], *dist_args)
-                    heap_push(initialization, i, d, candidates[j], 1)
+                    unchecked_heap_push(initialization, i, d, candidates[j], 1)
 
         return initialization
 
