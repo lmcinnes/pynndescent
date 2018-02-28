@@ -402,7 +402,7 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
     neighbors for each vertex in the graph.
     """
     candidate_neighbors = make_heap(n_vertices, max_candidates)
-    for i in range(n_vertices):
+    for i in numba.prange(n_vertices):
         for j in range(n_neighbors):
             if current_graph[0, i, j] < 0:
                 continue
