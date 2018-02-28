@@ -5,6 +5,7 @@
 import numba
 import numpy as np
 from sklearn.utils import check_random_state, check_array
+from scipy.sparse import lil_matrix
 
 import pynndescent.distances as dist
 
@@ -71,7 +72,8 @@ def initialise_search(forest, data, query_points, n_neighbors,
 def make_initialized_nnd_search(dist, dist_args):
     @numba.njit(parallel=True)
     def initialized_nnd_search(data,
-                               knn_graph,
+                               indptr,
+                               indices,
                                initialization,
                                query_points):
 
@@ -86,7 +88,7 @@ def make_initialized_nnd_search(dist, dist_args):
 
                 if vertex == -1:
                     break
-                candidates = knn_graph[vertex]
+                candidates = indices[indptr[vertex]:indptr[vertex + 1]]
                 for j in range(candidates.shape[0]):
                     if candidates[j] == vertex or candidates[j] == -1 or \
                             candidates[j] in tried:
@@ -187,9 +189,9 @@ def make_nn_descent(dist, dist_args):
 class NNDescent(object):
     def __init__(self, data,
                  metric='euclidean',
-                 n_trees=10,
+                 n_trees=8,
                  n_neighbors=15,
-                 leaf_size=30,
+                 leaf_size=15,
                  tree_init=True,
                  random_state=np.random,
                  metric_kwds={},
@@ -270,20 +272,31 @@ class NNDescent(object):
                                           leaf_array,
                                           self.verbose)
 
+        self._search_graph = lil_matrix((data.shape[0], data.shape[0]),
+                                        dtype=np.int8)
+        self._search_graph.rows = self._neighbor_graph[0]
+        self._search_graph.data = (self._neighbor_graph[1] != 0).astype(np.int8)
+        self._search_graph = self._search_graph.maximum(
+            self._search_graph.transpose()).tocsr()
+
+        self._random_init, self._tree_init = make_initialisations(
+            self._distance_func,
+            self._dist_args)
+
+        self._search = make_initialized_nnd_search(self._distance_func,
+                                                   self._dist_args)
+
         return
 
-    def query(self, query_data, k=10):
-        random_init, tree_init = make_initialisations(self._distance_func,
-                                                      self._dist_args)
+    def query(self, query_data, k=10, queue_size=5):
         init = initialise_search(self._rp_forest, self._raw_data,
-                                 query_data, k,
-                                 random_init, tree_init,
+                                 query_data, int(k * queue_size),
+                                 self._random_init, self._tree_init,
                                  self.rng_state)
-        search = make_initialized_nnd_search(self._distance_func,
-                                             self._dist_args)
-        result = search(self._raw_data,
-                        self._neighbor_graph[0],
-                        init,
-                        query_data)
+        result = self._search(self._raw_data,
+                              self._search_graph.indptr,
+                              self._search_graph.indices,
+                              init,
+                              query_data)
 
         return deheap_sort(result)
