@@ -140,12 +140,15 @@ def make_nn_descent(dist, dist_args):
 
         if rp_tree_init:
             for n in range(leaf_array.shape[0]):
+                tried = set([(-1, -1)])
                 for i in range(leaf_array.shape[1]):
                     if leaf_array[n, i] < 0:
                         break
                     for j in range(i + 1, leaf_array.shape[1]):
                         if leaf_array[n, j] < 0:
                             break
+                        if (leaf_array[n, i], leaf_array[n, j]) in tried:
+                            continue
                         d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]],
                                  *dist_args)
                         heap_push(current_graph, leaf_array[n, i], d,
@@ -154,6 +157,7 @@ def make_nn_descent(dist, dist_args):
                         heap_push(current_graph, leaf_array[n, j], d,
                                   leaf_array[n, i],
                                   1)
+                        tried.add((leaf_array[n, i], leaf_array[n, j]))
 
         for n in range(n_iters):
             if verbose:
@@ -190,6 +194,7 @@ def make_nn_descent(dist, dist_args):
                         c += heap_push(current_graph, p, d, q, 1)
                         c += heap_push(current_graph, q, d, p, 1)
 
+
             if c <= delta * n_neighbors * data.shape[0]:
                 break
 
@@ -206,7 +211,7 @@ class NNDescent(object):
                  tree_init=True,
                  random_state=np.random,
                  metric_kwds={},
-                 max_candidates=50,
+                 max_candidates=20,
                  n_iters=10,
                  delta=0.001,
                  rho=0.5,
