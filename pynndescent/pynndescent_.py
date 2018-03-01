@@ -159,20 +159,31 @@ def make_nn_descent(dist, dist_args):
             if verbose:
                 print("\t", n, " / ", n_iters)
 
-            candidate_neighbors = build_candidates(current_graph, n_vertices,
-                                                   n_neighbors, max_candidates,
-                                                   rng_state)
+            (new_candidate_neighbors,
+             old_candidate_neighbors) = build_candidates(current_graph,
+                                                         n_vertices,
+                                                         n_neighbors,
+                                                         max_candidates,
+                                                         rng_state, rho)
 
             c = 0
             for i in range(n_vertices):
                 for j in range(max_candidates):
-                    p = int(candidate_neighbors[0, i, j])
-                    if p < 0 or tau_rand(rng_state) < rho:
+                    p = int(new_candidate_neighbors[0, i, j])
+                    if p < 0:
                         continue
+                    for k in range(j, max_candidates):
+                        q = int(new_candidate_neighbors[0, i, k])
+                        if q < 0:
+                            continue
+
+                        d = dist(data[p], data[q], *dist_args)
+                        c += heap_push(current_graph, p, d, q, 1)
+                        c += heap_push(current_graph, q, d, p, 1)
+
                     for k in range(max_candidates):
-                        q = int(candidate_neighbors[0, i, k])
-                        if q < 0 or not candidate_neighbors[2, i, j] and not \
-                                candidate_neighbors[2, i, k]:
+                        q = int(old_candidate_neighbors[0, i, k])
+                        if q < 0:
                             continue
 
                         d = dist(data[p], data[q], *dist_args)

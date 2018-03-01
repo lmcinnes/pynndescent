@@ -374,7 +374,7 @@ def smallest_flagged(heap, row):
 
 @numba.njit(parallel=True)
 def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
-                     rng_state):
+                     rng_state, rho=0.5):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
     vertices that have the vertex as one of their nearest neighbors.
@@ -401,7 +401,9 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
     candidate_neighbors: A heap with an array of (randomly sorted) candidate
     neighbors for each vertex in the graph.
     """
-    candidate_neighbors = make_heap(n_vertices, max_candidates)
+    new_candidate_neighbors = make_heap(n_vertices, max_candidates)
+    old_candidate_neighbors = make_heap(n_vertices, max_candidates)
+
     for i in numba.prange(n_vertices):
         for j in range(n_neighbors):
             if current_graph[0, i, j] < 0:
@@ -409,9 +411,14 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
             idx = current_graph[0, i, j]
             isn = current_graph[2, i, j]
             d = tau_rand(rng_state)
-            heap_push(candidate_neighbors, i, d, idx, isn)
-            heap_push(candidate_neighbors, idx, d, i, isn)
-            current_graph[2, i, j] = 0
+            if tau_rand(rng_state) < rho:
+                if isn:
+                    heap_push(new_candidate_neighbors, i, d, idx, isn)
+                    heap_push(new_candidate_neighbors, idx, d, i, isn)
+                else:
+                    heap_push(old_candidate_neighbors, i, d, idx, isn)
+                    heap_push(old_candidate_neighbors, idx, d, i, isn)
+                current_graph[2, i, j] = 0
 
     return candidate_neighbors
 
