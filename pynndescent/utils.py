@@ -420,5 +420,5 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
                     heap_push(old_candidate_neighbors, idx, d, i, isn)
                 current_graph[2, i, j] = 0
 
-    return candidate_neighbors
+    return new_candidate_neighbors, old_candidate_neighbors
 
