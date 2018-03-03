@@ -156,8 +156,6 @@ def make_nn_descent(dist, dist_args):
                                   1)
 
         for n in range(n_iters):
-            if verbose:
-                print("\t", n, " / ", n_iters)
 
             candidate_neighbors = build_candidates(current_graph, n_vertices,
                                                    n_neighbors, max_candidates,
