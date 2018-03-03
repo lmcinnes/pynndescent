@@ -42,7 +42,7 @@ set ``query_data`` you can do something like
 
     index.query(query_data, k=15)
 
-and rhat is pretty much all there is to it.
+and that is pretty much all there is to it.
 
 ----------
 Installing
