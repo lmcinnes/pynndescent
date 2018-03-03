@@ -412,13 +412,16 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
             isn = current_graph[2, i, j]
             d = tau_rand(rng_state)
             if tau_rand(rng_state) < rho:
+                c = 0
                 if isn:
-                    heap_push(new_candidate_neighbors, i, d, idx, isn)
-                    heap_push(new_candidate_neighbors, idx, d, i, isn)
+                    c += heap_push(new_candidate_neighbors, i, d, idx, isn)
+                    c += heap_push(new_candidate_neighbors, idx, d, i, isn)
                 else:
                     heap_push(old_candidate_neighbors, i, d, idx, isn)
                     heap_push(old_candidate_neighbors, idx, d, i, isn)
-                current_graph[2, i, j] = 0
+
+                if c > 0 :
+                    current_graph[2, i, j] = 0
 
     return new_candidate_neighbors, old_candidate_neighbors
 
