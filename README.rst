@@ -22,7 +22,7 @@ How to use PyNNDescent
 ----------------------
 
 PyNNDescent aims to have a very simple interface. It is similar to (but more
-limtied than) KDTrees and BallTrees in ``sklearn``. In practice there are
+limited than) KDTrees and BallTrees in ``sklearn``. In practice there are
 only two operations -- index construction, and querying an index for nearest
 neighbors.
 
@@ -36,7 +36,7 @@ like
 
 You can then use the index for searching (and can pickle it to disk if you
 wish). To search a pynndescent index for the 15 nearest neighbors of a test data
- set ``query_data`` you can do something like
+set ``query_data`` you can do something like
 
 .. code:: python
 
