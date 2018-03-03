@@ -56,9 +56,13 @@ relatively light requirements:
 * scikit-learn >= 0.18
 * numba >= 0.37
 
-all of which should be pip installable.
+all of which should be pip installable. The easiest way to install should be
 
-To install this package:
+.. code:: bash
+
+    pip install pynndescent
+
+To manually install this package:
 
 .. code:: bash
 
