@@ -9,8 +9,7 @@ from scipy.sparse import lil_matrix
 
 import pynndescent.distances as dist
 
-from pynndescent.utils import (tau_rand,
-                               rejection_sample,
+from pynndescent.utils import (rejection_sample,
                                make_heap,
                                heap_push,
                                unchecked_heap_push,
@@ -200,20 +199,176 @@ def make_nn_descent(dist, dist_args):
 
     return nn_descent
 
+def make_heap_initializer(dist, dist_args):
+    """Create a numba accelerated version of heap initialization for the
+    alternative k-neighbor graph algorithm. This approach builds two heaps
+    of neighbors simultaneously, one is a heap used to construct a very
+    approximate k-neighbor graph for searching; the other is the
+    initialization for searching.
+
+    Parameters
+    ----------
+    dist: function
+        A numba JITd distance function which, given two arrays computes a
+        dissimilarity between them.
+
+    dist_args: tuple
+        Any extra arguments that need to be passed to the distance function
+        beyond the two arrays to be compared.
+
+    Returns
+    -------
+    A numba JITd function for for heap initialization that is
+    specialised to the given metric.
+    """
+
+    @numba.njit(parallel=True)
+    def initialize_heaps(data, n_neighbors, leaf_array):
+        graph_heap = make_heap(data.shape[0], 10)
+        search_heap = make_heap(data.shape[0], n_neighbors * 2)
+        tried = set([(-1, -1)])
+        for n in range(leaf_array.shape[0]):
+            for i in range(leaf_array.shape[1]):
+                if leaf_array[n, i] < 0:
+                    break
+                for j in range(i + 1, leaf_array.shape[1]):
+                    if leaf_array[n, j] < 0:
+                        break
+                    if (leaf_array[n, i], leaf_array[n, j]) in tried:
+                        continue
+
+                    d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]],
+                             *dist_args)
+                    unchecked_heap_push(graph_heap, leaf_array[n, i], d,
+                              leaf_array[n, j], 1)
+                    unchecked_heap_push(graph_heap, leaf_array[n, j], d,
+                              leaf_array[n, i], 1)
+                    unchecked_heap_push(search_heap, leaf_array[n, i], d,
+                                        leaf_array[n, j], 1)
+                    unchecked_heap_push(search_heap, leaf_array[n, j], d,
+                                        leaf_array[n, i], 1)
+                    tried.add((leaf_array[n, i], leaf_array[n, j]))
+
+        return graph_heap, search_heap
+
+    return initialize_heaps
+
+
 class NNDescent(object):
+    """NNDescent for fast approximate nearest neighbor queries. NNDescent is
+    very flexible and supports a wide variety of distances, including
+    non-metric distances. NNDescent also scales well against high dimensional
+    data in many cases. This implementation provides a straightfoward
+    interface, with access to some tuning parameters.
+
+    Parameters
+    ----------
+    data: array os shape (n_samples, n_features)
+        The training data set to find nearest neighbors in.
+
+    metric: string or callable (optional, default='euclidean')
+        The metric to use for computing nearest neighbors. If a callable is
+        used it must be a numba njit compiled function. Supported metrics
+        include:
+            * euclidean
+            * manhattan
+            * chebyshev
+            * minkowski
+            * canberra
+            * braycurtis
+            * mahalanobis
+            * wminkowski
+            * seuclidean
+            * cosine
+            * correlation
+            * haversine
+            * hamming
+            * jaccard
+            * dice
+            * russelrao
+            * kulsinski
+            * rogerstanimoto
+            * sokalmichener
+            * sokalsneath
+            * yule
+        Metrics that take arguments (such as minkowski, mahalanobis etc.)
+        can have arguments passed via the metric_kwds dictionary. At this
+        time care must be taken and dictionary elements must be ordered
+        appropriately; this will hopefully be fixed in the future.
+
+    metric_kwds: dict (optional, default {})
+        Arguments to pass on to the metric, such as the ``p`` value for
+        Minkowski distance.
+
+    n_neighbors: int (optional, default=15)
+        The number of neighbors to use in k-neighbor graph data structure
+        used for fast approximate nearest neighbor search. Larger values
+        will result in more accurate search results at the cost of
+        computation time.
+
+    n_trees: int (optional, default=8)
+        This implementation uses random projection forests for initialization
+        of searches. This parameter controls the number of trees in that
+        forest. A larger number will result in ore accurate neighbor
+        computation at the cost of performance.
+
+    leaf_size: int (optional, default=15)
+        The maximum number of points in a leaf for the random projection trees.
+
+    tree_init: bool (optional, default=True)
+        Whether to use random projection trees for initialization.
+
+    random_state: int, RandomState instance or None, optional (default: None)
+        If int, random_state is the seed used by the random number generator;
+        If RandomState instance, random_state is the random number generator;
+        If None, the random number generator is the RandomState instance used
+        by `np.random`.
+
+    algorithm: string (optional, default='standard')
+        This implementation provides an alternative algorithm for
+        construction of the k-neighbors graph used as a search index. The
+        alternative algorithm can be fast for large ``n_neighbors`` values.
+        To use the alternative algorithm specify ``'alternative'``.
+
+    max_candidates: int (optional, default=20)
+        Internally each "self-join" keeps a maximum number of candidates (
+        nearest neighbors and reverse nearest neighbors) to be considered.
+        This value controls this aspect of the algorithm. Larger values will
+        provide more accurate search results later, but potentially at
+        non-negligible computation cost in building the index. Don't tweak
+        this value unless you know what you're doing.
+
+    n_iters: int (optional, default=10)
+        The maximum number of NN-descent iterations to perform. The
+        NN-descent algorithm can abort early if limited progress is being
+        made, so this only controls the worst case. Don't tweak
+        this value unless you know what you're doing.
+
+    delta: float (optional, default=0.001)
+        Controls the early abort due to limited progress. Larger values
+        will result in earlier aborts, providing less accurate indexes,
+        and less accurate searching. Don't tweak this value unless you know
+        what you're doing.
+
+    rho: float (optional, default=0.5)
+        Controls the random sampling of potential candidates in any given
+        iteration of NN-descent. Larger values will result in less accurate
+        indexes and less accurate searching. Don't tweak this value unless
+        you know what you're doing.
+    """
     def __init__(self, data,
                  metric='euclidean',
-                 n_trees=8,
+                 metric_kwds={},
                  n_neighbors=15,
+                 n_trees=8,
                  leaf_size=15,
                  tree_init=True,
                  random_state=np.random,
-                 metric_kwds={},
+                 algorithm='standard',
                  max_candidates=20,
                  n_iters=10,
                  delta=0.001,
-                 rho=0.5,
-                 verbose=False):
+                 rho=0.5):
 
         self.n_trees = n_trees
         self.n_neighbors = n_neighbors
@@ -224,7 +379,8 @@ class NNDescent(object):
         self.n_iters = n_iters
         self.delta = delta
         self.rho = rho
-        self.verbose = verbose
+        self.dim = data.shape[1]
+
         if not tree_init or n_trees == 0:
             self.tree_init = False
         else:
@@ -274,17 +430,36 @@ class NNDescent(object):
             self._rp_forest = None
             leaf_array = np.array([[-1]])
 
-        nn_descent = make_nn_descent(self._distance_func, self._dist_args)
-        self._neighbor_graph = nn_descent(self._raw_data,
-                                          self.n_neighbors,
-                                          self.rng_state,
-                                          self.max_candidates,
-                                          self.n_iters,
-                                          self.delta,
-                                          self.rho,
-                                          True,
-                                          leaf_array,
-                                          self.verbose)
+        if algorithm == 'standard' or leaf_array.shape[0] == 1:
+            nn_descent = make_nn_descent(self._distance_func, self._dist_args)
+            self._neighbor_graph = nn_descent(self._raw_data,
+                                              self.n_neighbors,
+                                              self.rng_state,
+                                              self.max_candidates,
+                                              self.n_iters,
+                                              self.delta,
+                                              self.rho,
+                                              True,
+                                              leaf_array)
+        elif algorithm == 'alternative':
+            self._search = make_initialized_nnd_search(self._distance_func,
+                                                       self._dist_args)
+
+            init_heaps = make_heap_initializer(self._distance_func,
+                                               self._dist_args)
+            graph_heap, search_heap = init_heaps(self._raw_data,
+                                                 self.n_neighbors,
+                                                 leaf_array)
+            graph = lil_matrix((data.shape[0], data.shape[0]))
+            graph.rows, graph.data = deheap_sort(graph_heap)
+            graph = graph.maximum(graph.transpose())
+            self._neighbor_graph = deheap_sort(self._search(self._raw_data,
+                                                            graph.indptr,
+                                                            graph.indices,
+                                                            search_heap,
+                                                            self._raw_data))
+        else:
+            raise ValueError('Unknown algorithm selected')
 
         self._search_graph = lil_matrix((data.shape[0], data.shape[0]),
                                         dtype=np.int8)
@@ -302,7 +477,37 @@ class NNDescent(object):
 
         return
 
-    def query(self, query_data, k=10, queue_size=5):
+    def query(self, query_data, k=10, queue_size=5.0):
+        """Query the training data for the k nearest neighbors
+
+        Parameters
+        ----------
+        query_data: array-like, last dimension self.dim
+            An array of points to query
+
+        k: integer (default = 10)
+            The number of nearest neighbors to return
+
+        queue_size: float (default 5.0)
+            The multiplier of the internal search queue. This controls the
+            speed/accuracy tradeoff. Low values will search faster but with
+            more approximate results. High values will search more
+            accurately, but will require more computation to do so. Values
+            should generally be in the range 1.0 to 10.0.
+
+        Returns
+        -------
+        indices, distances: array (n_query_points, k), array (n_query_points, k)
+            The first array, ``indices``, provides the indices of the data
+            points in the training set that are the nearest neighbors of
+            each query point. Thus ``indices[i, j]`` is the index into the
+            training data of the jth nearest neighbor of the ith query points.
+
+            Similarly ``distances`` provides the distances to the neighbors
+            of the query points such that ``distances[i, j]`` is the distance
+            from the ith query point to its jth nearest neighbor in the
+            training data.
+        """
         init = initialise_search(self._rp_forest, self._raw_data,
                                  query_data, int(k * queue_size),
                                  self._random_init, self._tree_init,
