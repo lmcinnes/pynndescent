@@ -160,8 +160,6 @@ def make_nn_descent(dist, dist_args):
                         tried.add((leaf_array[n, i], leaf_array[n, j]))
 
         for n in range(n_iters):
-            if verbose:
-                print("\t", n, " / ", n_iters)
 
             (new_candidate_neighbors,
              old_candidate_neighbors) = build_candidates(current_graph,
