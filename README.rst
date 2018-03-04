@@ -17,6 +17,9 @@ trees for initialisation. This can be particularly useful for the metrics
 that are amenable to such approaches (euclidean, minkowski, angular, cosine,
 etc.).
 
+Currently this library targets relatively high accuracy 
+(90%-99% accuracy rate) approximate nearest neighbor searches.
+
 ----------------------
 How to use PyNNDescent
 ----------------------
