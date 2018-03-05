@@ -518,4 +518,5 @@ class NNDescent(object):
                               init,
                               query_data)
 
-        return deheap_sort(result)
+        indices, dists =  deheap_sort(result)
+        return indices[:k], dists[:k]
