@@ -27,7 +27,7 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 
 def make_initialisations(dist, dist_args):
-    @numba.njit(parallel=True, cache=True)
+    @numba.njit(parallel=True)
     def init_from_random(n_neighbors, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = rejection_sample(n_neighbors, data.shape[0],
@@ -39,7 +39,7 @@ def make_initialisations(dist, dist_args):
                 heap_push(heap, i, d, indices[j], 1)
         return
 
-    @numba.njit(parallel=True, cache=True)
+    @numba.njit(parallel=True)
     def init_from_tree(tree, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = search_flat_tree(query_points[i], tree.hyperplanes,
@@ -69,7 +69,7 @@ def initialise_search(forest, data, query_points, n_neighbors,
 
 
 def make_initialized_nnd_search(dist, dist_args):
-    @numba.njit(parallel=True, cache=True)
+    @numba.njit(parallel=True)
     def initialized_nnd_search(data,
                                indptr,
                                indices,
@@ -123,7 +123,7 @@ def make_nn_descent(dist, dist_args):
     specialised to the given metric.
     """
 
-    @numba.njit(parallel=True, cache=True)
+    @numba.njit(parallel=True)
     def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
                    n_iters=10, delta=0.001, rho=0.5,
                    rp_tree_init=True, leaf_array=None, verbose=False):
@@ -222,7 +222,7 @@ def make_heap_initializer(dist, dist_args):
     specialised to the given metric.
     """
 
-    @numba.njit(parallel=True, cache=True)
+    @numba.njit(parallel=True)
     def initialize_heaps(data, n_neighbors, leaf_array):
         graph_heap = make_heap(data.shape[0], 10)
         search_heap = make_heap(data.shape[0], n_neighbors * 2)
