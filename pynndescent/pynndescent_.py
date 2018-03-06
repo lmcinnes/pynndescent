@@ -508,6 +508,7 @@ class NNDescent(object):
             from the ith query point to its jth nearest neighbor in the
             training data.
         """
+        query_data = check_array(query_data, dtype=np.float64, order='C')
         init = initialise_search(self._rp_forest, self._raw_data,
                                  query_data, int(k * queue_size),
                                  self._random_init, self._tree_init,
