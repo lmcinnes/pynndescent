@@ -6,10 +6,12 @@ import numba
 import numpy as np
 from sklearn.utils import check_random_state, check_array
 from scipy.sparse import lil_matrix
+from scipy.sparse.csgraph import minimum_spanning_tree
 
 import pynndescent.distances as dist
 
 from pynndescent.utils import (rejection_sample,
+                               tau_rand,
                                make_heap,
                                heap_push,
                                unchecked_heap_push,
@@ -253,6 +255,81 @@ def make_heap_initializer(dist, dist_args):
 
     return initialize_heaps
 
+@numba.njit(parallel=True)
+def csr_pruning(indptr, indices, data):
+
+    n_vertices = indptr.shape[0] - 1
+
+    for n in range(n_vertices):
+        neighbors = indices[indptr[n]: indptr[n+1]]
+        subdata = data[indptr[n]: indptr[n+1]]
+
+        for i in range(neighbors.shape[0]):
+
+            idx1 = neighbors[i]
+            test_neighbors = indices[indptr[idx1]: indptr[idx1 + 1]]
+            test_distances = data[indptr[idx1]: indptr[idx1 + 1]]
+
+            for j in range(i, neighbors.shape[0]):
+
+                idx2 = neighbors[j]
+                test_dist = -1.0
+                for k in range(test_neighbors.shape[0]):
+                    if test_neighbors[k] == idx2:
+                        test_dist = test_distances[k]
+                        break
+
+                if test_dist < 0.0:
+                    continue
+
+                if subdata[i] < subdata[j]:
+                    # Test if idx1->idx2 shorter than n->idx2
+                    if subdata[j] > 1.5 * test_dist:
+                        subdata[j] = -1.0
+                        test_distances[k] = -1.0
+                else:
+                    # Test if idx1->idx2 shorter than n->idx1
+                    if subdata[i] > 1.5 * test_dist:
+                        subdata[i] = -1.0
+                        test_distances[k] = -1.0
+
+        data[indptr[n]: indptr[n + 1]] = subdata
+
+    data[data < 0.0] = 0.0
+    return data
+
+
+
+
+
+
+def prune(graph):
+
+    print(graph.nnz)
+    new_data = csr_pruning(graph.indptr, graph.indices, graph.data)
+    graph.data = new_data
+    graph.eliminate_zeros()
+    print(graph.nnz)
+    return graph
+
+
+# def prune(graph, n_iter=10):
+#
+#     reduced_graph = graph.copy()
+#     result_graph = lil_matrix((graph.shape[0], graph.shape[0])).tocsr()
+#
+#     for n in range(n_iter):
+#         mst = minimum_spanning_tree(reduced_graph)
+#         result_graph = result_graph.maximum(mst)
+#         reduced_graph -= mst
+#         reduced_graph.eliminate_zeros()
+#
+#     print(graph.nnz, result_graph.nnz, reduced_graph.nnz)
+#
+#     return result_graph
+
+
+
 
 class NNDescent(object):
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
@@ -462,11 +539,13 @@ class NNDescent(object):
             raise ValueError('Unknown algorithm selected')
 
         self._search_graph = lil_matrix((data.shape[0], data.shape[0]),
-                                        dtype=np.int8)
+                                        dtype=np.float64)
         self._search_graph.rows = self._neighbor_graph[0]
-        self._search_graph.data = (self._neighbor_graph[1] != 0).astype(np.int8)
+        # self._search_graph.data = (self._neighbor_graph[1] != 0).astype(np.int8)
+        self._search_graph.data = self._neighbor_graph[1]
         self._search_graph = self._search_graph.maximum(
             self._search_graph.transpose()).tocsr()
+        self._search_graph = prune(self._search_graph)
 
         self._random_init, self._tree_init = make_initialisations(
             self._distance_func,
@@ -508,7 +587,8 @@ class NNDescent(object):
             from the ith query point to its jth nearest neighbor in the
             training data.
         """
-        query_data = check_array(query_data, dtype=np.float64, order='C')
+        # query_data = check_array(query_data, dtype=np.float64, order='C')
+        query_data = np.asarray(query_data)
         init = initialise_search(self._rp_forest, self._raw_data,
                                  query_data, int(k * queue_size),
                                  self._random_init, self._tree_init,
