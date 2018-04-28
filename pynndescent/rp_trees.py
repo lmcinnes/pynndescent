@@ -308,8 +308,8 @@ def flatten_tree(tree, leaf_size):
     n_nodes = num_nodes(tree)
     n_leaves = num_leaves(tree)
     hyperplanes = np.zeros((n_nodes, tree.hyperplane.shape[0]),
-                           dtype=np.float64)
-    offsets = np.zeros(n_nodes, dtype=np.float64)
+                           dtype=np.float32)
+    offsets = np.zeros(n_nodes, dtype=np.float32)
     children = -1 * np.ones((n_nodes, 2), dtype=np.int64)
     indices = -1 * np.ones((n_leaves, leaf_size), dtype=np.int64)
     recursive_flatten(tree, hyperplanes, offsets, children, indices, 0, 0)

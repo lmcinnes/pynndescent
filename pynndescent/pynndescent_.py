@@ -29,7 +29,7 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 
 def make_initialisations(dist, dist_args):
-    @numba.njit(parallel=True)
+    @numba.njit(parallel=True, fastmath=True)
     def init_from_random(n_neighbors, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = rejection_sample(n_neighbors, data.shape[0],
@@ -41,7 +41,7 @@ def make_initialisations(dist, dist_args):
                 heap_push(heap, i, d, indices[j], 1)
         return
 
-    @numba.njit(parallel=True)
+    @numba.njit(parallel=True, fastmath=True)
     def init_from_tree(tree, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = search_flat_tree(query_points[i], tree.hyperplanes,
@@ -125,7 +125,7 @@ def make_nn_descent(dist, dist_args):
     specialised to the given metric.
     """
 
-    @numba.njit(parallel=True)
+    @numba.njit(fastmath=True)
     def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
                    n_iters=10, delta=0.001, rho=0.5,
                    rp_tree_init=True, leaf_array=None, verbose=False):
@@ -462,6 +462,8 @@ class NNDescent(object):
         self.rho = rho
         self.dim = data.shape[1]
 
+        data = check_array(data).astype(np.float32)
+
         if not tree_init or n_trees == 0:
             self.tree_init = False
         else:
@@ -471,7 +473,7 @@ class NNDescent(object):
 
         self.random_state = check_random_state(random_state)
 
-        self._raw_data = check_array(data)
+        self._raw_data = data.copy()
 
         if callable(metric):
             self._distance_func = metric
@@ -543,7 +545,7 @@ class NNDescent(object):
             raise ValueError('Unknown algorithm selected')
 
         self._search_graph = lil_matrix((data.shape[0], data.shape[0]),
-                                        dtype=np.float64)
+                                        dtype=np.float32)
         self._search_graph.rows = self._neighbor_graph[0]
         self._search_graph.data = self._neighbor_graph[1]
         self._search_graph = self._search_graph.maximum(
@@ -592,7 +594,7 @@ class NNDescent(object):
             training data.
         """
         # query_data = check_array(query_data, dtype=np.float64, order='C')
-        query_data = np.asarray(query_data)
+        query_data = np.asarray(query_data).astype(np.float32)
         init = initialise_search(self._rp_forest, self._raw_data,
                                  query_data, int(k * queue_size),
                                  self._random_init, self._tree_init,

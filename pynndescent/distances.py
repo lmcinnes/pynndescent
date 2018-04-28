@@ -4,8 +4,8 @@
 import numpy as np
 import numba
 
-_mock_identity = np.eye(2, dtype=np.float64)
-_mock_ones = np.ones(2, dtype=np.float64)
+_mock_identity = np.eye(2, dtype=np.float32)
+_mock_ones = np.ones(2, dtype=np.float32)
 
 
 @numba.njit(fastmath=True)
@@ -105,7 +105,7 @@ def weighted_minkowski(x, y, w=_mock_identity, p=2):
 def mahalanobis(x, y, vinv=_mock_identity):
     result = 0.0
 
-    diff = np.empty(x.shape[0], dtype=np.float64)
+    diff = np.empty(x.shape[0], dtype=np.float32)
 
     for i in range(x.shape[0]):
         diff[i] = x[i] - y[i]
