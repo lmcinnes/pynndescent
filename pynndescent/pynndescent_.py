@@ -71,7 +71,7 @@ def initialise_search(forest, data, query_points, n_neighbors,
 
 
 def make_initialized_nnd_search(dist, dist_args):
-    @numba.njit(parallel=True)
+    @numba.njit(parallel=True, fastmath=True)
     def initialized_nnd_search(data,
                                indptr,
                                indices,
@@ -255,78 +255,78 @@ def make_heap_initializer(dist, dist_args):
 
     return initialize_heaps
 
-@numba.njit(parallel=True)
-def csr_pruning(indptr, indices, data):
 
-    n_vertices = indptr.shape[0] - 1
+def degree_prune(graph, max_degree=20):
+    """Prune the k-neighbors graph back so that nodes have a maximum
+    degree of ``max_degree``.
 
-    for n in range(n_vertices):
-        neighbors = indices[indptr[n]: indptr[n+1]]
-        subdata = data[indptr[n]: indptr[n+1]]
+    Parameters
+    ----------
+    graph: sparse matrix
+        The adjacency matrix of the graph
 
-        for i in range(neighbors.shape[0]):
+    max_degree: int (optional, default 20)
+        The maximum degree of any node in the pruned graph
 
-            idx1 = neighbors[i]
-            test_neighbors = indices[indptr[idx1]: indptr[idx1 + 1]]
-            test_distances = data[indptr[idx1]: indptr[idx1 + 1]]
+    Returns
+    -------
+    result: sparse matrix
+        The pruned graph.
+    """
 
-            for j in range(i, neighbors.shape[0]):
-
-                idx2 = neighbors[j]
-                test_dist = -1.0
-                for k in range(test_neighbors.shape[0]):
-                    if test_neighbors[k] == idx2:
-                        test_dist = test_distances[k]
-                        break
-
-                if test_dist < 0.0:
-                    continue
-
-                if subdata[i] < subdata[j]:
-                    # Test if idx1->idx2 shorter than n->idx2
-                    if subdata[j] > 1.5 * test_dist:
-                        subdata[j] = -1.0
-                        test_distances[k] = -1.0
-                else:
-                    # Test if idx1->idx2 shorter than n->idx1
-                    if subdata[i] > 1.5 * test_dist:
-                        subdata[i] = -1.0
-                        test_distances[k] = -1.0
-
-        data[indptr[n]: indptr[n + 1]] = subdata
-
-    data[data < 0.0] = 0.0
-    return data
+    result = graph.tolil()
+    for i, row_data in enumerate(result.data):
+        if len(row_data) > max_degree:
+            cut_value = np.argsort(row_data)[max_degree]
+            row_data = [x if x <= cut_value else 0.0 for x in row_data]
+            result.data[i] = row_data
+    result = result.tocsr()
+    result.eliminate_zeros()
+    return result
 
 
+def prune(graph, prune_level=0, n_neighbors=10):
+    """Perform pruning on the graph so that there are fewer edges to
+    be followed. In practice this operates in two passes. The first pass
+    removes edges such that no node has degree more than ``3 * n_neighbors -
+    prune_level``. The second pass builds up a graph out of spanning trees;
+    each iteration constructs a minimum panning tree of a graph and then
+    removes those edges from the graph. The result is spanning trees that
+    take various paths through the graph. All these spanning trees are merged
+    into the resulting graph. In practice this prunes away a limited number
+    of edges as long as enough iterations are performed. By default we will
+    do ``n_neighbors - prune_level``iterations.
 
+    Parameters
+    ----------
+    graph: sparse matrix
+        The adjacency matrix of the graph
 
+    prune_level: int (optional default 0)
+        How aggressively to prune the graph, larger values perform more
+        aggressive pruning.
 
+    n_neighbors: int (optional 10)
+        The number of neighbors of the k-neighbor graph that was constructed.
 
-def prune(graph):
+    Returns
+    -------
+    result: sparse matrix
+        The pruned graph
+    """
 
-    print(graph.nnz)
-    new_data = csr_pruning(graph.indptr, graph.indices, graph.data)
-    graph.data = new_data
-    graph.eliminate_zeros()
-    print(graph.nnz)
-    return graph
+    max_degree = max(5, 3 * n_neighbors - prune_level)
+    n_iters = max(3, n_neighbors - prune_level)
+    reduced_graph = degree_prune(graph, max_degree=max_degree)
+    result_graph = lil_matrix((graph.shape[0], graph.shape[0])).tocsr()
 
+    for n in range(n_iters):
+        mst = minimum_spanning_tree(reduced_graph)
+        result_graph = result_graph.maximum(mst)
+        reduced_graph -= mst
+        reduced_graph.eliminate_zeros()
 
-# def prune(graph, n_iter=10):
-#
-#     reduced_graph = graph.copy()
-#     result_graph = lil_matrix((graph.shape[0], graph.shape[0])).tocsr()
-#
-#     for n in range(n_iter):
-#         mst = minimum_spanning_tree(reduced_graph)
-#         result_graph = result_graph.maximum(mst)
-#         reduced_graph -= mst
-#         reduced_graph.eliminate_zeros()
-#
-#     print(graph.nnz, result_graph.nnz, reduced_graph.nnz)
-#
-#     return result_graph
+    return result_graph
 
 
 
@@ -391,6 +391,10 @@ class NNDescent(object):
 
     leaf_size: int (optional, default=15)
         The maximum number of points in a leaf for the random projection trees.
+
+    pruning_level: int (optional, default=0)
+        How aggressively to prune the graph. Higher values perform more
+        aggressive pruning, resulting in faster search with lower accuracy.
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -541,11 +545,11 @@ class NNDescent(object):
         self._search_graph = lil_matrix((data.shape[0], data.shape[0]),
                                         dtype=np.float64)
         self._search_graph.rows = self._neighbor_graph[0]
-        # self._search_graph.data = (self._neighbor_graph[1] != 0).astype(np.int8)
         self._search_graph.data = self._neighbor_graph[1]
         self._search_graph = self._search_graph.maximum(
             self._search_graph.transpose()).tocsr()
-        self._search_graph = prune(self._search_graph)
+        self._search_graph = prune(self._search_graph, self.n_neighbors)
+        self._search_graph = (self._search_graph != 0).astype(np.int8)
 
         self._random_init, self._tree_init = make_initialisations(
             self._distance_func,

@@ -7,7 +7,8 @@ import numba
 _mock_identity = np.eye(2, dtype=np.float64)
 _mock_ones = np.ones(2, dtype=np.float64)
 
-@numba.njit()
+
+@numba.njit(fastmath=True)
 def euclidean(x, y):
     """Standard euclidean distance.
 
@@ -20,7 +21,7 @@ def euclidean(x, y):
     return np.sqrt(result)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def standardised_euclidean(x, y, sigma=_mock_ones):
     """Euclidean distance standardised against a vector of standard
     deviations per coordinate.
@@ -35,7 +36,7 @@ def standardised_euclidean(x, y, sigma=_mock_ones):
     return np.sqrt(result)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def manhattan(x, y):
     """Manhattan, taxicab, or l1 distance.
 
@@ -49,7 +50,7 @@ def manhattan(x, y):
     return result
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def chebyshev(x, y):
     """Chebyshev or l-infinity distance.
 
@@ -63,7 +64,7 @@ def chebyshev(x, y):
     return result
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def minkowski(x, y, p=2):
     """Minkowski distance.
 
@@ -82,7 +83,7 @@ def minkowski(x, y, p=2):
     return result ** (1.0 / p)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def weighted_minkowski(x, y, w=_mock_identity, p=2):
     """A weighted version of Minkowski distance.
 
@@ -100,7 +101,7 @@ def weighted_minkowski(x, y, w=_mock_identity, p=2):
     return result ** (1.0 / p)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def mahalanobis(x, y, vinv=_mock_identity):
     result = 0.0
 
@@ -118,7 +119,7 @@ def mahalanobis(x, y, vinv=_mock_identity):
     return np.sqrt(result)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def hamming(x, y):
     result = 0.0
     for i in range(x.shape[0]):
@@ -128,7 +129,7 @@ def hamming(x, y):
     return float(result) / x.shape[0]
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def canberra(x, y):
     result = 0.0
     for i in range(x.shape[0]):
@@ -139,7 +140,7 @@ def canberra(x, y):
     return result
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def bray_curtis(x, y):
     numerator = 0.0
     denominator = 0.0
@@ -153,7 +154,7 @@ def bray_curtis(x, y):
         return 0.0
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def jaccard(x, y):
     num_non_zero = 0.0
     num_equal = 0.0
@@ -169,7 +170,7 @@ def jaccard(x, y):
         return float(num_non_zero - num_equal) / num_non_zero
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def matching(x, y):
     num_not_equal = 0.0
     for i in range(x.shape[0]):
@@ -180,7 +181,7 @@ def matching(x, y):
     return float(num_not_equal) / x.shape[0]
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def dice(x, y):
     num_true_true = 0.0
     num_not_equal = 0.0
@@ -193,7 +194,7 @@ def dice(x, y):
     return num_not_equal / (2.0 * num_true_true + num_not_equal)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def kulsinski(x, y):
     num_true_true = 0.0
     num_not_equal = 0.0
@@ -210,7 +211,7 @@ def kulsinski(x, y):
                 (num_not_equal + x.shape[0])
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def rogers_tanimoto(x, y):
     num_not_equal = 0.0
     for i in range(x.shape[0]):
@@ -221,7 +222,7 @@ def rogers_tanimoto(x, y):
     return (2.0 * num_not_equal) / (x.shape[0] + num_not_equal)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def russellrao(x, y):
     num_true_true = 0.0
     for i in range(x.shape[0]):
@@ -236,7 +237,7 @@ def russellrao(x, y):
         return float(x.shape[0] - num_true_true) / (x.shape[0])
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def sokal_michener(x, y):
     num_not_equal = 0.0
     for i in range(x.shape[0]):
@@ -247,7 +248,7 @@ def sokal_michener(x, y):
     return (2.0 * num_not_equal) / (x.shape[0] + num_not_equal)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def sokal_sneath(x, y):
     num_true_true = 0.0
     num_not_equal = 0.0
@@ -260,7 +261,7 @@ def sokal_sneath(x, y):
     return num_not_equal / (0.5 * num_true_true + num_not_equal)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def haversine(x, y):
     if x.shape[0] != 2:
         raise ValueError('haversine is only defined for 2 dimensional data')
@@ -270,7 +271,7 @@ def haversine(x, y):
     return 2.0 * np.arcsin(result)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def yule(x, y):
     num_true_true = 0.0
     num_true_false = 0.0
@@ -289,7 +290,7 @@ def yule(x, y):
            (num_true_true * num_false_false + num_true_false * num_false_true)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def cosine(x, y):
     result = 0.0
     norm_x = 0.0
@@ -305,7 +306,7 @@ def cosine(x, y):
         return 1.0 - (result / np.sqrt(norm_x * norm_y))
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def correlation(x, y):
     mu_x = 0.0
     mu_y = 0.0

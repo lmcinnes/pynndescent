@@ -46,7 +46,7 @@ def tau_rand(state):
     return float(integer) / 0x7fffffff
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def norm(vec):
     """Compute the (standard l2) norm of a vector.
 
@@ -64,7 +64,7 @@ def norm(vec):
     return np.sqrt(result)
 
 
-@numba.njit()
+@numba.njit(parallel=True)
 def rejection_sample(n_samples, pool_size, rng_state):
     """Generate n_samples many integers from 0 to pool_size such that no
     integer is selected twice. The duplication constraint is achieved via

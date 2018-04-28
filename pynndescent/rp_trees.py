@@ -17,7 +17,7 @@ FlatTree = namedtuple('FlatTree', ['hyperplanes', 'offsets',
                                    'children', 'indices'])
 
 
-@numba.njit()
+@numba.njit(fastmath=True, nogil=True, parallel=True)
 def euclidean_random_projection_split(data, indices, rng_state):
     """Given a set of ``indices`` for data points from ``data``, create
     a random hyperplane to split the data, returning two arrays indices
