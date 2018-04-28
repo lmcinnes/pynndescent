@@ -443,6 +443,7 @@ class NNDescent(object):
                  n_neighbors=15,
                  n_trees=8,
                  leaf_size=15,
+                 pruning_level=0,
                  tree_init=True,
                  random_state=np.random,
                  algorithm='standard',
@@ -456,6 +457,7 @@ class NNDescent(object):
         self.metric = metric
         self.metric_kwds = metric_kwds
         self.leaf_size = leaf_size
+        self.prune_level = pruning_level
         self.max_candidates = max_candidates
         self.n_iters = n_iters
         self.delta = delta
@@ -550,7 +552,9 @@ class NNDescent(object):
         self._search_graph.data = self._neighbor_graph[1]
         self._search_graph = self._search_graph.maximum(
             self._search_graph.transpose()).tocsr()
-        self._search_graph = prune(self._search_graph, self.n_neighbors)
+        self._search_graph = prune(self._search_graph,
+                                   prune_level=self.prune_level,
+                                   n_neighbors=self.n_neighbors)
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
         self._random_init, self._tree_init = make_initialisations(

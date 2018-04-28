@@ -316,7 +316,7 @@ def flatten_tree(tree, leaf_size):
     return FlatTree(hyperplanes, offsets, children, indices)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def select_side(hyperplane, offset, point, rng_state):
     margin = offset
     for d in range(point.shape[0]):
@@ -334,7 +334,7 @@ def select_side(hyperplane, offset, point, rng_state):
         return 1
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def search_flat_tree(point,
                      hyperplanes, offsets,
                      children, indices,
