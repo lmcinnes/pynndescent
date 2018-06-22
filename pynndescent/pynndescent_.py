@@ -5,6 +5,7 @@
 import numba
 import numpy as np
 from sklearn.utils import check_random_state, check_array
+from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix
 from scipy.sparse.csgraph import minimum_spanning_tree
 
@@ -611,3 +612,90 @@ class NNDescent(object):
 
         indices, dists =  deheap_sort(result)
         return indices[:, :k], dists[:, :k]
+
+
+class PyNNDescentTransformer (BaseEstimator, TransformerMixin):
+
+    def __init__(self,
+                 n_neighbors=5,
+                 metric='euclidean',
+                 metric_kwds=None,
+                 n_trees=8,
+                 leaf_size=15,
+                 search_queue_size=4.0,
+                 pruning_level=0,
+                 tree_init=True,
+                 random_state=np.random,
+                 algorithm='standard',
+                 max_candidates=20,
+                 n_iters=10,
+                 early_termination_value=0.001,
+                 sampling_rate=0.5):
+
+        self.n_neighbors = n_neighbors
+        self.metric = metric
+        self.metric_kwds = metric_kwds
+        self.n_trees = n_trees
+        self.leaf_size = leaf_size
+        self.search_queue_size = search_queue_size
+        self.pruning_level = pruning_level
+        self.tree_init = tree_init
+        self.random_state = random_state
+        self.algorithm = algorithm
+        self.max_candidates = max_candidates
+        self.n_iters = n_iters
+        self.early_termination_value = early_termination_value
+        self.sampling_rate = sampling_rate
+
+    def fit(self, X):
+        self.n_samples_fit = X.shape[0]
+
+        if self.metric_kwds is None:
+            metric_kwds = {}
+        else:
+            metric_kwds = self.metric_kwds
+
+        self.pynndescent_ = NNDescent(
+            X,
+            self.metric,
+            metric_kwds,
+            self.n_neighbors,
+            self.n_trees,
+            self.leaf_size,
+            self.pruning_level,
+            self.tree_init,
+            self.random_state,
+            self.algorithm,
+            self.max_candidates,
+            self.n_iters,
+            self.early_termination_value,
+            self.sampling_rate
+        )
+
+        return self
+
+    def transform(self, X, y=None):
+        if X is None:
+            n_samples_transform = self.n_samples_fit
+        else:
+            n_samples_transform = X.shape[0]
+
+        if X is None:
+            indices, distances = self.pynndescent_._neighbor_graph
+        else:
+            indices, distances = self.pynndescent_.query(
+                X,
+                k=self.n_neighbors,
+                queue_size=self.search_queue_size
+            )
+
+        result = lil_matrix((n_samples_transform,
+                                         n_samples_transform),
+                                        dtype=np.float32)
+        result.rows = indices
+        result.data = distances
+
+        return result.tocsr()
+
+    def fit_transform(self, X, y=None, **fit_params):
+        return self.fit(X).transform(X=None)
