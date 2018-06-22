@@ -615,6 +615,121 @@ class NNDescent(object):
 
 
 class PyNNDescentTransformer (BaseEstimator, TransformerMixin):
+    """PyNNDescentTransformer for fast approximate nearest neighbor transformer.
+    It uses the NNDescent algorithm, and is thus
+    very flexible and supports a wide variety of distances, including
+    non-metric distances. NNDescent also scales well against high dimensional
+    data in many cases.
+
+    Transform X into a (weighted) graph of k nearest neighbors
+
+    The transformed data is a sparse graph as returned by kneighbors_graph.
+
+    Parameters
+    ----------
+    n_neighbors: int (optional, default=5)
+        The number of neighbors to use in k-neighbor graph data structure
+        used for fast approximate nearest neighbor search. Larger values
+        will result in more accurate search results at the cost of
+        computation time.
+
+    metric: string or callable (optional, default='euclidean')
+        The metric to use for computing nearest neighbors. If a callable is
+        used it must be a numba njit compiled function. Supported metrics
+        include:
+            * euclidean
+            * manhattan
+            * chebyshev
+            * minkowski
+            * canberra
+            * braycurtis
+            * mahalanobis
+            * wminkowski
+            * seuclidean
+            * cosine
+            * correlation
+            * haversine
+            * hamming
+            * jaccard
+            * dice
+            * russelrao
+            * kulsinski
+            * rogerstanimoto
+            * sokalmichener
+            * sokalsneath
+            * yule
+        Metrics that take arguments (such as minkowski, mahalanobis etc.)
+        can have arguments passed via the metric_kwds dictionary. At this
+        time care must be taken and dictionary elements must be ordered
+        appropriately; this will hopefully be fixed in the future.
+
+    metric_kwds: dict (optional, default {})
+        Arguments to pass on to the metric, such as the ``p`` value for
+        Minkowski distance.
+
+    n_trees: int (optional, default=8)
+        This implementation uses random projection forests for initialization
+        of searches. This parameter controls the number of trees in that
+        forest. A larger number will result in ore accurate neighbor
+        computation at the cost of performance.
+
+    leaf_size: int (optional, default=15)
+        The maximum number of points in a leaf for the random projection trees.
+
+    pruning_level: int (optional, default=0)
+        How aggressively to prune the graph. Higher values perform more
+        aggressive pruning, resulting in faster search with lower accuracy.
+
+    tree_init: bool (optional, default=True)
+        Whether to use random projection trees for initialization.
+
+    random_state: int, RandomState instance or None, optional (default: None)
+        If int, random_state is the seed used by the random number generator;
+        If RandomState instance, random_state is the random number generator;
+        If None, the random number generator is the RandomState instance used
+        by `np.random`.
+
+    algorithm: string (optional, default='standard')
+        This implementation provides an alternative algorithm for
+        construction of the k-neighbors graph used as a search index. The
+        alternative algorithm can be fast for large ``n_neighbors`` values.
+        To use the alternative algorithm specify ``'alternative'``.
+
+    max_candidates: int (optional, default=20)
+        Internally each "self-join" keeps a maximum number of candidates (
+        nearest neighbors and reverse nearest neighbors) to be considered.
+        This value controls this aspect of the algorithm. Larger values will
+        provide more accurate search results later, but potentially at
+        non-negligible computation cost in building the index. Don't tweak
+        this value unless you know what you're doing.
+
+    n_iters: int (optional, default=10)
+        The maximum number of NN-descent iterations to perform. The
+        NN-descent algorithm can abort early if limited progress is being
+        made, so this only controls the worst case. Don't tweak
+        this value unless you know what you're doing.
+
+    delta: float (optional, default=0.001)
+        Controls the early abort due to limited progress. Larger values
+        will result in earlier aborts, providing less accurate indexes,
+        and less accurate searching. Don't tweak this value unless you know
+        what you're doing.
+
+    rho: float (optional, default=0.5)
+        Controls the random sampling of potential candidates in any given
+        iteration of NN-descent. Larger values will result in less accurate
+        indexes and less accurate searching. Don't tweak this value unless
+        you know what you're doing.
+        
+    Examples
+    --------
+    >>> from sklearn.manifold import Isomap
+    >>> from pynndescent import PyNNDescentTransformer
+    >>> from sklearn.pipeline import make_pipeline
+    >>> estimator = make_pipeline(
+    ...     PyNNDescentTransformer(n_neighbors=5),
+    ...     Isomap(neighbors_algorithm='precomputed'))
+    """
 
     def __init__(self,
                  n_neighbors=5,
@@ -648,6 +763,19 @@ class PyNNDescentTransformer (BaseEstimator, TransformerMixin):
         self.sampling_rate = sampling_rate
 
     def fit(self, X):
+        """Fit the PyNNDescent transformer to build KNN graphs with
+        neighbors given by the dataset X.
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Sample data
+
+        Returns
+        -------
+        transformer : PyNNDescentTransformer
+            The trained transformer
+        """
         self.n_samples_fit = X.shape[0]
 
         if self.metric_kwds is None:
@@ -675,6 +803,20 @@ class PyNNDescentTransformer (BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X, y=None):
+        """Computes the (weighted) graph of Neighbors for points in X
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples_transform, n_features)
+            Sample data
+
+        Returns
+        -------
+        Xt : CSR sparse matrix, shape (n_samples_fit, n_samples_transform)
+            Xt[i, j] is assigned the weight of edge that connects i to j.
+            Only the neighbors have an explicit value.
+        """
+
         if X is None:
             n_samples_transform = self.n_samples_fit
         else:
@@ -698,4 +840,23 @@ class PyNNDescentTransformer (BaseEstimator, TransformerMixin):
         return result.tocsr()
 
     def fit_transform(self, X, y=None, **fit_params):
+        """Fit to data, then transform it.
+
+        Fits transformer to X and y with optional parameters fit_params
+        and returns a transformed version of X.
+
+        Parameters
+        ----------
+        X : numpy array of shape (n_samples, n_features)
+            Training set.
+
+        y : ignored
+
+        Returns
+        -------
+        Xt : CSR sparse matrix, shape (n_samples, n_samples)
+            Xt[i, j] is assigned the weight of edge that connects i to j.
+            Only the neighbors have an explicit value.
+            The diagonal is always explicit.
+        """
         return self.fit(X).transform(X=None)
