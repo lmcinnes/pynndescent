@@ -43,6 +43,7 @@ with no platform or compilation issues, and very flexible, supporting a wide var
 distance metrics by default:
 
 **Minkowski style metrics**
+
 - euclidean
 - manhattan
 - chebyshev
@@ -55,15 +56,18 @@ distance metrics by default:
 - haversine
 
 **Normalized spatial metrics**
+
 - mahalanobis
 - wminkowski
 - seuclidean
 
 **Angular and correlation metrics**
+
 - cosine
 - correlation
 
 **Metrics for binary data**
+
 - hamming
 - jaccard
 - dice
