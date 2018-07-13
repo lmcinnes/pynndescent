@@ -6,7 +6,7 @@ def readme():
 
 configuration = {
     'name' : 'pynndescent',
-    'version': '0.2.0',
+    'version': '0.2.1',
     'description' : 'Nearest Neighbor Descent',
     'long_description' : readme(),
     'classifiers' : [
@@ -32,7 +32,7 @@ configuration = {
     'license' : 'BSD',
     'packages' : ['pynndescent'],
     'install_requires' : ['scikit-learn >= 0.18',
-                          'scipy >= 0.19',
+                          'scipy >= 1.0',
                           'numba >= 0.37'],
     'ext_modules' : [],
     'cmdclass' : {},
