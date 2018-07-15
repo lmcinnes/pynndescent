@@ -1,1 +1,1 @@
-from .pynndescent_ import NNDescent
+from .pynndescent_ import NNDescent, PyNNDescentTransformer
