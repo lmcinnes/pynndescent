@@ -6,7 +6,7 @@ def readme():
 
 configuration = {
     'name' : 'pynndescent',
-    'version': '0.2.1',
+    'version': '0.3.0',
     'description' : 'Nearest Neighbor Descent',
     'long_description' : readme(),
     'classifiers' : [
@@ -33,7 +33,7 @@ configuration = {
     'packages' : ['pynndescent'],
     'install_requires' : ['scikit-learn >= 0.18',
                           'scipy >= 1.0',
-                          'numba >= 0.37'],
+                          'numba >= 0.39'],
     'ext_modules' : [],
     'cmdclass' : {},
     'test_suite' : 'nose.collector',

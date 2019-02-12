@@ -104,133 +104,25 @@ def make_initialized_nnd_search(dist, dist_args):
     return initialized_nnd_search
 
 
-def make_nn_descent(dist, dist_args):
-    """Create a numba accelerated version of nearest neighbor descent
-    specialised for the given distance metric and metric arguments. Numba
-    doesn't support higher order functions directly, but we can instead JIT
-    compile the version of NN-descent for any given metric.
 
-    Parameters
-    ----------
-    dist: function
-        A numba JITd distance function which, given two arrays computes a
-        dissimilarity between them.
+@numba.njit(fastmath=True)
+def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
+               dist=dist.euclidean, dist_args=(),
+               n_iters=10, delta=0.001, rho=0.5,
+               rp_tree_init=True, leaf_array=None, verbose=False):
+    n_vertices = data.shape[0]
 
-    dist_args: tuple
-        Any extra arguments that need to be passed to the distance function
-        beyond the two arrays to be compared.
+    current_graph = make_heap(data.shape[0], n_neighbors)
+    for i in range(data.shape[0]):
+        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
+        for j in range(indices.shape[0]):
+            d = dist(data[i], data[indices[j]], *dist_args)
+            heap_push(current_graph, i, d, indices[j], 1)
+            heap_push(current_graph, indices[j], d, i, 1)
 
-    Returns
-    -------
-    A numba JITd function for nearest neighbor descent computation that is
-    specialised to the given metric.
-    """
-
-    @numba.njit(fastmath=True)
-    def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
-                   n_iters=10, delta=0.001, rho=0.5,
-                   rp_tree_init=True, leaf_array=None, verbose=False):
-        n_vertices = data.shape[0]
-
-        current_graph = make_heap(data.shape[0], n_neighbors)
-        for i in range(data.shape[0]):
-            indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-            for j in range(indices.shape[0]):
-                d = dist(data[i], data[indices[j]], *dist_args)
-                heap_push(current_graph, i, d, indices[j], 1)
-                heap_push(current_graph, indices[j], d, i, 1)
-
-        if rp_tree_init:
-            for n in range(leaf_array.shape[0]):
-                tried = set([(-1, -1)])
-                for i in range(leaf_array.shape[1]):
-                    if leaf_array[n, i] < 0:
-                        break
-                    for j in range(i + 1, leaf_array.shape[1]):
-                        if leaf_array[n, j] < 0:
-                            break
-                        if (leaf_array[n, i], leaf_array[n, j]) in tried:
-                            continue
-                        d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]],
-                                 *dist_args)
-                        heap_push(current_graph, leaf_array[n, i], d,
-                                  leaf_array[n, j],
-                                  1)
-                        heap_push(current_graph, leaf_array[n, j], d,
-                                  leaf_array[n, i],
-                                  1)
-                        tried.add((leaf_array[n, i], leaf_array[n, j]))
-
-        for n in range(n_iters):
-
-            (new_candidate_neighbors,
-             old_candidate_neighbors) = build_candidates(current_graph,
-                                                         n_vertices,
-                                                         n_neighbors,
-                                                         max_candidates,
-                                                         rng_state, rho)
-
-            c = 0
-            for i in range(n_vertices):
-                for j in range(max_candidates):
-                    p = int(new_candidate_neighbors[0, i, j])
-                    if p < 0:
-                        continue
-                    for k in range(j, max_candidates):
-                        q = int(new_candidate_neighbors[0, i, k])
-                        if q < 0:
-                            continue
-
-                        d = dist(data[p], data[q], *dist_args)
-                        c += heap_push(current_graph, p, d, q, 1)
-                        c += heap_push(current_graph, q, d, p, 1)
-
-                    for k in range(max_candidates):
-                        q = int(old_candidate_neighbors[0, i, k])
-                        if q < 0:
-                            continue
-
-                        d = dist(data[p], data[q], *dist_args)
-                        c += heap_push(current_graph, p, d, q, 1)
-                        c += heap_push(current_graph, q, d, p, 1)
-
-
-            if c <= delta * n_neighbors * data.shape[0]:
-                break
-
-        return deheap_sort(current_graph)
-
-    return nn_descent
-
-def make_heap_initializer(dist, dist_args):
-    """Create a numba accelerated version of heap initialization for the
-    alternative k-neighbor graph algorithm. This approach builds two heaps
-    of neighbors simultaneously, one is a heap used to construct a very
-    approximate k-neighbor graph for searching; the other is the
-    initialization for searching.
-
-    Parameters
-    ----------
-    dist: function
-        A numba JITd distance function which, given two arrays computes a
-        dissimilarity between them.
-
-    dist_args: tuple
-        Any extra arguments that need to be passed to the distance function
-        beyond the two arrays to be compared.
-
-    Returns
-    -------
-    A numba JITd function for for heap initialization that is
-    specialised to the given metric.
-    """
-
-    @numba.njit(parallel=True)
-    def initialize_heaps(data, n_neighbors, leaf_array):
-        graph_heap = make_heap(data.shape[0], 10)
-        search_heap = make_heap(data.shape[0], n_neighbors * 2)
-        tried = set([(-1, -1)])
+    if rp_tree_init:
         for n in range(leaf_array.shape[0]):
+            tried = set([(-1, -1)])
             for i in range(leaf_array.shape[1]):
                 if leaf_array[n, i] < 0:
                     break
@@ -239,22 +131,87 @@ def make_heap_initializer(dist, dist_args):
                         break
                     if (leaf_array[n, i], leaf_array[n, j]) in tried:
                         continue
-
                     d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]],
                              *dist_args)
-                    unchecked_heap_push(graph_heap, leaf_array[n, i], d,
-                              leaf_array[n, j], 1)
-                    unchecked_heap_push(graph_heap, leaf_array[n, j], d,
-                              leaf_array[n, i], 1)
-                    unchecked_heap_push(search_heap, leaf_array[n, i], d,
-                                        leaf_array[n, j], 1)
-                    unchecked_heap_push(search_heap, leaf_array[n, j], d,
-                                        leaf_array[n, i], 1)
+                    heap_push(current_graph, leaf_array[n, i], d,
+                              leaf_array[n, j],
+                              1)
+                    heap_push(current_graph, leaf_array[n, j], d,
+                              leaf_array[n, i],
+                              1)
                     tried.add((leaf_array[n, i], leaf_array[n, j]))
+                    tried.add((leaf_array[n, j], leaf_array[n, i]))
 
-        return graph_heap, search_heap
+    for n in range(n_iters):
 
-    return initialize_heaps
+        (new_candidate_neighbors,
+         old_candidate_neighbors) = build_candidates(current_graph,
+                                                     n_vertices,
+                                                     n_neighbors,
+                                                     max_candidates,
+                                                     rng_state, rho)
+
+        c = 0
+        for i in range(n_vertices):
+            for j in range(max_candidates):
+                p = int(new_candidate_neighbors[0, i, j])
+                if p < 0:
+                    continue
+                for k in range(j, max_candidates):
+                    q = int(new_candidate_neighbors[0, i, k])
+                    if q < 0:
+                        continue
+
+                    d = dist(data[p], data[q], *dist_args)
+                    c += heap_push(current_graph, p, d, q, 1)
+                    c += heap_push(current_graph, q, d, p, 1)
+
+                for k in range(max_candidates):
+                    q = int(old_candidate_neighbors[0, i, k])
+                    if q < 0:
+                        continue
+
+                    d = dist(data[p], data[q], *dist_args)
+                    c += heap_push(current_graph, p, d, q, 1)
+                    c += heap_push(current_graph, q, d, p, 1)
+
+
+        if c <= delta * n_neighbors * data.shape[0]:
+            break
+
+    return deheap_sort(current_graph)
+
+
+@numba.njit(parallel=True)
+def initialize_heaps(data, n_neighbors, leaf_array,
+                     dist=dist.euclidean, dist_args=()):
+    graph_heap = make_heap(data.shape[0], 10)
+    search_heap = make_heap(data.shape[0], n_neighbors * 2)
+    tried = set([(-1, -1)])
+    for n in range(leaf_array.shape[0]):
+        for i in range(leaf_array.shape[1]):
+            if leaf_array[n, i] < 0:
+                break
+            for j in range(i + 1, leaf_array.shape[1]):
+                if leaf_array[n, j] < 0:
+                    break
+                if (leaf_array[n, i], leaf_array[n, j]) in tried:
+                    continue
+
+                d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]],
+                         *dist_args)
+                unchecked_heap_push(graph_heap, leaf_array[n, i], d,
+                          leaf_array[n, j], 1)
+                unchecked_heap_push(graph_heap, leaf_array[n, j], d,
+                          leaf_array[n, i], 1)
+                unchecked_heap_push(search_heap, leaf_array[n, i], d,
+                                    leaf_array[n, j], 1)
+                unchecked_heap_push(search_heap, leaf_array[n, j], d,
+                                    leaf_array[n, i], 1)
+                tried.add((leaf_array[n, i], leaf_array[n, j]))
+                tried.add((leaf_array[n, j], leaf_array[n, i]))
+
+    return graph_heap, search_heap
 
 
 def degree_prune(graph, max_degree=20):
@@ -517,11 +474,12 @@ class NNDescent(object):
             leaf_array = np.array([[-1]])
 
         if algorithm == 'standard' or leaf_array.shape[0] == 1:
-            nn_descent = make_nn_descent(self._distance_func, self._dist_args)
             self._neighbor_graph = nn_descent(self._raw_data,
                                               self.n_neighbors,
                                               self.rng_state,
                                               self.max_candidates,
+                                              self._distance_func,
+                                              self._dist_args,
                                               self.n_iters,
                                               self.delta,
                                               self.rho,
@@ -531,11 +489,11 @@ class NNDescent(object):
             self._search = make_initialized_nnd_search(self._distance_func,
                                                        self._dist_args)
 
-            init_heaps = make_heap_initializer(self._distance_func,
-                                               self._dist_args)
-            graph_heap, search_heap = init_heaps(self._raw_data,
-                                                 self.n_neighbors,
-                                                 leaf_array)
+            graph_heap, search_heap = initialize_heaps(self._raw_data,
+                                                       self.n_neighbors,
+                                                       leaf_array,
+                                                       self._distance_func,
+                                                       self._dist_args)
             graph = lil_matrix((data.shape[0], data.shape[0]))
             graph.rows, graph.data = deheap_sort(graph_heap)
             graph = graph.maximum(graph.transpose())
