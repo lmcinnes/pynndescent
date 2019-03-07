@@ -12,6 +12,7 @@ from scipy.sparse.csgraph import minimum_spanning_tree
 import pynndescent.distances as dist
 
 from pynndescent.utils import (rejection_sample,
+                               seed,
                                tau_rand,
                                make_heap,
                                heap_push,
@@ -104,16 +105,30 @@ def make_initialized_nnd_search(dist, dist_args):
     return initialized_nnd_search
 
 
+def init_current_graph(data, dist, dist_args, n_neighbors, rng_state, seed_per_row=False):
+    current_graph = make_heap(data.shape[0], n_neighbors)
+    for i in range(data.shape[0]):
+        if seed_per_row:
+            seed(rng_state, i)
+        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
+        for j in range(indices.shape[0]):
+            d = dist(data[i], data[indices[j]], *dist_args)
+            heap_push(current_graph, i, d, indices[j], 1)
+            heap_push(current_graph, indices[j], d, i, 1)
+    return current_graph
+
 
 @numba.njit(fastmath=True)
 def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
                dist=dist.euclidean, dist_args=(),
                n_iters=10, delta=0.001, rho=0.5,
-               rp_tree_init=True, leaf_array=None, verbose=False):
+               rp_tree_init=True, leaf_array=None, verbose=False, seed_per_row=False):
     n_vertices = data.shape[0]
 
     current_graph = make_heap(data.shape[0], n_neighbors)
     for i in range(data.shape[0]):
+        if seed_per_row:
+            seed(rng_state, i)
         indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
         for j in range(indices.shape[0]):
             d = dist(data[i], data[indices[j]], *dist_args)
@@ -149,7 +164,7 @@ def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
                                                      n_vertices,
                                                      n_neighbors,
                                                      max_candidates,
-                                                     rng_state, rho)
+                                                     rng_state, rho, seed_per_row)
 
         c = 0
         for i in range(n_vertices):
