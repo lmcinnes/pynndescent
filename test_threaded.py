@@ -6,6 +6,7 @@ from sklearn.neighbors import NearestNeighbors
 
 from pynndescent import distances
 from pynndescent import pynndescent_
+from pynndescent import NNDescent
 from pynndescent import threaded
 from pynndescent import utils
 
@@ -82,33 +83,27 @@ def test_build_candidates():
 
 
 def test_nn_descent():
-    nn_indices, nn_distances = pynndescent_.nn_descent(
+    nn_indices, nn_distances = NNDescent(
         data,
         n_neighbors=n_neighbors,
-        rng_state=new_rng_state(),
         max_candidates=max_candidates,
-        dist=dist,
-        dist_args=dist_args,
         n_iters=2,
         delta=0,
-        rp_tree_init=False,
-        leaf_array=np.array([[-1]]),
+        tree_init=False,
         seed_per_row=True
-    )
+    )._neighbor_graph
 
-    nn_indices_threaded, nn_distances_threaded = threaded.nn_descent(
+    nn_indices_threaded, nn_distances_threaded = NNDescent(
         data,
         n_neighbors=n_neighbors,
-        rng_state=new_rng_state(),
-        chunk_size=chunk_size,
         max_candidates=max_candidates,
-        dist=dist,
-        dist_args=dist_args,
         n_iters=2,
         delta=0,
-        rp_tree_init=False,
-        seed_per_row=True
-    )
+        tree_init=False,
+        seed_per_row=True,
+        algorithm='threaded',
+        chunk_size=chunk_size
+    )._neighbor_graph
 
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='brute').fit(data)
     _, nn_gold_indices = nbrs.kneighbors(data)
