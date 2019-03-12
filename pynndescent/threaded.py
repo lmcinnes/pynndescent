@@ -3,6 +3,8 @@ import math
 import numba
 import numpy as np
 
+import pynndescent.distances as dst
+
 from pynndescent.utils import (
     heap_push,
     make_heap,
@@ -423,112 +425,111 @@ def deheap_sort_map_jit(rows, heap):
                      ind_heap[:ind_heap.shape[0] - j - 1], 0)
 
 
-def make_nn_descent(dist, dist_args):
-    def nn_descent(
-        data,
-        n_neighbors,
-        rng_state,
-        chunk_size,
-        max_candidates=50,
-        n_iters=10,
-        delta=0.001,
-        rho=0.5,
-        rp_tree_init=False,
-        leaf_array=None,
-        verbose=False,
-        threads=2,
-        seed_per_row=False
-    ):
+def nn_descent(
+    data,
+    n_neighbors,
+    rng_state,
+    chunk_size,
+    max_candidates=50,
+    dist=dst.euclidean,
+    dist_args=(),
+    n_iters=10,
+    delta=0.001,
+    rho=0.5,
+    rp_tree_init=False,
+    leaf_array=None,
+    verbose=False,
+    threads=2,
+    seed_per_row=False
+):
 
-        if rng_state is None:
-            rng_state = new_rng_state()
+    if rng_state is None:
+        rng_state = new_rng_state()
 
-        n_vertices = data.shape[0]
-        n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
+    n_vertices = data.shape[0]
+    n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
 
-        current_graph = init_current_graph(
-            data, dist, dist_args, n_neighbors, chunk_size, rng_state, threads, seed_per_row=seed_per_row
+    current_graph = init_current_graph(
+        data, dist, dist_args, n_neighbors, chunk_size, rng_state, threads, seed_per_row=seed_per_row
+    )
+
+    # store the updates in an array
+    # note that the factor here is `n_neighbors * n_neighbors`, not `max_candidates * max_candidates`
+    # since no more than `n_neighbors` candidates are added for each row
+    max_heap_update_count = chunk_size * n_neighbors * n_neighbors * 4
+    heap_updates = np.zeros((n_tasks, max_heap_update_count, 4))
+    heap_update_counts = np.zeros((n_tasks,), dtype=int)
+
+    nn_descent_map_jit = make_nn_descent_map_jit(dist, dist_args)
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
+
+    for n in range(n_iters):
+        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
+            current_graph,
+            n_vertices,
+            n_neighbors,
+            max_candidates,
+            chunk_size,
+            rng_state,
+            rho,
+            threads,
+            seed_per_row=seed_per_row
         )
 
-        # store the updates in an array
-        # note that the factor here is `n_neighbors * n_neighbors`, not `max_candidates * max_candidates`
-        # since no more than `n_neighbors` candidates are added for each row
-        max_heap_update_count = chunk_size * n_neighbors * n_neighbors * 4
-        heap_updates = np.zeros((n_tasks, max_heap_update_count, 4))
-        heap_update_counts = np.zeros((n_tasks,), dtype=int)
-
-        nn_descent_map_jit = make_nn_descent_map_jit(dist, dist_args)
-
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
-
-        for n in range(n_iters):
-            (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
-                current_graph,
-                n_vertices,
-                n_neighbors,
-                max_candidates,
-                chunk_size,
-                rng_state,
-                rho,
-                threads,
-                seed_per_row=seed_per_row
+        def nn_descent_map(index):
+            rows = chunk_rows(chunk_size, index, n_vertices)
+            return (
+                index,
+                nn_descent_map_jit(
+                    rows,
+                    max_candidates,
+                    data,
+                    new_candidate_neighbors,
+                    old_candidate_neighbors,
+                    heap_updates[index],
+                    offset=0,
+                ),
             )
 
-            def nn_descent_map(index):
-                rows = chunk_rows(chunk_size, index, n_vertices)
-                return (
-                    index,
-                    nn_descent_map_jit(
-                        rows,
-                        max_candidates,
-                        data,
-                        new_candidate_neighbors,
-                        old_candidate_neighbors,
-                        heap_updates[index],
-                        offset=0,
-                    ),
-                )
+        def nn_decent_reduce(index):
+            return nn_decent_reduce_jit(
+                n_tasks, current_graph, heap_updates, offsets, index
+            )
 
-            def nn_decent_reduce(index):
-                return nn_decent_reduce_jit(
-                    n_tasks, current_graph, heap_updates, offsets, index
-                )
+        # run map functions
+        for index, count in executor.map(nn_descent_map, range(n_tasks)):
+            heap_update_counts[index] = count
 
-            # run map functions
-            for index, count in executor.map(nn_descent_map, range(n_tasks)):
-                heap_update_counts[index] = count
+        # sort and chunk heap updates so they can be applied in the reduce
+        max_count = heap_update_counts.max()
+        offsets = np.zeros((n_tasks, max_count), dtype=int)
 
-            # sort and chunk heap updates so they can be applied in the reduce
-            max_count = heap_update_counts.max()
-            offsets = np.zeros((n_tasks, max_count), dtype=int)
+        def shuffle(index):
+            return shuffle_jit(
+                heap_updates,
+                heap_update_counts,
+                offsets,
+                chunk_size,
+                n_vertices,
+                index,
+            )
 
-            def shuffle(index):
-                return shuffle_jit(
-                    heap_updates,
-                    heap_update_counts,
-                    offsets,
-                    chunk_size,
-                    n_vertices,
-                    index,
-                )
-
-            for _ in executor.map(shuffle, range(n_tasks)):
-                pass
-
-            # then run reduce functions
-            c = 0
-            for c_part in executor.map(nn_decent_reduce, range(n_tasks)):
-                c += c_part
-
-            if c <= delta * n_neighbors * data.shape[0]:
-                break
-
-        def deheap_sort_map(index):
-            rows = chunk_rows(chunk_size, index, n_vertices)
-            return index, deheap_sort_map_jit(rows, current_graph)
-
-        for _ in executor.map(deheap_sort_map, range(n_tasks)):
+        for _ in executor.map(shuffle, range(n_tasks)):
             pass
-        return current_graph[0].astype(np.int64), current_graph[1]
 
-    return nn_descent
+        # then run reduce functions
+        c = 0
+        for c_part in executor.map(nn_decent_reduce, range(n_tasks)):
+            c += c_part
+
+        if c <= delta * n_neighbors * data.shape[0]:
+            break
+
+    def deheap_sort_map(index):
+        rows = chunk_rows(chunk_size, index, n_vertices)
+        return index, deheap_sort_map_jit(rows, current_graph)
+
+    for _ in executor.map(deheap_sort_map, range(n_tasks)):
+        pass
+    return current_graph[0].astype(np.int64), current_graph[1]

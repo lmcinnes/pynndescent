@@ -96,13 +96,14 @@ def test_nn_descent():
         seed_per_row=True
     )
 
-    nn_descent_threaded = threaded.make_nn_descent(dist, dist_args)
-    nn_indices_threaded, nn_distances_threaded = nn_descent_threaded(
+    nn_indices_threaded, nn_distances_threaded = threaded.nn_descent(
         data,
         n_neighbors=n_neighbors,
         rng_state=new_rng_state(),
         chunk_size=chunk_size,
         max_candidates=max_candidates,
+        dist=dist,
+        dist_args=dist_args,
         n_iters=2,
         delta=0,
         rp_tree_init=False,
