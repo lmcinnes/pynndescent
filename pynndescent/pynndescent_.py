@@ -10,8 +10,10 @@ from scipy.sparse import lil_matrix
 from scipy.sparse.csgraph import minimum_spanning_tree
 
 import pynndescent.distances as dist
+import pynndescent.threaded as threaded
 
 from pynndescent.utils import (rejection_sample,
+                               seed,
                                tau_rand,
                                make_heap,
                                heap_push,
@@ -104,16 +106,30 @@ def make_initialized_nnd_search(dist, dist_args):
     return initialized_nnd_search
 
 
+def init_current_graph(data, dist, dist_args, n_neighbors, rng_state, seed_per_row=False):
+    current_graph = make_heap(data.shape[0], n_neighbors)
+    for i in range(data.shape[0]):
+        if seed_per_row:
+            seed(rng_state, i)
+        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
+        for j in range(indices.shape[0]):
+            d = dist(data[i], data[indices[j]], *dist_args)
+            heap_push(current_graph, i, d, indices[j], 1)
+            heap_push(current_graph, indices[j], d, i, 1)
+    return current_graph
+
 
 @numba.njit(fastmath=True)
 def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
                dist=dist.euclidean, dist_args=(),
                n_iters=10, delta=0.001, rho=0.5,
-               rp_tree_init=True, leaf_array=None, verbose=False):
+               rp_tree_init=True, leaf_array=None, verbose=False, seed_per_row=False):
     n_vertices = data.shape[0]
 
     current_graph = make_heap(data.shape[0], n_neighbors)
     for i in range(data.shape[0]):
+        if seed_per_row:
+            seed(rng_state, i)
         indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
         for j in range(indices.shape[0]):
             d = dist(data[i], data[indices[j]], *dist_args)
@@ -149,7 +165,7 @@ def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
                                                      n_vertices,
                                                      n_neighbors,
                                                      max_candidates,
-                                                     rng_state, rho)
+                                                     rng_state, rho, seed_per_row)
 
         c = 0
         for i in range(n_vertices):
@@ -408,7 +424,10 @@ class NNDescent(object):
                  max_candidates=20,
                  n_iters=10,
                  delta=0.001,
-                 rho=0.5):
+                 rho=0.5,
+                 chunk_size=None,
+                 threads=2,
+                 seed_per_row=False):
 
         self.n_trees = n_trees
         self.n_neighbors = n_neighbors
@@ -473,7 +492,22 @@ class NNDescent(object):
             self._rp_forest = None
             leaf_array = np.array([[-1]])
 
-        if algorithm == 'standard' or leaf_array.shape[0] == 1:
+        if algorithm == 'threaded':
+            self._neighbor_graph = threaded.nn_descent(self._raw_data,
+                                                       self.n_neighbors,
+                                                       self.rng_state,
+                                                       chunk_size,
+                                                       self.max_candidates,
+                                                       self._distance_func,
+                                                       self._dist_args,
+                                                       self.n_iters,
+                                                       self.delta,
+                                                       self.rho,
+                                                       True,
+                                                       leaf_array,
+                                                       threads=threads,
+                                                       seed_per_row=seed_per_row)
+        elif algorithm == 'standard' or leaf_array.shape[0] == 1:
             self._neighbor_graph = nn_descent(self._raw_data,
                                               self.n_neighbors,
                                               self.rng_state,
@@ -484,7 +518,8 @@ class NNDescent(object):
                                               self.delta,
                                               self.rho,
                                               True,
-                                              leaf_array)
+                                              leaf_array,
+                                              seed_per_row=seed_per_row)
         elif algorithm == 'alternative':
             self._search = make_initialized_nnd_search(self._distance_func,
                                                        self._dist_args)

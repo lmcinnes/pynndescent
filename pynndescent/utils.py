@@ -5,6 +5,11 @@
 import numba
 import numpy as np
 
+@numba.njit('void(i8[:], i8)')
+def seed(rng_state, seed):
+    """Seed the random number generator with a given seed."""
+    rng_state.fill(seed + 0xffff)
+
 
 @numba.njit('i4(i8[:])')
 def tau_rand_int(state):
@@ -374,7 +379,7 @@ def smallest_flagged(heap, row):
 
 @numba.njit(parallel=True)
 def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
-                     rng_state, rho=0.5):
+                     rng_state, rho=0.5, seed_per_row=False):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
     vertices that have the vertex as one of their nearest neighbors.
@@ -404,7 +409,9 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
     new_candidate_neighbors = make_heap(n_vertices, max_candidates)
     old_candidate_neighbors = make_heap(n_vertices, max_candidates)
 
-    for i in numba.prange(n_vertices):
+    for i in range(n_vertices):
+        if seed_per_row:
+            seed(rng_state, i)
         for j in range(n_neighbors):
             if current_graph[0, i, j] < 0:
                 continue
