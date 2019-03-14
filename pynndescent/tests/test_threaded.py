@@ -10,6 +10,8 @@ from pynndescent import NNDescent
 from pynndescent import threaded
 from pynndescent import utils
 
+from pynndescent.rp_trees import make_forest, rptree_leaf_array
+
 data = np.array(
     [[-1, -1], [-2, -1], [-3, -2], [1, 1], [2, 1], [3, 2]], dtype=np.float32
 )
@@ -19,18 +21,6 @@ max_candidates = 8
 
 dist = distances.named_distances["euclidean"]
 dist_args = ()
-
-# np.random.seed(42)
-#
-# N = 100000
-# D = 128
-# dataset = np.random.rand(N, D).astype(np.float32)
-#
-# chunk_size = 4000//8
-# n_neighbors = 25
-# max_candidates = 50
-#
-# data = dataset[:4000].astype(np.float32)
 
 # In all tests, set seed_per_row=True so that we can comapre the regular
 # algorithm against the threded algorithm.
@@ -60,6 +50,43 @@ def test_init_current_graph():
         chunk_size=chunk_size,
         rng_state=new_rng_state(),
         seed_per_row=True,
+    )
+
+    assert_allclose(current_graph_threaded, current_graph)
+
+
+def test_init_rp_tree():
+
+    # Use more data than the other tests since otherwise init_rp_tree has nothing to do
+    np.random.seed(42)
+    N = 100
+    D = 128
+    chunk_size = N // 8
+    n_neighbors = 25
+    data = np.random.rand(N, D).astype(np.float32)
+
+    rng_state = new_rng_state()
+    current_graph = pynndescent_.init_current_graph(
+        data, dist, dist_args, n_neighbors, rng_state=rng_state, seed_per_row=True
+    )
+    _rp_forest = make_forest(data, n_neighbors, n_trees=8, rng_state=rng_state)
+    leaf_array = rptree_leaf_array(_rp_forest)
+    pynndescent_.init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
+
+    rng_state = new_rng_state()
+    current_graph_threaded = pynndescent_.init_current_graph(
+        data, dist, dist_args, n_neighbors, rng_state=rng_state, seed_per_row=True
+    )
+    _rp_forest = make_forest(data, n_neighbors, n_trees=8, rng_state=rng_state)
+    leaf_array = rptree_leaf_array(_rp_forest)
+    threaded.init_rp_tree(
+        data,
+        dist,
+        dist_args,
+        current_graph_threaded,
+        leaf_array,
+        n_neighbors,
+        chunk_size,
     )
 
     assert_allclose(current_graph_threaded, current_graph)

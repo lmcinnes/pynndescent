@@ -443,7 +443,6 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     return indices_left, indices_right, hyperplane, hyperplane_offset
 
 
-@numba.jit()
 def make_euclidean_tree(data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = euclidean_random_projection_split(
@@ -462,7 +461,6 @@ def make_euclidean_tree(data, indices, rng_state, leaf_size=30):
     return node
 
 
-@numba.jit()
 def make_angular_tree(data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = angular_random_projection_split(
@@ -481,7 +479,6 @@ def make_angular_tree(data, indices, rng_state, leaf_size=30):
     return node
 
 
-@numba.jit()
 def make_sparse_euclidean_tree(inds, indptr, data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = sparse_euclidean_random_projection_split(
@@ -504,7 +501,6 @@ def make_sparse_euclidean_tree(inds, indptr, data, indices, rng_state, leaf_size
     return node
 
 
-@numba.jit()
 def make_sparse_angular_tree(inds, indptr, data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = sparse_angular_random_projection_split(

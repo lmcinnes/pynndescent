@@ -126,6 +126,25 @@ def init_current_graph(
 
 
 @numba.njit(fastmath=True)
+def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
+    for n in range(leaf_array.shape[0]):
+        tried = set([(-1, -1)])
+        for i in range(leaf_array.shape[1]):
+            if leaf_array[n, i] < 0:
+                break
+            for j in range(i + 1, leaf_array.shape[1]):
+                if leaf_array[n, j] < 0:
+                    break
+                if (leaf_array[n, i], leaf_array[n, j]) in tried:
+                    continue
+                d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]], *dist_args)
+                heap_push(current_graph, leaf_array[n, i], d, leaf_array[n, j], 1)
+                heap_push(current_graph, leaf_array[n, j], d, leaf_array[n, i], 1)
+                tried.add((leaf_array[n, i], leaf_array[n, j]))
+                tried.add((leaf_array[n, j], leaf_array[n, i]))
+
+
+@numba.njit(fastmath=True)
 def nn_descent(
     data,
     n_neighbors,
@@ -154,21 +173,7 @@ def nn_descent(
             heap_push(current_graph, indices[j], d, i, 1)
 
     if rp_tree_init:
-        for n in range(leaf_array.shape[0]):
-            tried = set([(-1, -1)])
-            for i in range(leaf_array.shape[1]):
-                if leaf_array[n, i] < 0:
-                    break
-                for j in range(i + 1, leaf_array.shape[1]):
-                    if leaf_array[n, j] < 0:
-                        break
-                    if (leaf_array[n, i], leaf_array[n, j]) in tried:
-                        continue
-                    d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]], *dist_args)
-                    heap_push(current_graph, leaf_array[n, i], d, leaf_array[n, j], 1)
-                    heap_push(current_graph, leaf_array[n, j], d, leaf_array[n, i], 1)
-                    tried.add((leaf_array[n, i], leaf_array[n, j]))
-                    tried.add((leaf_array[n, j], leaf_array[n, i]))
+        init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
 
     for n in range(n_iters):
 
@@ -516,7 +521,7 @@ class NNDescent(object):
                 self.n_iters,
                 self.delta,
                 self.rho,
-                rp_tree_init=True,
+                rp_tree_init=self.tree_init,
                 leaf_array=leaf_array,
                 verbose=False,
                 threads=threads,
