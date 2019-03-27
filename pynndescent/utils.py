@@ -5,13 +5,14 @@
 import numba
 import numpy as np
 
-@numba.njit('void(i8[:], i8)')
+
+@numba.njit("void(i8[:], i8)")
 def seed(rng_state, seed):
     """Seed the random number generator with a given seed."""
-    rng_state.fill(seed + 0xffff)
+    rng_state.fill(seed + 0xFFFF)
 
 
-@numba.njit('i4(i8[:])')
+@numba.njit("i4(i8[:])")
 def tau_rand_int(state):
     """A fast (pseudo)-random number generator.
 
@@ -24,17 +25,20 @@ def tau_rand_int(state):
     -------
     A (pseudo)-random int32 value
     """
-    state[0] = (((state[0] & 4294967294) << 12) & 0xffffffff) ^ \
-               ((((state[0] << 13) & 0xffffffff) ^ state[0]) >> 19)
-    state[1] = (((state[1] & 4294967288) << 4) & 0xffffffff) ^ \
-               ((((state[1] << 2) & 0xffffffff) ^ state[1]) >> 25)
-    state[2] = (((state[2] & 4294967280) << 17) & 0xffffffff) ^ \
-               ((((state[2] << 3) & 0xffffffff) ^ state[2]) >> 11)
+    state[0] = (((state[0] & 4294967294) << 12) & 0xFFFFFFFF) ^ (
+        (((state[0] << 13) & 0xFFFFFFFF) ^ state[0]) >> 19
+    )
+    state[1] = (((state[1] & 4294967288) << 4) & 0xFFFFFFFF) ^ (
+        (((state[1] << 2) & 0xFFFFFFFF) ^ state[1]) >> 25
+    )
+    state[2] = (((state[2] & 4294967280) << 17) & 0xFFFFFFFF) ^ (
+        (((state[2] << 3) & 0xFFFFFFFF) ^ state[2]) >> 11
+    )
 
     return state[0] ^ state[1] ^ state[2]
 
 
-@numba.njit('f4(i8[:])')
+@numba.njit("f4(i8[:])")
 def tau_rand(state):
     """A fast (pseudo)-random number generator for floats in the range [0,1]
 
@@ -48,7 +52,7 @@ def tau_rand(state):
     A (pseudo)-random float32 in the interval [0, 1]
     """
     integer = tau_rand_int(state)
-    return abs(float(integer) / 0x7fffffff)
+    return abs(float(integer) / 0x7FFFFFFF)
 
 
 @numba.njit(fastmath=True)
@@ -105,7 +109,7 @@ def rejection_sample(n_samples, pool_size, rng_state):
     return result
 
 
-@numba.njit('f8[:, :, :](i8,i8)')
+@numba.njit("f8[:, :, :](i8,i8)")
 def make_heap(n_points, size):
     """Constructor for the numba enabled heap objects. The heaps are used
     for approximate nearest neighbor search, maintaining a list of potential
@@ -136,7 +140,7 @@ def make_heap(n_points, size):
     return result
 
 
-@numba.jit('i8(f8[:,:,:],i8,f8,i8,i8)')
+@numba.jit("i8(f8[:,:,:],i8,f8,i8,i8)")
 def heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
     for each data point. The ``row`` parameter determines which data point we
@@ -219,7 +223,8 @@ def heap_push(heap, row, weight, index, flag):
 
     return 1
 
-@numba.jit('i8(f8[:,:,:],i8,f8,i8,i8)')
+
+@numba.jit("i8(f8[:,:,:],i8,f8,i8,i8)")
 def unchecked_heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
     for each data point. The ``row`` parameter determines which data point we
@@ -296,6 +301,7 @@ def unchecked_heap_push(heap, row, weight, index, flag):
 
     return 1
 
+
 @numba.njit()
 def siftdown(heap1, heap2, elt):
     """Restore the heap property for a heap with an out of place element
@@ -346,18 +352,25 @@ def deheap_sort(heap):
         dist_heap = weights[i]
 
         for j in range(ind_heap.shape[0] - 1):
-            ind_heap[0], ind_heap[ind_heap.shape[0] - j - 1] = \
-                ind_heap[ind_heap.shape[0] - j - 1], ind_heap[0]
-            dist_heap[0], dist_heap[dist_heap.shape[0] - j - 1] = \
-                dist_heap[dist_heap.shape[0] - j - 1], dist_heap[0]
+            ind_heap[0], ind_heap[ind_heap.shape[0] - j - 1] = (
+                ind_heap[ind_heap.shape[0] - j - 1],
+                ind_heap[0],
+            )
+            dist_heap[0], dist_heap[dist_heap.shape[0] - j - 1] = (
+                dist_heap[dist_heap.shape[0] - j - 1],
+                dist_heap[0],
+            )
 
-            siftdown(dist_heap[:dist_heap.shape[0] - j - 1],
-                     ind_heap[:ind_heap.shape[0] - j - 1], 0)
+            siftdown(
+                dist_heap[: dist_heap.shape[0] - j - 1],
+                ind_heap[: ind_heap.shape[0] - j - 1],
+                0,
+            )
 
     return indices.astype(np.int64), weights
 
 
-@numba.njit('i8(f8[:, :, :],i8)')
+@numba.njit("i8(f8[:, :, :],i8)")
 def smallest_flagged(heap, row):
     """Search the heap for the smallest element that is
     still flagged.
@@ -397,8 +410,15 @@ def smallest_flagged(heap, row):
 
 
 @numba.njit(parallel=True)
-def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
-                     rng_state, rho=0.5, seed_per_row=False):
+def build_candidates(
+    current_graph,
+    n_vertices,
+    n_neighbors,
+    max_candidates,
+    rng_state,
+    rho=0.5,
+    seed_per_row=False,
+):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
     vertices that have the vertex as one of their nearest neighbors.
@@ -446,8 +466,7 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates,
                     heap_push(old_candidate_neighbors, i, d, idx, isn)
                     heap_push(old_candidate_neighbors, idx, d, i, isn)
 
-                if c > 0 :
+                if c > 0:
                     current_graph[2, i, j] = 0
 
     return new_candidate_neighbors, old_candidate_neighbors
-
