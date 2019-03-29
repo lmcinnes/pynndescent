@@ -17,101 +17,6 @@ RandomProjectionTreeNode = namedtuple(
 FlatTree = namedtuple("FlatTree", ["hyperplanes", "offsets", "children", "indices"])
 
 
-@numba.njit(fastmath=True, nogil=True, parallel=True)
-def euclidean_random_projection_split(data, indices, rng_state):
-    """Given a set of ``indices`` for data points from ``data``, create
-    a random hyperplane to split the data, returning two arrays indices
-    that fall on either side of the hyperplane. This is the basis for a
-    random projection tree, which simply uses this splitting recursively.
-
-    This particular split uses euclidean distance to determine the hyperplane
-    and which side each data sample falls on.
-
-    Parameters
-    ----------
-    data: array of shape (n_samples, n_features)
-        The original data to be split
-
-    indices: array of shape (tree_node_size,)
-        The indices of the elements in the ``data`` array that are to
-        be split in the current operation.
-
-    rng_state: array of int64, shape (3,)
-        The internal state of the rng
-
-    Returns
-    -------
-    indices_left: array
-        The elements of ``indices`` that fall on the "left" side of the
-        random hyperplane.
-
-    indices_right: array
-        The elements of ``indices`` that fall on the "left" side of the
-        random hyperplane.
-    """
-    dim = data.shape[1]
-
-    # Select two random points, set the hyperplane between them
-    left_index = tau_rand_int(rng_state) % indices.shape[0]
-    right_index = tau_rand_int(rng_state) % indices.shape[0]
-    right_index += left_index == right_index
-    right_index = right_index % indices.shape[0]
-    left = indices[left_index]
-    right = indices[right_index]
-
-    # Compute the normal vector to the hyperplane (the vector between
-    # the two points) and the offset from the origin
-    hyperplane_offset = 0.0
-    hyperplane_vector = np.empty(dim, dtype=np.float32)
-
-    for d in range(dim):
-        hyperplane_vector[d] = data[left, d] - data[right, d]
-        hyperplane_offset -= (
-            hyperplane_vector[d] * (data[left, d] + data[right, d]) / 2.0
-        )
-
-    # For each point compute the margin (project into normal vector, add offset)
-    # If we are on lower side of the hyperplane put in one pile, otherwise
-    # put it in the other pile (if we hit hyperplane on the nose, flip a coin)
-    n_left = 0
-    n_right = 0
-    side = np.empty(indices.shape[0], np.int8)
-    for i in range(indices.shape[0]):
-        margin = hyperplane_offset
-        for d in range(dim):
-            margin += hyperplane_vector[d] * data[indices[i], d]
-
-        if margin == 0:
-            side[i] = tau_rand_int(rng_state) % 2
-            if side[i] == 0:
-                n_left += 1
-            else:
-                n_right += 1
-        elif margin > 0:
-            side[i] = 0
-            n_left += 1
-        else:
-            side[i] = 1
-            n_right += 1
-
-    # Now that we have the counts allocate arrays
-    indices_left = np.empty(n_left, dtype=np.int64)
-    indices_right = np.empty(n_right, dtype=np.int64)
-
-    # Populate the arrays with indices according to which side they fell on
-    n_left = 0
-    n_right = 0
-    for i in range(side.shape[0]):
-        if side[i] == 0:
-            indices_left[n_left] = indices[i]
-            n_left += 1
-        else:
-            indices_right[n_right] = indices[i]
-            n_right += 1
-
-    return indices_left, indices_right, hyperplane_vector, hyperplane_offset
-
-
 @numba.njit()
 def angular_random_projection_split(data, indices, rng_state):
     """Given a set of ``indices`` for data points from ``data``, create
@@ -219,6 +124,101 @@ def angular_random_projection_split(data, indices, rng_state):
             n_right += 1
 
     return indices_left, indices_right, hyperplane_vector, 0
+
+
+@numba.njit(fastmath=True, nogil=True, parallel=True)
+def euclidean_random_projection_split(data, indices, rng_state):
+    """Given a set of ``indices`` for data points from ``data``, create
+    a random hyperplane to split the data, returning two arrays indices
+    that fall on either side of the hyperplane. This is the basis for a
+    random projection tree, which simply uses this splitting recursively.
+
+    This particular split uses euclidean distance to determine the hyperplane
+    and which side each data sample falls on.
+
+    Parameters
+    ----------
+    data: array of shape (n_samples, n_features)
+        The original data to be split
+
+    indices: array of shape (tree_node_size,)
+        The indices of the elements in the ``data`` array that are to
+        be split in the current operation.
+
+    rng_state: array of int64, shape (3,)
+        The internal state of the rng
+
+    Returns
+    -------
+    indices_left: array
+        The elements of ``indices`` that fall on the "left" side of the
+        random hyperplane.
+
+    indices_right: array
+        The elements of ``indices`` that fall on the "left" side of the
+        random hyperplane.
+    """
+    dim = data.shape[1]
+
+    # Select two random points, set the hyperplane between them
+    left_index = tau_rand_int(rng_state) % indices.shape[0]
+    right_index = tau_rand_int(rng_state) % indices.shape[0]
+    right_index += left_index == right_index
+    right_index = right_index % indices.shape[0]
+    left = indices[left_index]
+    right = indices[right_index]
+
+    # Compute the normal vector to the hyperplane (the vector between
+    # the two points) and the offset from the origin
+    hyperplane_offset = 0.0
+    hyperplane_vector = np.empty(dim, dtype=np.float32)
+
+    for d in range(dim):
+        hyperplane_vector[d] = data[left, d] - data[right, d]
+        hyperplane_offset -= (
+                hyperplane_vector[d] * (data[left, d] + data[right, d]) / 2.0
+        )
+
+    # For each point compute the margin (project into normal vector, add offset)
+    # If we are on lower side of the hyperplane put in one pile, otherwise
+    # put it in the other pile (if we hit hyperplane on the nose, flip a coin)
+    n_left = 0
+    n_right = 0
+    side = np.empty(indices.shape[0], np.int8)
+    for i in range(indices.shape[0]):
+        margin = hyperplane_offset
+        for d in range(dim):
+            margin += hyperplane_vector[d] * data[indices[i], d]
+
+        if margin == 0:
+            side[i] = tau_rand_int(rng_state) % 2
+            if side[i] == 0:
+                n_left += 1
+            else:
+                n_right += 1
+        elif margin > 0:
+            side[i] = 0
+            n_left += 1
+        else:
+            side[i] = 1
+            n_right += 1
+
+    # Now that we have the counts allocate arrays
+    indices_left = np.empty(n_left, dtype=np.int64)
+    indices_right = np.empty(n_right, dtype=np.int64)
+
+    # Populate the arrays with indices according to which side they fell on
+    n_left = 0
+    n_right = 0
+    for i in range(side.shape[0]):
+        if side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    return indices_left, indices_right, hyperplane_vector, hyperplane_offset
 
 
 def make_euclidean_tree(data, indices, rng_state, leaf_size=30):
