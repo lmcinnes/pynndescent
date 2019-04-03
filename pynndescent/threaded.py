@@ -250,7 +250,7 @@ def candidates_reduce_jit(
                 )
 
 
-def build_candidates(
+def new_build_candidates(
     current_graph,
     n_vertices,
     n_neighbors,
@@ -465,7 +465,7 @@ def nn_descent(
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
 
     for n in range(n_iters):
-        (new_candidate_neighbors, old_candidate_neighbors) = build_candidates(
+        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
             current_graph,
             n_vertices,
             n_neighbors,

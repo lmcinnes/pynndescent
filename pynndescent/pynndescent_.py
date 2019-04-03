@@ -4,12 +4,14 @@
 
 import numba
 import numpy as np
+import scipy.sparse
 from sklearn.utils import check_random_state, check_array
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix
 from scipy.sparse.csgraph import minimum_spanning_tree
 
 import pynndescent.distances as dist
+import pynndescent.sparse as sparse
 import pynndescent.threaded as threaded
 
 from pynndescent.utils import (rejection_sample,
@@ -20,11 +22,12 @@ from pynndescent.utils import (rejection_sample,
                                unchecked_heap_push,
                                deheap_sort,
                                smallest_flagged,
-                               build_candidates)
+                               new_build_candidates)
 
 from pynndescent.rp_trees import (make_euclidean_tree,
                                   make_angular_tree,
-                                  flatten_tree,
+                                  make_forest,
+                                  rptree_leaf_array,
                                   search_flat_tree)
 
 INT32_MIN = np.iinfo(np.int32).min + 1
@@ -161,7 +164,7 @@ def nn_descent(data, n_neighbors, rng_state, max_candidates=50,
     for n in range(n_iters):
 
         (new_candidate_neighbors,
-         old_candidate_neighbors) = build_candidates(current_graph,
+         old_candidate_neighbors) = new_build_candidates(current_graph,
                                                      n_vertices,
                                                      n_neighbors,
                                                      max_candidates,
@@ -441,7 +444,7 @@ class NNDescent(object):
         self.rho = rho
         self.dim = data.shape[1]
 
-        data = check_array(data).astype(np.float32)
+        data = data.astype(np.float32)
 
         if not tree_init or n_trees == 0:
             self.tree_init = False
@@ -458,6 +461,8 @@ class NNDescent(object):
             self._distance_func = metric
         elif metric in dist.named_distances:
             self._distance_func = dist.named_distances[metric]
+        else:
+            raise ValueError("Metric is neither callable, " + "nor a recognised string")
 
         if metric in ('cosine', 'correlation', 'dice', 'jaccard'):
             self._angular_trees = True
@@ -467,27 +472,9 @@ class NNDescent(object):
         self.rng_state = \
             random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
 
-        indices = np.arange(data.shape[0])
-
         if self.tree_init:
-            if self._angular_trees:
-                self._rp_forest = [
-                    flatten_tree(make_angular_tree(data, indices,
-                                                   self.rng_state,
-                                                   self.leaf_size),
-                                 self.leaf_size)
-                    for i in range(n_trees)
-                    ]
-            else:
-                self._rp_forest = [
-                    flatten_tree(make_euclidean_tree(data, indices,
-                                                     self.rng_state,
-                                                     self.leaf_size),
-                                 self.leaf_size)
-                    for i in range(n_trees)
-                    ]
-
-            leaf_array = np.vstack([tree.indices for tree in self._rp_forest])
+            self._rp_forest = make_forest(data, n_neighbors, n_trees, self.rng_state, self._angular_trees)
+            leaf_array = rptree_leaf_array(self._rp_forest)
         else:
             self._rp_forest = None
             leaf_array = np.array([[-1]])
@@ -508,18 +495,45 @@ class NNDescent(object):
                                                        threads=threads,
                                                        seed_per_row=seed_per_row)
         elif algorithm == 'standard' or leaf_array.shape[0] == 1:
-            self._neighbor_graph = nn_descent(self._raw_data,
-                                              self.n_neighbors,
-                                              self.rng_state,
-                                              self.max_candidates,
-                                              self._distance_func,
-                                              self._dist_args,
-                                              self.n_iters,
-                                              self.delta,
-                                              self.rho,
-                                              True,
-                                              leaf_array,
-                                              seed_per_row=seed_per_row)
+            if scipy.sparse.isspmatrix_csr(self._raw_data):
+                if metric in sparse.sparse_named_distances:
+                    distance_func = sparse.sparse_named_distances[metric]
+                    if metric in sparse.sparse_need_n_features:
+                        metric_kwds["n_features"] = self._raw_data.shape[1]
+                else:
+                    raise ValueError(
+                        "Metric {} not supported for sparse " + "data".format(metric)
+                    )
+                metric_nn_descent = sparse.make_sparse_nn_descent(
+                    distance_func, tuple(metric_kwds.values())
+                )
+                self._neighbor_graph = metric_nn_descent(
+                    self._raw_data.indices,
+                    self._raw_data.indptr,
+                    self._raw_data.data,
+                    self._raw_data.shape[0],
+                    self.n_neighbors,
+                    self.rng_state,
+                    self.max_candidates,
+                    rp_tree_init=False,
+                    leaf_array=leaf_array,
+                    n_iters=self.n_iters,
+                    verbose=False,
+                )
+
+            else:
+                self._neighbor_graph = nn_descent(self._raw_data,
+                                                  self.n_neighbors,
+                                                  self.rng_state,
+                                                  self.max_candidates,
+                                                  self._distance_func,
+                                                  self._dist_args,
+                                                  self.n_iters,
+                                                  self.delta,
+                                                  self.rho,
+                                                  True,
+                                                  leaf_array,
+                                                  seed_per_row=seed_per_row)
         elif algorithm == 'alternative':
             self._search = make_initialized_nnd_search(self._distance_func,
                                                        self._dist_args)
