@@ -54,11 +54,11 @@ def test_init_current_graph():
     assert_allclose(current_graph_threaded, current_graph)
 
 
-def test_build_candidates():
+def test_new_build_candidates():
     n_vertices = data.shape[0]
 
     current_graph = pynndescent_.init_current_graph(data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True)
-    new_candidate_neighbors, old_candidate_neighbors = utils.build_candidates(
+    new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
         current_graph,
         n_vertices,
         n_neighbors,
@@ -68,7 +68,7 @@ def test_build_candidates():
     )
 
     current_graph = pynndescent_.init_current_graph(data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True)
-    new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.build_candidates(
+    new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.new_build_candidates(
         current_graph,
         n_vertices,
         n_neighbors,
