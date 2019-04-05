@@ -54,3 +54,19 @@ def test_angular_nn_descent_neighbor_accuracy():
         0.99,
         "NN-descent did not get 99% " "accuracy on nearest neighbors",
     )
+
+
+def test_deterministic():
+    seed = np.random.RandomState(42)
+
+    x1 = seed.normal(0, 100, (1000, 50))
+    x2 = seed.normal(0, 100, (1000, 50))
+
+    index1 = NNDescent(x1, random_state=np.random.RandomState(42))
+    neighbors1, distances1 = index1.query(x2)
+
+    index2 = NNDescent(x1, random_state=np.random.RandomState(42))
+    neighbors2, distances2 = index2.query(x2)
+
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_equal(distances1, distances2)
