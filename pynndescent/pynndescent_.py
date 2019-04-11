@@ -716,13 +716,13 @@ class PyNNDescentTransformer (BaseEstimator, TransformerMixin):
         made, so this only controls the worst case. Don't tweak
         this value unless you know what you're doing.
 
-    delta: float (optional, default=0.001)
+    early_termination_value: float (optional, default=0.001)
         Controls the early abort due to limited progress. Larger values
         will result in earlier aborts, providing less accurate indexes,
         and less accurate searching. Don't tweak this value unless you know
         what you're doing.
 
-    rho: float (optional, default=0.5)
+    sampling_rate: float (optional, default=0.5)
         Controls the random sampling of potential candidates in any given
         iteration of NN-descent. Larger values will result in less accurate
         indexes and less accurate searching. Don't tweak this value unless
