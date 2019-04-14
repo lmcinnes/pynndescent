@@ -13,7 +13,7 @@ spatial_data = np.vstack(
 )  # Add some all zero data for corner case test
 binary_data = np.random.choice(a=[False, True], size=(10, 20), p=[0.66, 1 - 0.66])
 binary_data = np.vstack(
-    [binary_data, np.zeros((2, 20))]
+    [binary_data, np.zeros((2, 20), dtype="bool")]
 )  # Add some all zero data for corner case test
 sparse_spatial_data = sparse.csr_matrix(spatial_data * binary_data)
 sparse_binary_data = sparse.csr_matrix(binary_data)
