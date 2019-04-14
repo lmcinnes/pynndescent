@@ -1,3 +1,6 @@
+.. image:: https://travis-ci.org/lmcinnes/pynndescent.svg
+    :target: https://travis-ci.org/lmcinnes/pynndescent
+    :alt: Travis Build Status
 ===========
 PyNNDescent
 ===========
