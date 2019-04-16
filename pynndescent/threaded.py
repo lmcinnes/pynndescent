@@ -130,7 +130,7 @@ def init_current_graph(
     # store the updates in an array
     max_heap_update_count = chunk_size * n_neighbors * 2
     heap_updates = np.zeros((n_tasks, max_heap_update_count, 4))
-    heap_update_counts = np.zeros((n_tasks,), dtype=int)
+    heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
     rng_state_threads = per_thread_rng_state(n_tasks, rng_state)
 
     current_graph_map_jit = make_current_graph_map_jit(dist, dist_args)
@@ -156,7 +156,7 @@ def init_current_graph(
 
     # sort and chunk heap updates so they can be applied in the reduce
     max_count = heap_update_counts.max()
-    offsets = np.zeros((n_tasks, max_count), dtype=int)
+    offsets = np.zeros((n_tasks, max_count), dtype=np.int64)
 
     def shuffle(index):
         return shuffle_jit(
@@ -270,7 +270,7 @@ def new_build_candidates(
     # store the updates in an array
     max_heap_update_count = chunk_size * n_neighbors * 2
     heap_updates = np.zeros((n_tasks, max_heap_update_count, 5))
-    heap_update_counts = np.zeros((n_tasks,), dtype=int)
+    heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
     rng_state_threads = per_thread_rng_state(n_tasks, rng_state)
 
     def candidates_map(index):
@@ -307,7 +307,7 @@ def new_build_candidates(
 
     # sort and chunk heap updates so they can be applied in the reduce
     max_count = heap_update_counts.max()
-    offsets = np.zeros((n_tasks, max_count), dtype=int)
+    offsets = np.zeros((n_tasks, max_count), dtype=np.int64)
 
     def shuffle(index):
         return shuffle_jit(
@@ -458,7 +458,7 @@ def nn_descent(
     # since no more than `n_neighbors` candidates are added for each row
     max_heap_update_count = chunk_size * n_neighbors * n_neighbors * 4
     heap_updates = np.zeros((n_tasks, max_heap_update_count, 4))
-    heap_update_counts = np.zeros((n_tasks,), dtype=int)
+    heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
 
     nn_descent_map_jit = make_nn_descent_map_jit(dist, dist_args)
 
@@ -503,7 +503,7 @@ def nn_descent(
 
         # sort and chunk heap updates so they can be applied in the reduce
         max_count = heap_update_counts.max()
-        offsets = np.zeros((n_tasks, max_count), dtype=int)
+        offsets = np.zeros((n_tasks, max_count), dtype=np.int64)
 
         def shuffle(index):
             return shuffle_jit(
