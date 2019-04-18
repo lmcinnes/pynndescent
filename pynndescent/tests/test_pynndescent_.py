@@ -139,7 +139,7 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
     true_indices = tree.query(angular_data, n_neighbors, return_distance=False)
     
     # all-zero vectors are bad news for the cosine metric, so we're only
-    # going to shoot for 95% accuracy and only look at the non-zero entries
+    # going to shoot for 90% accuracy and only look at the non-zero entries
     # (the real success of this test is if it doesn't cause a recursion error)
     non_zero_rows = ~np.all(data == 0, axis=1)
     num_correct = 0
@@ -150,6 +150,6 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
     proportion_correct = num_correct / (np.sum(non_zero_rows) * n_neighbors)
     assert_greater_equal(
         proportion_correct,
-        0.95,
-        "NN-descent did not get 95%" "accuracy on nearest neighbors",
+        0.90,
+        "NN-descent did not get 90%" " accuracy on nearest neighbors",
     )
