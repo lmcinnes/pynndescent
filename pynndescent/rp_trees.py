@@ -17,6 +17,9 @@ import locale
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 
+# Used for a floating point "nearly zero" comparison
+EPS = 1e-8
+
 RandomProjectionTreeNode = namedtuple(
     "RandomProjectionTreeNode",
     ["indices", "is_leaf", "hyperplane", "offset", "left_child", "right_child"],
@@ -64,10 +67,10 @@ def angular_random_projection_split(data, indices, rng_state):
     left_norm = norm(data[left])
     right_norm = norm(data[right])
 
-    if left_norm == 0.0:
+    if abs(left_norm) < EPS:
         left_norm = 1.0
 
-    if right_norm == 0.0:
+    if abs(right_norm) < EPS:
         right_norm = 1.0
 
     # Compute the normal vector to the hyperplane (the vector between
@@ -80,7 +83,7 @@ def angular_random_projection_split(data, indices, rng_state):
         )
 
     hyperplane_norm = norm(hyperplane_vector)
-    if hyperplane_norm == 0.0:
+    if abs(hyperplane_norm) < EPS:
         hyperplane_norm = 1.0
 
     for d in range(dim):
@@ -97,7 +100,7 @@ def angular_random_projection_split(data, indices, rng_state):
         for d in range(dim):
             margin += hyperplane_vector[d] * data[indices[i], d]
 
-        if margin == 0:
+        if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
             if side[i] == 0:
                 n_left += 1
@@ -186,7 +189,7 @@ def euclidean_random_projection_split(data, indices, rng_state):
         for d in range(dim):
             margin += hyperplane_vector[d] * data[indices[i], d]
 
-        if margin == 0:
+        if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
             if side[i] == 0:
                 n_left += 1
@@ -264,6 +267,12 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
     left_norm = norm(left_data)
     right_norm = norm(right_data)
 
+    if abs(left_norm) < EPS:
+        left_norm = 1.0
+
+    if abs(right_norm) < EPS:
+        right_norm = 1.0
+
     # Compute the normal vector to the hyperplane (the vector between
     # the two points)
     normalized_left_data = left_data / left_norm
@@ -273,6 +282,8 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
     )
 
     hyperplane_norm = norm(hyperplane_data)
+    if abs(hyperplane_norm) < EPS:
+        hyperplane_norm = 1.0
     for d in range(hyperplane_data.shape[0]):
         hyperplane_data[d] = hyperplane_data[d] / hyperplane_norm
 
@@ -294,7 +305,7 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
         for d in range(mul_data.shape[0]):
             margin += mul_data[d]
 
-        if margin == 0:
+        if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
             if side[i] == 0:
                 n_left += 1
@@ -403,7 +414,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
         for d in range(mul_data.shape[0]):
             margin += mul_data[d]
 
-        if margin == 0:
+        if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
             if side[i] == 0:
                 n_left += 1
@@ -659,7 +670,7 @@ def select_side(hyperplane, offset, point, rng_state):
     for d in range(point.shape[0]):
         margin += hyperplane[d] * point[d]
 
-    if margin == 0:
+    if abs(margin) < EPS:
         side = tau_rand_int(rng_state) % 2
         if side == 0:
             return 0

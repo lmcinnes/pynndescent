@@ -1,5 +1,7 @@
 from nose.tools import assert_greater_equal
 
+import os
+
 import numpy as np
 from pynndescent import NNDescent
 from scipy import sparse
@@ -83,7 +85,7 @@ def test_sparse_nn_descent_neighbor_accuracy():
     )
 
 
-def test_sparse_angular_nn_descent_neighbor_accuracy():
+def test_sparse_angular_nn_descent_neighbor_accuracy():    
     knn_indices, knn_dists = NNDescent(
         sparse_nn_data, "cosine", {}, 10, random_state=np.random
     )._neighbor_graph
@@ -118,3 +120,36 @@ def test_deterministic():
 
     np.testing.assert_equal(neighbors1, neighbors2)
     np.testing.assert_equal(distances1, distances2)
+
+# This tests a recursion error on cosine metric reported at:
+# https://github.com/lmcinnes/umap/issues/99
+# data used is a cut-down version of that provided by @scharron
+# It contains lots of all-zero vectors and some other duplicates
+def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
+    THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+    data_path = os.path.join(THIS_DIR, 'test_data/cosine_hang.npy')
+    data = np.load(data_path)
+    
+    n_neighbors = 10
+    knn_indices, _ = NNDescent(data, "cosine", {}, n_neighbors, \
+        random_state=np.random, n_trees=20)._neighbor_graph
+
+    angular_data = normalize(data, norm="l2")
+    tree = KDTree(angular_data)
+    true_indices = tree.query(angular_data, n_neighbors, return_distance=False)
+    
+    # all-zero vectors are bad news for the cosine metric, so we're only
+    # going to shoot for 95% accuracy and only look at the non-zero entries
+    # (the real success of this test is if it doesn't cause a recursion error)
+    non_zero_rows = ~np.all(data == 0, axis=1)
+    num_correct = 0
+    for i in range(data.shape[0]):
+        if non_zero_rows[i]:        
+            num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    proportion_correct = num_correct / (np.sum(non_zero_rows) * n_neighbors)
+    assert_greater_equal(
+        proportion_correct,
+        0.95,
+        "NN-descent did not get 95%" "accuracy on nearest neighbors",
+    )
