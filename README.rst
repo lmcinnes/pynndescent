@@ -4,6 +4,9 @@
 .. image:: https://ci.appveyor.com/api/projects/status/github/lmcinnes/pynndescent?branch=master&svg=true
     :target: https://ci.appveyor.com/project/lmcinnes/pynndescent
     :alt: AppVeyor Build Status
+.. image:: https://coveralls.io/repos/github/lmcinnes/pynndescent/badge.svg
+    :target: https://coveralls.io/github/lmcinnes/pynndescent
+    :alt: Test Coverage Status
 ===========
 PyNNDescent
 ===========
