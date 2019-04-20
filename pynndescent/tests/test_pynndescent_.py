@@ -25,7 +25,7 @@ binary_nn_data = np.vstack(
 sparse_nn_data = sparse.csr_matrix(nn_data * binary_nn_data)
 
 def test_nn_descent_neighbor_accuracy():
-    knn_indices, knn_dists = NNDescent(
+    knn_indices, _ = NNDescent(
         nn_data, "euclidean", {}, 10, random_state=np.random
     )._neighbor_graph
 
@@ -45,7 +45,7 @@ def test_nn_descent_neighbor_accuracy():
 
 
 def test_angular_nn_descent_neighbor_accuracy():
-    knn_indices, knn_dists = NNDescent(
+    knn_indices, _ = NNDescent(
         nn_data, "cosine", {}, 10, random_state=np.random
     )._neighbor_graph
 
@@ -66,7 +66,7 @@ def test_angular_nn_descent_neighbor_accuracy():
 
 
 def test_sparse_nn_descent_neighbor_accuracy():
-    knn_indices, knn_dists = NNDescent(
+    knn_indices, _ = NNDescent(
         sparse_nn_data, "euclidean", {}, 10, random_state=np.random
     )._neighbor_graph
 
@@ -81,12 +81,12 @@ def test_sparse_nn_descent_neighbor_accuracy():
     assert_greater_equal(
         percent_correct,
         0.99,
-        "Sparse NN-descent did not get " "99% accuracy on nearest " "neighbors",
+        "Sparse NN-descent did not get 99%" "accuracy on nearest neighbors",
     )
 
 
 def test_sparse_angular_nn_descent_neighbor_accuracy():    
-    knn_indices, knn_dists = NNDescent(
+    knn_indices, _ = NNDescent(
         sparse_nn_data, "cosine", {}, 10, random_state=np.random
     )._neighbor_graph
 
