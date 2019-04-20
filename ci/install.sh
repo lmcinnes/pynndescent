@@ -6,4 +6,4 @@ if [[ "${COVERAGE}" == "true" ]]; then
     pip install coverage coveralls
 fi
 
-pip install -e .
+python setup.py develop
