@@ -5,13 +5,16 @@ python:
   - "3.6"
   - "3.7"
 env:
-  - NUMBA_DISABLE_JIT=0
-  - NUMBA_DISABLE_JIT=1
+  global:
+    # Directory where tests are run from
+    - MODULE=umap
+  matrix:
+    - COVERAGE="false"
+    - COVERAGE="true"
 matrix:
   exclude:
     - python: "3.6"
-      env: NUMBA_DISABLE_JIT=1
-install:
-  - pip install -r requirements.txt
-script:
-  - nosetests -v -s
+      env: COVERAGE="true"
+install: source ci/install.sh
+script: bash ci/test.sh
+after_success: source ci/success.sh
