@@ -5,6 +5,7 @@ python:
   - "3.6"
   - "3.7"
 env:
+  - NUMBA_DISABLE_JIT=0
   - NUMBA_DISABLE_JIT=1
 matrix:
   exclude:
