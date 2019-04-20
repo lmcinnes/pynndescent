@@ -4,6 +4,12 @@ sudo: false
 python:
   - "3.6"
   - "3.7"
+env:
+  - NUMBA_DISABLE_JIT=1
+matrix:
+  exclude:
+    - python: "3.6"
+      env: NUMBA_DISABLE_JIT=1
 install:
   - pip install -r requirements.txt
 script:
