@@ -35,20 +35,31 @@ dist_args = ()
 # In all tests, set seed_per_row=True so that we can comapre the regular
 # algorithm against the threded algorithm.
 
+
 def new_rng_state():
     return np.empty((3,), dtype=np.int64)
 
 
 def accuracy(expected, actual):
     # Look at the size of corresponding row intersections
-    return np.array([len(np.intersect1d(x, y)) for x, y in zip(expected, actual)]).sum() / expected.size
+    return (
+        np.array([len(np.intersect1d(x, y)) for x, y in zip(expected, actual)]).sum()
+        / expected.size
+    )
 
 
 def test_init_current_graph():
-    current_graph = pynndescent_.init_current_graph(data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True)
+    current_graph = pynndescent_.init_current_graph(
+        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+    )
     current_graph_threaded = threaded.init_current_graph(
-        data, dist, dist_args, n_neighbors, chunk_size=chunk_size, rng_state=new_rng_state(),
-        seed_per_row=True
+        data,
+        dist,
+        dist_args,
+        n_neighbors,
+        chunk_size=chunk_size,
+        rng_state=new_rng_state(),
+        seed_per_row=True,
     )
 
     assert_allclose(current_graph_threaded, current_graph)
@@ -57,17 +68,21 @@ def test_init_current_graph():
 def test_new_build_candidates():
     n_vertices = data.shape[0]
 
-    current_graph = pynndescent_.init_current_graph(data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True)
+    current_graph = pynndescent_.init_current_graph(
+        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+    )
     new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
         current_graph,
         n_vertices,
         n_neighbors,
         max_candidates,
         rng_state=new_rng_state(),
-        seed_per_row=True
+        seed_per_row=True,
     )
 
-    current_graph = pynndescent_.init_current_graph(data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True)
+    current_graph = pynndescent_.init_current_graph(
+        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+    )
     new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.new_build_candidates(
         current_graph,
         n_vertices,
@@ -75,7 +90,7 @@ def test_new_build_candidates():
         max_candidates,
         chunk_size=chunk_size,
         rng_state=new_rng_state(),
-        seed_per_row=True
+        seed_per_row=True,
     )
 
     assert_allclose(new_candidate_neighbors_threaded, new_candidate_neighbors)
@@ -90,7 +105,7 @@ def test_nn_descent():
         n_iters=2,
         delta=0,
         tree_init=False,
-        seed_per_row=True
+        seed_per_row=True,
     )._neighbor_graph
 
     nn_indices_threaded, nn_distances_threaded = NNDescent(
@@ -101,11 +116,11 @@ def test_nn_descent():
         delta=0,
         tree_init=False,
         seed_per_row=True,
-        algorithm='threaded',
-        chunk_size=chunk_size
+        algorithm="threaded",
+        chunk_size=chunk_size,
     )._neighbor_graph
 
-    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='brute').fit(data)
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)
     _, nn_gold_indices = nbrs.kneighbors(data)
 
     assert_allclose(nn_indices_threaded, nn_indices)
@@ -141,7 +156,9 @@ def test_heap_updates():
     )
     assert_allclose(heap_updates, sorted_heap_updates)
 
-    offsets = threaded.chunk_heap_updates(sorted_heap_updates, num_heap_updates, 6, chunk_size)
+    offsets = threaded.chunk_heap_updates(
+        sorted_heap_updates, num_heap_updates, 6, chunk_size
+    )
 
     assert_allclose(offsets, np.array([0, 1, 3, 5]))
 
