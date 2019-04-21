@@ -2,7 +2,7 @@
 #
 # License: BSD 3 clause
 from __future__ import print_function
-from collections import deque, namedtuple
+from collections import namedtuple
 from warnings import warn
 
 import numpy as np
@@ -299,9 +299,7 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
         i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
-        mul_inds, mul_data = sparse_mul(
-            hyperplane_inds, hyperplane_data, i_inds, i_data
-        )
+        _, mul_data = sparse_mul(hyperplane_inds, hyperplane_data, i_inds, i_data)
         for d in range(mul_data.shape[0]):
             margin += mul_data[d]
 
@@ -408,9 +406,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
         i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
-        mul_inds, mul_data = sparse_mul(
-            hyperplane_inds, hyperplane_data, i_inds, i_data
-        )
+        _, mul_data = sparse_mul(hyperplane_inds, hyperplane_data, i_inds, i_data)
         for d in range(mul_data.shape[0]):
             margin += mul_data[d]
 
