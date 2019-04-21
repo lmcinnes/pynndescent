@@ -4,10 +4,9 @@
 
 import numba
 import numpy as np
-import scipy.sparse
-from sklearn.utils import check_random_state, check_array
+from sklearn.utils import check_random_state
 from sklearn.base import BaseEstimator, TransformerMixin
-from scipy.sparse import lil_matrix
+from scipy.sparse import lil_matrix, isspmatrix_csr
 from scipy.sparse.csgraph import minimum_spanning_tree
 
 import pynndescent.distances as dist
@@ -26,13 +25,7 @@ from pynndescent.utils import (
     new_build_candidates,
 )
 
-from pynndescent.rp_trees import (
-    make_euclidean_tree,
-    make_angular_tree,
-    make_forest,
-    rptree_leaf_array,
-    search_flat_tree,
-)
+from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
@@ -520,7 +513,7 @@ class NNDescent(object):
                 seed_per_row=seed_per_row,
             )
         elif algorithm == "standard" or leaf_array.shape[0] == 1:
-            if scipy.sparse.isspmatrix_csr(self._raw_data):
+            if isspmatrix_csr(self._raw_data):
                 if metric in sparse.sparse_named_distances:
                     distance_func = sparse.sparse_named_distances[metric]
                     if metric in sparse.sparse_need_n_features:

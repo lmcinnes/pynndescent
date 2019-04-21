@@ -7,7 +7,6 @@ import numpy as np
 import numba
 
 from pynndescent.utils import (
-    tau_rand_int,
     tau_rand,
     norm,
     make_heap,
@@ -284,7 +283,7 @@ def make_sparse_nn_descent(sparse_dist, dist_args):
 
 @numba.njit()
 def sparse_euclidean(ind1, data1, ind2, data2):
-    aux_inds, aux_data = sparse_diff(ind1, data1, ind2, data2)
+    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
     result = 0.0
     for i in range(aux_data.shape[0]):
         result += aux_data[i] ** 2
@@ -293,7 +292,7 @@ def sparse_euclidean(ind1, data1, ind2, data2):
 
 @numba.njit()
 def sparse_manhattan(ind1, data1, ind2, data2):
-    aux_inds, aux_data = sparse_diff(ind1, data1, ind2, data2)
+    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
     result = 0.0
     for i in range(aux_data.shape[0]):
         result += np.abs(aux_data[i])
@@ -302,7 +301,7 @@ def sparse_manhattan(ind1, data1, ind2, data2):
 
 @numba.njit()
 def sparse_chebyshev(ind1, data1, ind2, data2):
-    aux_inds, aux_data = sparse_diff(ind1, data1, ind2, data2)
+    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
     result = 0.0
     for i in range(aux_data.shape[0]):
         result = max(result, np.abs(aux_data[i]))
@@ -311,7 +310,7 @@ def sparse_chebyshev(ind1, data1, ind2, data2):
 
 @numba.njit()
 def sparse_minkowski(ind1, data1, ind2, data2, p=2.0):
-    aux_inds, aux_data = sparse_diff(ind1, data1, ind2, data2)
+    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
     result = 0.0
     for i in range(aux_data.shape[0]):
         result += np.abs(aux_data[i]) ** p
@@ -333,7 +332,7 @@ def sparse_canberra(ind1, data1, ind2, data2):
     numer_inds, numer_data = sparse_diff(ind1, data1, ind2, data2)
     numer_data = np.abs(numer_data)
 
-    val_inds, val_data = sparse_mul(numer_inds, numer_data, denom_inds, denom_data)
+    _, val_data = sparse_mul(numer_inds, numer_data, denom_inds, denom_data)
 
     return np.sum(val_data)
 
@@ -342,14 +341,14 @@ def sparse_canberra(ind1, data1, ind2, data2):
 def sparse_bray_curtis(ind1, data1, ind2, data2):  # pragma: no cover
     abs_data1 = np.abs(data1)
     abs_data2 = np.abs(data2)
-    denom_inds, denom_data = sparse_sum(ind1, abs_data1, ind2, abs_data2)
+    _, denom_data = sparse_sum(ind1, abs_data1, ind2, abs_data2)
 
     if denom_data.shape[0] == 0:
         return 0.0
 
     denominator = np.sum(denom_data)
 
-    numer_inds, numer_data = sparse_diff(ind1, data1, ind2, data2)
+    _, numer_data = sparse_diff(ind1, data1, ind2, data2)
     numer_data = np.abs(numer_data)
 
     numerator = np.sum(numer_data)
@@ -448,7 +447,7 @@ def sparse_sokal_sneath(ind1, data1, ind2, data2):
 
 @numba.njit()
 def sparse_cosine(ind1, data1, ind2, data2):
-    aux_inds, aux_data = sparse_mul(ind1, data1, ind2, data2)
+    _, aux_data = sparse_mul(ind1, data1, ind2, data2)
     result = 0.0
     norm1 = norm(data1)
     norm2 = norm(data2)
