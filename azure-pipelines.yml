@@ -39,5 +39,11 @@ steps:
 
 - script: |
     pip install nose
-    nosetests -s -v
+    nosetests -s -v --with-xunit
   displayName: 'Run tests'
+
+- task: PublishTestResults@2
+  inputs:
+    testResultsFiles: 'nosetests.xml'
+    testRunTitle: '$(Agent.OS) - $(Build.BuildNumber)[$(Agent.JobName)] - Python $(python.version)'
+  condition: succeededOrFailed()
