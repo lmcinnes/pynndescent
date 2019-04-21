@@ -6,14 +6,25 @@
 trigger:
 - master
 
-pool:
-  vmImage: 'Ubuntu-16.04'
+# Matrix needs to be manually built:
+# https://github.com/Microsoft/azure-pipelines-yaml/issues/20
 strategy:
   matrix:
-    Python36:
+    mac10.13_py36:
+      imageName: 'macos-10.13'
       python.version: '3.6'
-    Python37:
+    mac10.13_py37:
+      imageName: 'macos-10.13'
       python.version: '3.7'
+    mac10.14_py36:
+      imageName: 'macos-10.14'
+      python.version: '3.6'
+    mac10.14_py37:
+      imageName: 'macos-10.14'
+      python.version: '3.7'
+
+pool:
+  vmImage: $(imageName)
 
 steps:
 - task: UsePythonVersion@0
