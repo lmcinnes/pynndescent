@@ -119,7 +119,14 @@ def current_graph_reduce_jit(n_tasks, current_graph, heap_updates, offsets, inde
 
 
 def init_current_graph(
-    data, dist, dist_args, n_neighbors, chunk_size, rng_state, threads=2, seed_per_row=False
+    data,
+    dist,
+    dist_args,
+    n_neighbors,
+    chunk_size,
+    rng_state,
+    threads=2,
+    seed_per_row=False,
 ):
 
     n_vertices = data.shape[0]
@@ -140,7 +147,13 @@ def init_current_graph(
         return (
             index,
             current_graph_map_jit(
-                rows, n_vertices, n_neighbors, data, heap_updates[index], rng_state_threads[index], seed_per_row=seed_per_row
+                rows,
+                n_vertices,
+                n_neighbors,
+                data,
+                heap_updates[index],
+                rng_state_threads[index],
+                seed_per_row=seed_per_row,
             ),
         )
 
@@ -259,7 +272,7 @@ def new_build_candidates(
     rng_state,
     rho=0.5,
     threads=2,
-    seed_per_row=False
+    seed_per_row=False,
 ):
 
     n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
@@ -285,7 +298,7 @@ def new_build_candidates(
                 offset=0,
                 rho=rho,
                 rng_state=rng_state_threads[index],
-                seed_per_row=seed_per_row
+                seed_per_row=seed_per_row,
             ),
         )
 
@@ -416,13 +429,20 @@ def deheap_sort_map_jit(rows, heap):
         dist_heap = weights[i]
 
         for j in range(ind_heap.shape[0] - 1):
-            ind_heap[0], ind_heap[ind_heap.shape[0] - j - 1] = \
-                ind_heap[ind_heap.shape[0] - j - 1], ind_heap[0]
-            dist_heap[0], dist_heap[dist_heap.shape[0] - j - 1] = \
-                dist_heap[dist_heap.shape[0] - j - 1], dist_heap[0]
+            ind_heap[0], ind_heap[ind_heap.shape[0] - j - 1] = (
+                ind_heap[ind_heap.shape[0] - j - 1],
+                ind_heap[0],
+            )
+            dist_heap[0], dist_heap[dist_heap.shape[0] - j - 1] = (
+                dist_heap[dist_heap.shape[0] - j - 1],
+                dist_heap[0],
+            )
 
-            siftdown(dist_heap[:dist_heap.shape[0] - j - 1],
-                     ind_heap[:ind_heap.shape[0] - j - 1], 0)
+            siftdown(
+                dist_heap[: dist_heap.shape[0] - j - 1],
+                ind_heap[: ind_heap.shape[0] - j - 1],
+                0,
+            )
 
 
 def nn_descent(
@@ -440,7 +460,7 @@ def nn_descent(
     leaf_array=None,
     verbose=False,
     threads=2,
-    seed_per_row=False
+    seed_per_row=False,
 ):
 
     if rng_state is None:
@@ -450,7 +470,14 @@ def nn_descent(
     n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
 
     current_graph = init_current_graph(
-        data, dist, dist_args, n_neighbors, chunk_size, rng_state, threads, seed_per_row=seed_per_row
+        data,
+        dist,
+        dist_args,
+        n_neighbors,
+        chunk_size,
+        rng_state,
+        threads,
+        seed_per_row=seed_per_row,
     )
 
     # store the updates in an array
@@ -474,7 +501,7 @@ def nn_descent(
             rng_state,
             rho,
             threads,
-            seed_per_row=seed_per_row
+            seed_per_row=seed_per_row,
         )
 
         def nn_descent_map(index):
@@ -507,12 +534,7 @@ def nn_descent(
 
         def shuffle(index):
             return shuffle_jit(
-                heap_updates,
-                heap_update_counts,
-                offsets,
-                chunk_size,
-                n_vertices,
-                index,
+                heap_updates, heap_update_counts, offsets, chunk_size, n_vertices, index
             )
 
         for _ in executor.map(shuffle, range(n_tasks)):
