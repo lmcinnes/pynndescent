@@ -1,0 +1,49 @@
+# Python package
+# Create and test a Python package on multiple Python versions.
+# Add steps that analyze code, save the dist with the build record, publish to a PyPI-compatible index, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/languages/python
+
+trigger:
+- master
+
+# Matrix needs to be manually built:
+# https://github.com/Microsoft/azure-pipelines-yaml/issues/20
+strategy:
+  matrix:
+    mac10.13_py36:
+      imageName: 'macOS-10.13'
+      python.version: '3.6'
+    mac10.13_py37:
+      imageName: 'macOS-10.13'
+      python.version: '3.7'
+    mac10.14_py36:
+      imageName: 'macOS-10.14'
+      python.version: '3.6'
+    mac10.14_py37:
+      imageName: 'macOS-10.14'
+      python.version: '3.7'
+
+pool:
+  vmImage: $(imageName)
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '$(python.version)'
+  displayName: 'Use Python $(python.version)'
+
+- script: |
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt
+  displayName: 'Install dependencies'
+
+- script: |
+    pip install nose
+    nosetests -s -v --with-xunit
+  displayName: 'Run tests'
+
+- task: PublishTestResults@2
+  inputs:
+    testResultsFiles: 'nosetests.xml'
+    testRunTitle: '$(Agent.OS) - $(Build.BuildNumber)[$(Agent.JobName)] - Python $(python.version)'
+  condition: succeededOrFailed()
