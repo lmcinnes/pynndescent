@@ -7,6 +7,12 @@
 .. image:: https://coveralls.io/repos/github/lmcinnes/pynndescent/badge.svg
     :target: https://coveralls.io/github/lmcinnes/pynndescent
     :alt: Test Coverage Status
+.. image:: https://img.shields.io/lgtm/alerts/g/lmcinnes/pynndescent.svg
+    :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/alerts
+    :alt: LGTM Alerts
+.. image:: https://img.shields.io/lgtm/grade/g/lmcinnes/pynndescent.svg
+    :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/context:python
+    :alt: LGTM Grade
 ===========
 PyNNDescent
 ===========
