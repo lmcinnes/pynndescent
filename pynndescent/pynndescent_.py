@@ -16,7 +16,6 @@ import pynndescent.threaded as threaded
 from pynndescent.utils import (
     rejection_sample,
     seed,
-    tau_rand,
     make_heap,
     heap_push,
     unchecked_heap_push,
