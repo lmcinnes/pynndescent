@@ -1,9 +1,12 @@
-from nose.tools import assert_greater_equal
-
 import os
+import io
+import re
+from contextlib import redirect_stdout
+
+from nose.tools import assert_greater_equal, assert_true, assert_equals
 
 import numpy as np
-from pynndescent import NNDescent
+from pynndescent import NNDescent, PyNNDescentTransformer
 from scipy import sparse
 from sklearn.neighbors import KDTree
 from sklearn.preprocessing import normalize
@@ -156,3 +159,73 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
         0.90,
         "NN-descent did not get 90%" " accuracy on nearest neighbors",
     )
+
+
+def test_output_when_verbose_is_true():
+    out = io.StringIO()
+    with redirect_stdout(out):
+        _ = NNDescent(
+            data=spatial_data,
+            metric="euclidean",
+            metric_kwds={},
+            n_neighbors=4,
+            random_state=np.random,
+            n_trees=5,
+            n_iters=2,
+            verbose=True,
+        )
+    output = out.getvalue()
+    assert_true(re.match("^.*5 trees", output, re.DOTALL))
+    assert_true(re.match("^.*2 iterations", output, re.DOTALL))
+
+
+def test_no_output_when_verbose_is_false():
+    out = io.StringIO()
+    with redirect_stdout(out):
+        _ = NNDescent(
+            data=spatial_data,
+            metric="euclidean",
+            metric_kwds={},
+            n_neighbors=4,
+            random_state=np.random,
+            n_trees=5,
+            n_iters=2,
+            verbose=False,
+        )
+    output = out.getvalue().strip()
+    assert_equals(len(output), 0)
+
+
+# same as the previous two test, but this time using the PyNNDescentTransformer
+# interface
+def test_transformer_output_when_verbose_is_true():
+    out = io.StringIO()
+    with redirect_stdout(out):
+        _ = PyNNDescentTransformer(
+            n_neighbors=4,
+            metric="euclidean",
+            metric_kwds={},
+            random_state=np.random,
+            n_trees=5,
+            n_iters=2,
+            verbose=True,
+        ).fit_transform(spatial_data)
+    output = out.getvalue()
+    assert_true(re.match("^.*5 trees", output, re.DOTALL))
+    assert_true(re.match("^.*2 iterations", output, re.DOTALL))
+
+
+def test_transformer_output_when_verbose_is_false():
+    out = io.StringIO()
+    with redirect_stdout(out):
+        _ = PyNNDescentTransformer(
+            n_neighbors=4,
+            metric="euclidean",
+            metric_kwds={},
+            random_state=np.random,
+            n_trees=5,
+            n_iters=2,
+            verbose=False,
+        ).fit_transform(spatial_data)
+    output = out.getvalue().strip()
+    assert_equals(len(output), 0)
