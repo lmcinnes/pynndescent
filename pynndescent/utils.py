@@ -2,6 +2,8 @@
 #
 # License: BSD 2 clause
 
+import time
+
 import numba
 import numpy as np
 
@@ -513,3 +515,8 @@ def new_build_candidates(
                     current_graph[2, i, j] = 0
 
     return new_candidate_neighbors, old_candidate_neighbors
+
+
+# Generates a timestamp for use in logging messages when verbose=True
+def ts():
+    return time.ctime(time.time())

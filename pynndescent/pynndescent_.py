@@ -22,6 +22,7 @@ from pynndescent.utils import (
     deheap_sort,
     smallest_flagged,
     new_build_candidates,
+    ts,
 )
 
 from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree
@@ -423,6 +424,9 @@ class NNDescent(object):
         iteration of NN-descent. Larger values will result in less accurate
         indexes and less accurate searching. Don't tweak this value unless
         you know what you're doing.
+
+    verbose: bool (optional, default=False)
+        Whether to print status data during the computation.
     """
 
     def __init__(
@@ -444,6 +448,7 @@ class NNDescent(object):
         chunk_size=None,
         threads=2,
         seed_per_row=False,
+        verbose=False,
     ):
 
         self.n_trees = n_trees
@@ -457,6 +462,7 @@ class NNDescent(object):
         self.delta = delta
         self.rho = rho
         self.dim = data.shape[1]
+        self.verbose = verbose
 
         data = data.astype(np.float32)
 
@@ -486,6 +492,8 @@ class NNDescent(object):
         self.rng_state = random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
 
         if self.tree_init:
+            if verbose:
+                print(ts(), "Building RP forest with", str(n_trees), "trees")
             self._rp_forest = make_forest(
                 data, n_neighbors, n_trees, self.rng_state, self._angular_trees
             )
@@ -495,6 +503,8 @@ class NNDescent(object):
             leaf_array = np.array([[-1]])
 
         if algorithm == "threaded":
+            if verbose:
+                print(ts(), "threaded NN descent for", str(n_iters), "iterations")
             self._neighbor_graph = threaded.nn_descent(
                 self._raw_data,
                 self.n_neighbors,
@@ -525,6 +535,9 @@ class NNDescent(object):
                 metric_nn_descent = sparse.make_sparse_nn_descent(
                     distance_func, tuple(metric_kwds.values())
                 )
+                if verbose:
+                    print(ts(), "metric NN descent for", str(n_iters), "iterations")
+
                 self._neighbor_graph = metric_nn_descent(
                     self._raw_data.indices,
                     self._raw_data.indptr,
@@ -540,6 +553,9 @@ class NNDescent(object):
                 )
 
             else:
+                if verbose:
+                    print(ts(), "NN descent for", str(n_iters), "iterations")
+
                 self._neighbor_graph = nn_descent(
                     self._raw_data,
                     self.n_neighbors,
@@ -556,6 +572,9 @@ class NNDescent(object):
                     seed_per_row=seed_per_row,
                 )
         elif algorithm == "alternative":
+            if verbose:
+                print(ts(), "Using alternative algorithm")
+
             self._search = make_initialized_nnd_search(
                 self._distance_func, self._dist_args
             )
@@ -765,7 +784,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         iteration of NN-descent. Larger values will result in less accurate
         indexes and less accurate searching. Don't tweak this value unless
         you know what you're doing.
-        
+    
+    verbose: bool (optional, default=False)
+        Whether to print status data during the computation.
+
     Examples
     --------
     >>> from sklearn.manifold import Isomap
@@ -792,6 +814,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         n_iters=10,
         early_termination_value=0.001,
         sampling_rate=0.5,
+        verbose=False,
     ):
 
         self.n_neighbors = n_neighbors
@@ -808,6 +831,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.n_iters = n_iters
         self.early_termination_value = early_termination_value
         self.sampling_rate = sampling_rate
+        self.verbose = verbose
 
     def fit(self, X):
         """Fit the PyNNDescent transformer to build KNN graphs with
@@ -845,6 +869,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             self.n_iters,
             self.early_termination_value,
             self.sampling_rate,
+            verbose=self.verbose,
         )
 
         return self
