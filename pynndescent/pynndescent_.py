@@ -506,8 +506,9 @@ class NNDescent(object):
                 self.n_iters,
                 self.delta,
                 self.rho,
-                True,
-                leaf_array,
+                rp_tree_init=True,
+                leaf_array=leaf_array,
+                verbose=False,
                 threads=threads,
                 seed_per_row=seed_per_row,
             )
@@ -549,8 +550,9 @@ class NNDescent(object):
                     self.n_iters,
                     self.delta,
                     self.rho,
-                    True,
-                    leaf_array,
+                    rp_tree_init=True,
+                    leaf_array=leaf_array,
+                    verbose=False,
                     seed_per_row=seed_per_row,
                 )
         elif algorithm == "alternative":
