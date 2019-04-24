@@ -3,7 +3,7 @@ import io
 import re
 from contextlib import redirect_stdout
 
-from nose.tools import assert_greater_equal, assert_true, assert_false, assert_equals
+from nose.tools import assert_greater_equal, assert_true, assert_equals
 
 import numpy as np
 from pynndescent import NNDescent, PyNNDescentTransformer
