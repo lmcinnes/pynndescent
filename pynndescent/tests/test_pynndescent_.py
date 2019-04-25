@@ -6,10 +6,11 @@ from contextlib import redirect_stdout
 from nose.tools import assert_greater_equal, assert_true, assert_equals
 
 import numpy as np
-from pynndescent import NNDescent, PyNNDescentTransformer
 from scipy import sparse
 from sklearn.neighbors import KDTree
 from sklearn.preprocessing import normalize
+
+from pynndescent import NNDescent, PyNNDescentTransformer
 
 np.random.seed(42)
 spatial_data = np.random.randn(10, 20)

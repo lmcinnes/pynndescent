@@ -310,7 +310,7 @@ def prune(graph, prune_level=0, n_neighbors=10):
     reduced_graph = degree_prune(graph, max_degree=max_degree)
     result_graph = lil_matrix((graph.shape[0], graph.shape[0])).tocsr()
 
-    for n in range(n_iters):
+    for _ in range(n_iters):
         mst = minimum_spanning_tree(reduced_graph)
         result_graph = result_graph.maximum(mst)
         reduced_graph -= mst
@@ -433,7 +433,7 @@ class NNDescent(object):
         self,
         data,
         metric="euclidean",
-        metric_kwds={},
+        metric_kwds=None,
         n_neighbors=15,
         n_trees=8,
         leaf_size=15,
@@ -471,7 +471,7 @@ class NNDescent(object):
         else:
             self.tree_init = True
 
-        self._dist_args = tuple(metric_kwds.values())
+        self._dist_args = tuple((metric_kwds or {}).values())
 
         self.random_state = check_random_state(random_state)
 
@@ -530,7 +530,7 @@ class NNDescent(object):
                         metric_kwds["n_features"] = self._raw_data.shape[1]
                 else:
                     raise ValueError(
-                        "Metric {} not supported for sparse " + "data".format(metric)
+                        "Metric {} not supported for sparse data".format(metric)
                     )
                 metric_nn_descent = sparse.make_sparse_nn_descent(
                     distance_func, tuple(metric_kwds.values())
@@ -784,7 +784,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         iteration of NN-descent. Larger values will result in less accurate
         indexes and less accurate searching. Don't tweak this value unless
         you know what you're doing.
-    
+
     verbose: bool (optional, default=False)
         Whether to print status data during the computation.
 
