@@ -38,6 +38,10 @@ steps:
   displayName: 'Install dependencies'
 
 - script: |
+    pip install -e .
+  displayName: 'Install package'
+
+- script: |
     pip install nose
     nosetests -s -v --with-xunit
   displayName: 'Run tests'

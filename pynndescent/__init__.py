@@ -4,3 +4,7 @@ from .pynndescent_ import NNDescent, PyNNDescentTransformer
 import numba
 
 numba.config.THREADING_LAYER = "workqueue"
+
+import pkg_resources
+
+__version__ = pkg_resources.get_distribution("pynndescent").version
