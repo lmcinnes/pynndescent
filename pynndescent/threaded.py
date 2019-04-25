@@ -248,7 +248,7 @@ def init_rp_tree(
     # store the updates in an array
     max_heap_update_count = chunk_size * leaf_array.shape[1] * leaf_array.shape[1] * 2
     heap_updates = np.zeros((n_tasks, max_heap_update_count, 4))
-    heap_update_counts = np.zeros((n_tasks,), dtype=int)
+    heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
 
     init_rp_tree_map_jit = make_init_rp_tree_map_jit(dist, dist_args)
 
@@ -271,7 +271,7 @@ def init_rp_tree(
 
     # sort and chunk heap updates so they can be applied in the reduce
     max_count = heap_update_counts.max()
-    offsets = np.zeros((n_tasks, max_count), dtype=int)
+    offsets = np.zeros((n_tasks, max_count), dtype=np.int64)
 
     def shuffle(index):
         return shuffle_jit(
