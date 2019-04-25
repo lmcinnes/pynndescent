@@ -3,6 +3,7 @@
 #
 # License: BSD 3 clause
 from __future__ import print_function
+import locale
 import numpy as np
 import numba
 
@@ -15,8 +16,6 @@ from pynndescent.utils import (
     build_candidates,
     deheap_sort,
 )
-
-import locale
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 

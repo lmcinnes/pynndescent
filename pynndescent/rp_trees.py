@@ -5,15 +5,13 @@ from __future__ import print_function
 from collections import namedtuple
 from warnings import warn
 
+import locale
 import numpy as np
 import numba
+import scipy.sparse
 
 from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum
-
 from pynndescent.utils import tau_rand_int, norm
-
-import scipy.sparse
-import locale
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 
@@ -752,7 +750,7 @@ def rptree_leaf_array(rp_forest):
         Since not all leaves are the same size the arrays are padded out with -1
         to ensure we can return a single ndarray.
     """
-    if len(rp_forest) > 0:
+    if rp_forest:
         leaf_array = np.vstack([tree.indices for tree in rp_forest])
     else:
         leaf_array = np.array([[-1]])
