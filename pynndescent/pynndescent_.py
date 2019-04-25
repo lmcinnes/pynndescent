@@ -508,7 +508,9 @@ class NNDescent(object):
         else:
             self._angular_trees = False
 
-        self.rng_state = random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
+        self.rng_state = self.random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
+            np.int64
+        )
 
         if self.tree_init:
             if verbose:
