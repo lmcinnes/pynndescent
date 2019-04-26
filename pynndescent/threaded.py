@@ -186,6 +186,106 @@ def init_current_graph(
     return current_graph
 
 
+def make_init_rp_tree_map_jit(dist, dist_args):
+    @numba.njit("i8(i8[:], i8[:, :], f4[:, :], f8[:, :])", nogil=True, fastmath=True)
+    def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates):
+        count = 0
+        for n in rows:
+            if n >= leaf_array.shape[0]:
+                break
+            tried = set([(-1, -1)])
+            for i in range(leaf_array.shape[1]):
+                la_n_i = leaf_array[n, i]
+                if la_n_i < 0:
+                    break
+                for j in range(i + 1, leaf_array.shape[1]):
+                    la_n_j = leaf_array[n, j]
+                    if la_n_j < 0:
+                        break
+                    if (la_n_i, la_n_j) in tried:
+                        continue
+                    d = dist(data[la_n_i], data[la_n_j], *dist_args)
+                    hu = heap_updates[count]
+                    hu[0] = la_n_i
+                    hu[1] = d
+                    hu[2] = la_n_j
+                    hu[3] = 1
+                    count += 1
+                    hu = heap_updates[count]
+                    hu[0] = la_n_j
+                    hu[1] = d
+                    hu[2] = la_n_i
+                    hu[3] = 1
+                    count += 1
+                    tried.add((la_n_i, la_n_j))
+                    tried.add((la_n_j, la_n_i))
+        return count
+
+    return init_rp_tree_map_jit
+
+
+@numba.njit("void(i8, f8[:, :, :], f8[:, :, :], i8[:, :], i8)", nogil=True)
+def init_rp_tree_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
+    for update_i in range(n_tasks):
+        o = offsets[update_i]
+        for j in range(o[index], o[index + 1]):
+            heap_update = heap_updates[update_i, j]
+            heap_push(
+                current_graph,
+                int(heap_update[0]),
+                heap_update[1],
+                int(heap_update[2]),
+                int(heap_update[3]),
+            )
+
+
+def init_rp_tree(
+    data, dist, dist_args, current_graph, leaf_array, chunk_size, threads=2
+):
+    n_vertices = data.shape[0]
+    n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
+
+    # store the updates in an array
+    max_heap_update_count = chunk_size * leaf_array.shape[1] * leaf_array.shape[1] * 2
+    heap_updates = np.zeros((n_tasks, max_heap_update_count, 4))
+    heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
+
+    init_rp_tree_map_jit = make_init_rp_tree_map_jit(dist, dist_args)
+
+    def init_rp_tree_map(index):
+        rows = chunk_rows(chunk_size, index, n_vertices)
+        return (
+            index,
+            init_rp_tree_map_jit(rows, leaf_array, data, heap_updates[index]),
+        )
+
+    def init_rp_tree_reduce(index):
+        return init_rp_tree_reduce_jit(
+            n_tasks, current_graph, heap_updates, offsets, index
+        )
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
+    # run map functions
+    for index, count in executor.map(init_rp_tree_map, range(n_tasks)):
+        heap_update_counts[index] = count
+
+    # sort and chunk heap updates so they can be applied in the reduce
+    max_count = heap_update_counts.max()
+    offsets = np.zeros((n_tasks, max_count), dtype=np.int64)
+
+    def shuffle(index):
+        return shuffle_jit(
+            heap_updates, heap_update_counts, offsets, chunk_size, n_vertices, index
+        )
+
+    for _ in executor.map(shuffle, range(n_tasks)):
+        pass
+
+    # then run reduce functions
+    for _ in executor.map(init_rp_tree_reduce, range(n_tasks)):
+        pass
+
+
 @numba.njit("i8(i8[:], i8, f8[:, :, :], f8[:, :], i8, f8, i8[:], b1)", nogil=True)
 def candidates_map_jit(
     rows, n_neighbors, current_graph, heap_updates, offset, rho, rng_state, seed_per_row
@@ -479,6 +579,11 @@ def nn_descent(
         threads,
         seed_per_row=seed_per_row,
     )
+
+    if rp_tree_init:
+        init_rp_tree(
+            data, dist, dist_args, current_graph, leaf_array, chunk_size, threads
+        )
 
     # store the updates in an array
     # note that the factor here is `n_neighbors * n_neighbors`, not `max_candidates * max_candidates`
