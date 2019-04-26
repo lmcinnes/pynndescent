@@ -57,7 +57,7 @@ def tau_rand(state):
     return abs(float(integer) / 0x7FFFFFFF)
 
 
-@numba.njit(fastmath=True)
+@numba.njit()
 def norm(vec):
     """Compute the (standard l2) norm of a vector.
 
@@ -75,7 +75,7 @@ def norm(vec):
     return np.sqrt(result)
 
 
-@numba.njit(parallel=True)
+@numba.njit()
 def rejection_sample(n_samples, pool_size, rng_state):
     """Generate n_samples many integers from 0 to pool_size such that no
     integer is selected twice. The duplication constraint is achieved via
@@ -100,6 +100,7 @@ def rejection_sample(n_samples, pool_size, rng_state):
     result = np.empty(n_samples, dtype=np.int64)
     for i in range(n_samples):
         reject_sample = True
+        j = 0
         while reject_sample:
             j = tau_rand_int(rng_state) % pool_size
             for k in range(i):
@@ -255,12 +256,12 @@ def unchecked_heap_push(heap, row, weight, index, flag):
     -------
     success: The number of new elements successfully pushed into the heap.
     """
+    if weight >= heap[1, row, 0]:
+        return 0
+
     indices = heap[0, row]
     weights = heap[1, row]
     is_new = heap[2, row]
-
-    if weight >= weights[0]:
-        return 0
 
     # insert val at position zero
     weights[0] = weight
@@ -463,7 +464,7 @@ def new_build_candidates(
     rng_state,
     rho=0.5,
     seed_per_row=False,
-):
+):  # pragma: no cover
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
     vertices that have the vertex as one of their nearest neighbors.
@@ -493,6 +494,7 @@ def new_build_candidates(
     new_candidate_neighbors = make_heap(n_vertices, max_candidates)
     old_candidate_neighbors = make_heap(n_vertices, max_candidates)
 
+    #    for i in numba.prange(n_vertices):
     for i in range(n_vertices):
         if seed_per_row:
             seed(rng_state, i)

@@ -1,6 +1,6 @@
 # Author: Leland McInnes <leland.mcinnes@gmail.com>
 #
-# License: BSD 3 clause
+# License: BSD 2 clause
 from __future__ import print_function
 from collections import namedtuple
 from warnings import warn
@@ -10,7 +10,7 @@ import numpy as np
 import numba
 import scipy.sparse
 
-from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum
+from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_unique
 from pynndescent.utils import tau_rand_int, norm
 
 locale.setlocale(locale.LC_NUMERIC, "C")
@@ -129,7 +129,7 @@ def angular_random_projection_split(data, indices, rng_state):
     return indices_left, indices_right, hyperplane_vector, None
 
 
-@numba.njit(fastmath=True, nogil=True, parallel=True)
+@numba.njit(fastmath=True)
 def euclidean_random_projection_split(data, indices, rng_state):
     """Given a set of ``indices`` for data points from ``data``, create
     a random hyperplane to split the data, returning two arrays indices
@@ -441,6 +441,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     return indices_left, indices_right, hyperplane, hyperplane_offset
 
 
+@numba.jit()
 def make_euclidean_tree(data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = euclidean_random_projection_split(
@@ -459,6 +460,7 @@ def make_euclidean_tree(data, indices, rng_state, leaf_size=30):
     return node
 
 
+@numba.jit()
 def make_angular_tree(data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = angular_random_projection_split(
@@ -477,6 +479,7 @@ def make_angular_tree(data, indices, rng_state, leaf_size=30):
     return node
 
 
+@numba.jit()
 def make_sparse_euclidean_tree(inds, indptr, data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = sparse_euclidean_random_projection_split(
@@ -499,6 +502,7 @@ def make_sparse_euclidean_tree(inds, indptr, data, indices, rng_state, leaf_size
     return node
 
 
+@numba.jit()
 def make_sparse_angular_tree(inds, indptr, data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = sparse_angular_random_projection_split(
@@ -605,7 +609,7 @@ def recursive_flatten(
         return node_num, leaf_num
     else:
         if len(tree.hyperplane.shape) > 1:
-            # spare case
+            # sparse case
             hyperplanes[node_num][:, : tree.hyperplane.shape[1]] = tree.hyperplane
         else:
             hyperplanes[node_num] = tree.hyperplane
@@ -685,6 +689,47 @@ def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
     return indices[-children[node, 0]]
 
 
+@numba.njit()
+def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
+    margin = offset
+
+    hyperplane_inds = arr_unique(hyperplane[0])
+    hyperplane_data = hyperplane[1, : hyperplane_inds.shape[0]]
+
+    _, aux_data = sparse_mul(hyperplane_inds, hyperplane_data, point_inds, point_data)
+
+    for d in range(aux_data.shape[0]):
+        margin += aux_data[d]
+
+    if abs(margin) < EPS:
+        side = tau_rand_int(rng_state) % 2
+        if side == 0:
+            return 0
+        else:
+            return 1
+    elif margin > 0:
+        return 0
+    else:
+        return 1
+
+
+@numba.njit()
+def search_sparse_flat_tree(
+    point_inds, point_data, hyperplanes, offsets, children, indices, rng_state
+):
+    node = 0
+    while children[node, 0] > 0:
+        side = sparse_select_side(
+            hyperplanes[node], offsets[node], point_inds, point_data, rng_state
+        )
+        if side == 0:
+            node = children[node, 0]
+        else:
+            node = children[node, 1]
+
+    return indices[-children[node, 0]]
+
+
 def make_forest(data, n_neighbors, n_trees, rng_state, angular=False):
     """Build a random projection forest with ``n_trees``.
 
@@ -708,7 +753,7 @@ def make_forest(data, n_neighbors, n_trees, rng_state, angular=False):
             flatten_tree(make_tree(data, rng_state, leaf_size, angular), leaf_size)
             for i in range(n_trees)
         ]
-    except (RuntimeError, RecursionError, SystemError):
+    except (RuntimeError, RecursionError):
         warn(
             "Random Projection forest initialisation failed due to recursion"
             "limit being reached. Something is a little strange with your "

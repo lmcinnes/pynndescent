@@ -14,6 +14,7 @@ import pynndescent.sparse as sparse
 import pynndescent.threaded as threaded
 
 from pynndescent.utils import (
+    tau_rand,
     rejection_sample,
     seed,
     make_heap,
@@ -32,7 +33,7 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 
 def make_initialisations(dist, dist_args):
-    @numba.njit(parallel=True, fastmath=True)
+    @numba.njit(parallel=True)
     def init_from_random(n_neighbors, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
@@ -43,7 +44,7 @@ def make_initialisations(dist, dist_args):
                 heap_push(heap, i, d, indices[j], 1)
         return
 
-    @numba.njit(parallel=True, fastmath=True)
+    @numba.njit(parallel=True)
     def init_from_tree(tree, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = search_flat_tree(
@@ -79,7 +80,7 @@ def initialise_search(
 
 
 def make_initialized_nnd_search(dist, dist_args):
-    @numba.njit(parallel=True, fastmath=True)
+    @numba.njit(parallel=True)
     def initialized_nnd_search(data, indptr, indices, initialization, query_points):
 
         for i in numba.prange(query_points.shape[0]):
@@ -144,7 +145,7 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
                 tried.add((leaf_array[n, j], leaf_array[n, i]))
 
 
-@numba.njit(fastmath=True)
+@numba.njit()
 def nn_descent(
     data,
     n_neighbors,
@@ -161,6 +162,7 @@ def nn_descent(
     seed_per_row=False,
 ):
     n_vertices = data.shape[0]
+    tried = set([(-1, -1)])
 
     current_graph = make_heap(data.shape[0], n_neighbors)
     for i in range(data.shape[0]):
@@ -171,9 +173,28 @@ def nn_descent(
             d = dist(data[i], data[indices[j]], *dist_args)
             heap_push(current_graph, i, d, indices[j], 1)
             heap_push(current_graph, indices[j], d, i, 1)
+            tried.add((i, indices[j]))
+            tried.add((indices[j], i))
 
     if rp_tree_init:
-        init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
+        for n in range(leaf_array.shape[0]):
+            for i in range(leaf_array.shape[1]):
+                if leaf_array[n, i] < 0:
+                    break
+                for j in range(i + 1, leaf_array.shape[1]):
+                    if leaf_array[n, j] < 0:
+                        break
+                    if (leaf_array[n, i], leaf_array[n, j]) in tried:
+                        continue
+                    d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]], *dist_args)
+                    unchecked_heap_push(
+                        current_graph, leaf_array[n, i], d, leaf_array[n, j], 1
+                    )
+                    unchecked_heap_push(
+                        current_graph, leaf_array[n, j], d, leaf_array[n, i], 1
+                    )
+                    tried.add((leaf_array[n, i], leaf_array[n, j]))
+                    tried.add((leaf_array[n, j], leaf_array[n, i]))
 
     for n in range(n_iters):
 
@@ -195,21 +216,27 @@ def nn_descent(
                     continue
                 for k in range(j, max_candidates):
                     q = int(new_candidate_neighbors[0, i, k])
-                    if q < 0:
+                    if q < 0 or (p, q) in tried:
                         continue
 
                     d = dist(data[p], data[q], *dist_args)
+                    # c += unchecked_heap_push(current_graph, p, d, q, 1)
+                    # c += unchecked_heap_push(current_graph, q, d, p, 1)
                     c += heap_push(current_graph, p, d, q, 1)
                     c += heap_push(current_graph, q, d, p, 1)
+                    tried.add((p, q))
+                    tried.add((q, p))
 
                 for k in range(max_candidates):
                     q = int(old_candidate_neighbors[0, i, k])
-                    if q < 0:
+                    if q < 0 or (p, q) in tried:
                         continue
 
                     d = dist(data[p], data[q], *dist_args)
-                    c += heap_push(current_graph, p, d, q, 1)
-                    c += heap_push(current_graph, q, d, p, 1)
+                    c += unchecked_heap_push(current_graph, p, d, q, 1)
+                    c += unchecked_heap_push(current_graph, q, d, p, 1)
+                    tried.add((p, q))
+                    tried.add((q, p))
 
         if c <= delta * n_neighbors * data.shape[0]:
             break
