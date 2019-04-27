@@ -80,7 +80,7 @@ def initialise_search(
 
 
 def make_initialized_nnd_search(dist, dist_args):
-    @numba.njit(parallel=True)
+    @numba.njit(parallel=True, fastmath=True)
     def initialized_nnd_search(data, indptr, indices, initialization, query_points):
 
         for i in numba.prange(query_points.shape[0]):
