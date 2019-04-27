@@ -33,7 +33,7 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 
 def make_initialisations(dist, dist_args):
-    @numba.njit(parallel=True)
+    @numba.njit(parallel=True, fastmath=True)
     def init_from_random(n_neighbors, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
@@ -44,7 +44,7 @@ def make_initialisations(dist, dist_args):
                 heap_push(heap, i, d, indices[j], 1)
         return
 
-    @numba.njit(parallel=True)
+    @numba.njit(parallel=True, fastmath=True)
     def init_from_tree(tree, data, query_points, heap, rng_state):
         for i in range(query_points.shape[0]):
             indices = search_flat_tree(
@@ -145,7 +145,7 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
                 tried.add((leaf_array[n, j], leaf_array[n, i]))
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def nn_descent(
     data,
     n_neighbors,

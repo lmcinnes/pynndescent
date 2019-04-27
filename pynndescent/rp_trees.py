@@ -129,7 +129,7 @@ def angular_random_projection_split(data, indices, rng_state):
     return indices_left, indices_right, hyperplane_vector, None
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, nogil=True, parallel=True)
 def euclidean_random_projection_split(data, indices, rng_state):
     """Given a set of ``indices`` for data points from ``data``, create
     a random hyperplane to split the data, returning two arrays indices
@@ -441,7 +441,6 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     return indices_left, indices_right, hyperplane, hyperplane_offset
 
 
-@numba.jit()
 def make_euclidean_tree(data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = euclidean_random_projection_split(
@@ -460,7 +459,6 @@ def make_euclidean_tree(data, indices, rng_state, leaf_size=30):
     return node
 
 
-@numba.jit()
 def make_angular_tree(data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = angular_random_projection_split(
@@ -479,7 +477,6 @@ def make_angular_tree(data, indices, rng_state, leaf_size=30):
     return node
 
 
-@numba.jit()
 def make_sparse_euclidean_tree(inds, indptr, data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = sparse_euclidean_random_projection_split(
@@ -502,7 +499,6 @@ def make_sparse_euclidean_tree(inds, indptr, data, indices, rng_state, leaf_size
     return node
 
 
-@numba.jit()
 def make_sparse_angular_tree(inds, indptr, data, indices, rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = sparse_angular_random_projection_split(
@@ -753,7 +749,7 @@ def make_forest(data, n_neighbors, n_trees, rng_state, angular=False):
             flatten_tree(make_tree(data, rng_state, leaf_size, angular), leaf_size)
             for i in range(n_trees)
         ]
-    except (RuntimeError, RecursionError):
+    except (RuntimeError, RecursionError, SystemError):
         warn(
             "Random Projection forest initialisation failed due to recursion"
             "limit being reached. Something is a little strange with your "
