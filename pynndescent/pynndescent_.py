@@ -14,7 +14,6 @@ import pynndescent.sparse as sparse
 import pynndescent.threaded as threaded
 
 from pynndescent.utils import (
-    tau_rand,
     rejection_sample,
     seed,
     make_heap,
@@ -179,22 +178,21 @@ def nn_descent(
     if rp_tree_init:
         for n in range(leaf_array.shape[0]):
             for i in range(leaf_array.shape[1]):
-                if leaf_array[n, i] < 0:
+                p = leaf_array[n, i]
+                if p < 0:
                     break
                 for j in range(i + 1, leaf_array.shape[1]):
-                    if leaf_array[n, j] < 0:
+                    q = leaf_array[n, j]
+                    if q < 0:
                         break
-                    if (leaf_array[n, i], leaf_array[n, j]) in tried:
+                    if (p, q) in tried:
                         continue
-                    d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]], *dist_args)
-                    unchecked_heap_push(
-                        current_graph, leaf_array[n, i], d, leaf_array[n, j], 1
-                    )
-                    unchecked_heap_push(
-                        current_graph, leaf_array[n, j], d, leaf_array[n, i], 1
-                    )
-                    tried.add((leaf_array[n, i], leaf_array[n, j]))
-                    tried.add((leaf_array[n, j], leaf_array[n, i]))
+                    d = dist(data[p], data[q], *dist_args)
+                    unchecked_heap_push(current_graph, p, d, q, 1)
+                    tried.add((p, q))
+                    if p != q:
+                        unchecked_heap_push(current_graph, q, d, p, 1)
+                        tried.add((q, p))
 
     for n in range(n_iters):
 
@@ -220,12 +218,11 @@ def nn_descent(
                         continue
 
                     d = dist(data[p], data[q], *dist_args)
-                    # c += unchecked_heap_push(current_graph, p, d, q, 1)
-                    # c += unchecked_heap_push(current_graph, q, d, p, 1)
-                    c += heap_push(current_graph, p, d, q, 1)
-                    c += heap_push(current_graph, q, d, p, 1)
+                    c += unchecked_heap_push(current_graph, p, d, q, 1)
                     tried.add((p, q))
-                    tried.add((q, p))
+                    if p != q:
+                        c += unchecked_heap_push(current_graph, q, d, p, 1)
+                        tried.add((q, p))
 
                 for k in range(max_candidates):
                     q = int(old_candidate_neighbors[0, i, k])
@@ -234,9 +231,10 @@ def nn_descent(
 
                     d = dist(data[p], data[q], *dist_args)
                     c += unchecked_heap_push(current_graph, p, d, q, 1)
-                    c += unchecked_heap_push(current_graph, q, d, p, 1)
                     tried.add((p, q))
-                    tried.add((q, p))
+                    if p != q:
+                        c += unchecked_heap_push(current_graph, q, d, p, 1)
+                        tried.add((q, p))
 
         if c <= delta * n_neighbors * data.shape[0]:
             break
