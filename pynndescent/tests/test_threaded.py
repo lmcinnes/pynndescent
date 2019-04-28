@@ -1,6 +1,7 @@
 import numpy as np
 
 from numpy.testing import assert_allclose
+from nose.tools import assert_equals
 
 from sklearn.neighbors import NearestNeighbors
 
@@ -135,6 +136,13 @@ def test_nn_descent():
         seed_per_row=True,
     )._neighbor_graph
 
+    for i in range(data.shape[0]):
+        assert_equals(
+            len(nn_indices[i]),
+            len(np.unique(nn_indices[i])),
+            "Duplicate indices in unthreaded knn graph",
+        )
+
     nn_indices_threaded, nn_distances_threaded = NNDescent(
         data,
         n_neighbors=n_neighbors,
@@ -146,6 +154,13 @@ def test_nn_descent():
         algorithm="threaded",
         chunk_size=chunk_size,
     )._neighbor_graph
+
+    for i in range(data.shape[0]):
+        assert_equals(
+            len(nn_indices_threaded[i]),
+            len(np.unique(nn_indices_threaded[i])),
+            "Duplicate indices in threaded knn graph",
+        )
 
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)
     _, nn_gold_indices = nbrs.kneighbors(data)
