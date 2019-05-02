@@ -111,6 +111,26 @@ def test_sparse_angular_nn_descent_neighbor_accuracy():
     )
 
 
+def test_random_state_none():
+    knn_indices, _ = NNDescent(
+        nn_data, "euclidean", {}, 10, random_state=None
+    )._neighbor_graph
+
+    tree = KDTree(nn_data)
+    true_indices = tree.query(nn_data, 10, return_distance=False)
+
+    num_correct = 0.0
+    for i in range(nn_data.shape[0]):
+        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    percent_correct = num_correct / (spatial_data.shape[0] * 10)
+    assert_greater_equal(
+        percent_correct,
+        0.99,
+        "NN-descent did not get 99% " "accuracy on nearest neighbors",
+    )
+
+
 def test_deterministic():
     seed = np.random.RandomState(42)
 
