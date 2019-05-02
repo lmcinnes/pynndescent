@@ -5,8 +5,15 @@ from pynndescent.utils import tau_rand_int, norm
 
 
 @numba.njit(fastmath=True, nogil=True)
-def apply_hyperplane(data, hyperplane_vector, hyperplane_offset, hyperplane_node_num,
-                     current_num_nodes, data_node_loc, rng_state):
+def apply_hyperplane(
+    data,
+    hyperplane_vector,
+    hyperplane_offset,
+    hyperplane_node_num,
+    current_num_nodes,
+    data_node_loc,
+    rng_state,
+):
 
     left_node = current_num_nodes
     right_node = current_num_nodes + 1
@@ -48,10 +55,12 @@ def make_euclidean_hyperplane(data, indices, rng_state):
 
     for d in range(data.shape[1]):
         hyperplane_vector[d] = data[left, d] - data[right, d]
-        hyperplane_offset -= hyperplane_vector[d] * (
-                data[left, d] + data[right, d]) / 2.0
+        hyperplane_offset -= (
+            hyperplane_vector[d] * (data[left, d] + data[right, d]) / 2.0
+        )
 
     return hyperplane_vector, hyperplane_offset
+
 
 @numba.njit(fastmath=True, nogil=True)
 def make_angular_hyperplane(data, indices, rng_state):
@@ -78,7 +87,7 @@ def make_angular_hyperplane(data, indices, rng_state):
 
     for d in range(data.shape[1]):
         hyperplane_vector[d] = (data[left, d] / left_norm) - (
-                data[right, d] / right_norm
+            data[right, d] / right_norm
         )
 
     return hyperplane_vector, hyperplane_offset
