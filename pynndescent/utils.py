@@ -100,6 +100,7 @@ def rejection_sample(n_samples, pool_size, rng_state):
     result = np.empty(n_samples, dtype=np.int64)
     for i in range(n_samples):
         reject_sample = True
+        j = 0
         while reject_sample:
             j = tau_rand_int(rng_state) % pool_size
             for k in range(i):
@@ -255,12 +256,12 @@ def unchecked_heap_push(heap, row, weight, index, flag):
     -------
     success: The number of new elements successfully pushed into the heap.
     """
+    if weight >= heap[1, row, 0]:
+        return 0
+
     indices = heap[0, row]
     weights = heap[1, row]
     is_new = heap[2, row]
-
-    if weight >= weights[0]:
-        return 0
 
     # insert val at position zero
     weights[0] = weight

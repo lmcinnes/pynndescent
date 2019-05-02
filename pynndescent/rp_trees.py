@@ -1,6 +1,6 @@
 # Author: Leland McInnes <leland.mcinnes@gmail.com>
 #
-# License: BSD 3 clause
+# License: BSD 2 clause
 from __future__ import print_function
 from collections import namedtuple
 from warnings import warn
@@ -10,7 +10,7 @@ import numpy as np
 import numba
 import scipy.sparse
 
-from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum
+from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_unique
 from pynndescent.utils import tau_rand_int, norm
 
 locale.setlocale(locale.LC_NUMERIC, "C")
@@ -605,7 +605,7 @@ def recursive_flatten(
         return node_num, leaf_num
     else:
         if len(tree.hyperplane.shape) > 1:
-            # spare case
+            # sparse case
             hyperplanes[node_num][:, : tree.hyperplane.shape[1]] = tree.hyperplane
         else:
             hyperplanes[node_num] = tree.hyperplane
@@ -677,6 +677,47 @@ def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
     node = 0
     while children[node, 0] > 0:
         side = select_side(hyperplanes[node], offsets[node], point, rng_state)
+        if side == 0:
+            node = children[node, 0]
+        else:
+            node = children[node, 1]
+
+    return indices[-children[node, 0]]
+
+
+@numba.njit()
+def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
+    margin = offset
+
+    hyperplane_inds = arr_unique(hyperplane[0])
+    hyperplane_data = hyperplane[1, : hyperplane_inds.shape[0]]
+
+    _, aux_data = sparse_mul(hyperplane_inds, hyperplane_data, point_inds, point_data)
+
+    for d in range(aux_data.shape[0]):
+        margin += aux_data[d]
+
+    if abs(margin) < EPS:
+        side = tau_rand_int(rng_state) % 2
+        if side == 0:
+            return 0
+        else:
+            return 1
+    elif margin > 0:
+        return 0
+    else:
+        return 1
+
+
+@numba.njit()
+def search_sparse_flat_tree(
+    point_inds, point_data, hyperplanes, offsets, children, indices, rng_state
+):
+    node = 0
+    while children[node, 0] > 0:
+        side = sparse_select_side(
+            hyperplanes[node], offsets[node], point_inds, point_data, rng_state
+        )
         if side == 0:
             node = children[node, 0]
         else:

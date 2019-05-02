@@ -141,6 +141,13 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
         data, "cosine", {}, n_neighbors, random_state=np.random, n_trees=20
     )._neighbor_graph
 
+    for i in range(data.shape[0]):
+        assert_equals(
+            len(knn_indices[i]),
+            len(np.unique(knn_indices[i])),
+            "Duplicate indices in knn graph",
+        )
+
     angular_data = normalize(data, norm="l2")
     tree = KDTree(angular_data)
     true_indices = tree.query(angular_data, n_neighbors, return_distance=False)
