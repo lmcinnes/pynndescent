@@ -3,7 +3,7 @@ import io
 import re
 from contextlib import redirect_stdout
 
-from nose.tools import assert_greater_equal, assert_true, assert_equals
+from nose.tools import assert_greater_equal, assert_true, assert_equal
 
 import numpy as np
 from scipy import sparse
@@ -152,8 +152,8 @@ def test_deterministic():
 # data used is a cut-down version of that provided by @scharron
 # It contains lots of all-zero vectors and some other duplicates
 def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
-    THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-    data_path = os.path.join(THIS_DIR, "test_data/cosine_hang.npy")
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    data_path = os.path.join(this_dir, "test_data/cosine_hang.npy")
     data = np.load(data_path)
 
     n_neighbors = 10
@@ -162,7 +162,7 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
     )._neighbor_graph
 
     for i in range(data.shape[0]):
-        assert_equals(
+        assert_equal(
             len(knn_indices[i]),
             len(np.unique(knn_indices[i])),
             "Duplicate indices in knn graph",
@@ -170,8 +170,8 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
 
 
 def test_deduplicated_data_behaves_normally():
-    THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-    data_path = os.path.join(THIS_DIR, "test_data/cosine_hang.npy")
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    data_path = os.path.join(this_dir, "test_data/cosine_hang.npy")
     data = np.unique(np.load(data_path), axis=0)
     data = data[~np.all(data == 0, axis=1)]
     data = data[:1000]
@@ -182,7 +182,7 @@ def test_deduplicated_data_behaves_normally():
     )._neighbor_graph
 
     for i in range(data.shape[0]):
-        assert_equals(
+        assert_equal(
             len(knn_indices[i]),
             len(np.unique(knn_indices[i])),
             "Duplicate indices in knn graph",
@@ -236,7 +236,7 @@ def test_no_output_when_verbose_is_false():
             verbose=False,
         )
     output = out.getvalue().strip()
-    assert_equals(len(output), 0)
+    assert_equal(len(output), 0)
 
 
 # same as the previous two test, but this time using the PyNNDescentTransformer
@@ -271,4 +271,4 @@ def test_transformer_output_when_verbose_is_false():
             verbose=False,
         ).fit_transform(spatial_data)
     output = out.getvalue().strip()
-    assert_equals(len(output), 0)
+    assert_equal(len(output), 0)
