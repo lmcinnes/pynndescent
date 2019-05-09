@@ -503,17 +503,21 @@ def new_build_candidates(
             idx = current_graph[0, i, j]
             isn = current_graph[2, i, j]
             d = tau_rand(rng_state)
+            c = 0
+
+            if isn:
+                c += heap_push(new_candidate_neighbors, i, d, idx, isn)
+            else:
+                heap_push(old_candidate_neighbors, i, d, idx, isn)
+
             if tau_rand(rng_state) < rho:
-                c = 0
                 if isn:
-                    c += heap_push(new_candidate_neighbors, i, d, idx, isn)
                     c += heap_push(new_candidate_neighbors, idx, d, i, isn)
                 else:
-                    heap_push(old_candidate_neighbors, i, d, idx, isn)
                     heap_push(old_candidate_neighbors, idx, d, i, isn)
 
-                if c > 0:
-                    current_graph[2, i, j] = 0
+            if c > 0:
+                current_graph[2, i, j] = 0
 
     return new_candidate_neighbors, old_candidate_neighbors
 
