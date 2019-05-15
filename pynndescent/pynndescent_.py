@@ -623,8 +623,12 @@ class NNDescent(object):
         else:
             raise ValueError("Unknown algorithm selected")
 
+    def _init_search_graph(self):
+        if hasattr(self, "_search_graph"):
+            return
+
         self._search_graph = lil_matrix(
-            (data.shape[0], data.shape[0]), dtype=np.float32
+            (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
         )
         self._search_graph.rows = self._neighbor_graph[0]
         self._search_graph.data = self._neighbor_graph[1]
@@ -643,8 +647,6 @@ class NNDescent(object):
         )
 
         self._search = make_initialized_nnd_search(self._distance_func, self._dist_args)
-
-        return
 
     def query(self, query_data, k=10, queue_size=5.0):
         """Query the training data for the k nearest neighbors
@@ -679,6 +681,7 @@ class NNDescent(object):
         """
         # query_data = check_array(query_data, dtype=np.float64, order='C')
         query_data = np.asarray(query_data).astype(np.float32)
+        self._init_search_graph()
         init = initialise_search(
             self._rp_forest,
             self._raw_data,
