@@ -597,6 +597,9 @@ def nn_descent(
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
 
     for n in range(n_iters):
+        if verbose:
+            print("\t", n, " / ", n_iters)
+
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
             current_graph,
             n_vertices,

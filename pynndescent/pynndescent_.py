@@ -184,6 +184,8 @@ def nn_descent(
         init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=tried)
 
     for n in range(n_iters):
+        if verbose:
+            print("\t", n, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
             current_graph,
@@ -539,7 +541,7 @@ class NNDescent(object):
                 self.rho,
                 rp_tree_init=self.tree_init,
                 leaf_array=leaf_array,
-                verbose=False,
+                verbose=verbose,
                 threads=threads,
                 seed_per_row=seed_per_row,
             )
@@ -570,7 +572,7 @@ class NNDescent(object):
                     rp_tree_init=False,
                     leaf_array=leaf_array,
                     n_iters=self.n_iters,
-                    verbose=False,
+                    verbose=verbose,
                 )
 
             else:
@@ -589,7 +591,7 @@ class NNDescent(object):
                     self.rho,
                     rp_tree_init=True,
                     leaf_array=leaf_array,
-                    verbose=False,
+                    verbose=verbose,
                     seed_per_row=seed_per_row,
                 )
         elif algorithm == "alternative":
