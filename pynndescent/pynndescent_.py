@@ -2,6 +2,8 @@
 #
 # License: BSD 2 clause
 
+from warnings import warn
+
 import numba
 import numpy as np
 from sklearn.utils import check_random_state, check_array
@@ -622,6 +624,13 @@ class NNDescent(object):
             )
         else:
             raise ValueError("Unknown algorithm selected")
+
+        if np.any(self._neighbor_graph[0] < 0):
+            warn(
+                "Failed to correctly find n_neighbors for some samples."
+                "Results may be less than ideal. Try re-running with"
+                "different parameters."
+            )
 
     def _init_search_graph(self):
         if hasattr(self, "_search_graph"):
