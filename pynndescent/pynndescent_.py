@@ -4,7 +4,7 @@
 
 import numba
 import numpy as np
-from sklearn.utils import check_random_state
+from sklearn.utils import check_random_state, check_array
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix, isspmatrix_csr
 from scipy.sparse.csgraph import minimum_spanning_tree
@@ -485,7 +485,8 @@ class NNDescent(object):
         self.dim = data.shape[1]
         self.verbose = verbose
 
-        data = data.astype(np.float32)
+        data = check_array(data, dtype=np.float32, accept_sparse="csr")
+        self._raw_data = data
 
         if not tree_init or n_trees == 0:
             self.tree_init = False
@@ -495,8 +496,6 @@ class NNDescent(object):
         self._dist_args = tuple((metric_kwds or {}).values())
 
         self.random_state = check_random_state(random_state)
-
-        self._raw_data = data.copy()
 
         if callable(metric):
             self._distance_func = metric
