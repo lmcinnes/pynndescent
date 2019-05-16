@@ -1,3 +1,4 @@
+from joblib import Parallel
 import numpy as np
 
 from numpy.testing import assert_allclose
@@ -43,6 +44,7 @@ def test_init_current_graph():
     current_graph = pynndescent_.init_current_graph(
         data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
     )
+    parallel = Parallel(n_jobs=2, prefer="threads")
     current_graph_threaded = threaded.init_current_graph(
         data,
         dist,
@@ -50,6 +52,7 @@ def test_init_current_graph():
         n_neighbors,
         chunk_size=chunk_size,
         rng_state=new_rng_state(),
+        parallel=parallel,
         seed_per_row=True,
     )
 
@@ -80,14 +83,9 @@ def test_init_rp_tree():
     )
     _rp_forest = make_forest(data, n_neighbors, n_trees=8, rng_state=rng_state)
     leaf_array = rptree_leaf_array(_rp_forest)
+    parallel = Parallel(n_jobs=2, prefer="threads")
     threaded.init_rp_tree(
-        data,
-        dist,
-        dist_args,
-        current_graph_threaded,
-        leaf_array,
-        n_neighbors,
-        chunk_size,
+        data, dist, dist_args, current_graph_threaded, leaf_array, chunk_size, parallel
     )
 
     assert_allclose(current_graph_threaded, current_graph)
@@ -111,6 +109,7 @@ def test_new_build_candidates():
     current_graph = pynndescent_.init_current_graph(
         data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
     )
+    parallel = Parallel(n_jobs=2, prefer="threads")
     new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.new_build_candidates(
         current_graph,
         n_vertices,
@@ -118,6 +117,8 @@ def test_new_build_candidates():
         max_candidates,
         chunk_size=chunk_size,
         rng_state=new_rng_state(),
+        rho=0.5,
+        parallel=parallel,
         seed_per_row=True,
     )
 
@@ -153,6 +154,7 @@ def test_nn_descent():
         seed_per_row=True,
         algorithm="threaded",
         chunk_size=chunk_size,
+        n_jobs=2,
     )._neighbor_graph
 
     for i in range(data.shape[0]):
