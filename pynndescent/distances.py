@@ -10,10 +10,10 @@ _mock_ones = np.ones(2, dtype=np.float32)
 
 @numba.njit(fastmath=True)
 def euclidean(x, y):
-    """Standard euclidean distance.
+    r"""Standard euclidean distance.
 
-    ..math::
-        D(x, y) = \sqrt{\sum_i (x_i - y_i)^2}
+    .. math::
+        D(x, y) = \\sqrt{\sum_i (x_i - y_i)^2}
     """
     result = 0.0
     for i in range(x.shape[0]):
@@ -23,10 +23,10 @@ def euclidean(x, y):
 
 @numba.njit(fastmath=True)
 def standardised_euclidean(x, y, sigma=_mock_ones):
-    """Euclidean distance standardised against a vector of standard
+    r"""Euclidean distance standardised against a vector of standard
     deviations per coordinate.
 
-    ..math::
+    .. math::
         D(x, y) = \sqrt{\sum_i \frac{(x_i - y_i)**2}{v_i}}
     """
     result = 0.0
@@ -38,9 +38,9 @@ def standardised_euclidean(x, y, sigma=_mock_ones):
 
 @numba.njit(fastmath=True)
 def manhattan(x, y):
-    """Manhattan, taxicab, or l1 distance.
+    r"""Manhattan, taxicab, or l1 distance.
 
-    ..math::
+    .. math::
         D(x, y) = \sum_i |x_i - y_i|
     """
     result = 0.0
@@ -52,9 +52,9 @@ def manhattan(x, y):
 
 @numba.njit(fastmath=True)
 def chebyshev(x, y):
-    """Chebyshev or l-infinity distance.
+    r"""Chebyshev or l-infinity distance.
 
-    ..math::
+    .. math::
         D(x, y) = \max_i |x_i - y_i|
     """
     result = 0.0
@@ -66,9 +66,9 @@ def chebyshev(x, y):
 
 @numba.njit(fastmath=True)
 def minkowski(x, y, p=2):
-    """Minkowski distance.
+    r"""Minkowski distance.
 
-    ..math::
+    .. math::
         D(x, y) = \left(\sum_i |x_i - y_i|^p\right)^{\frac{1}{p}}
 
     This is a general distance. For p=1 it is equivalent to
@@ -85,9 +85,9 @@ def minkowski(x, y, p=2):
 
 @numba.njit(fastmath=True)
 def weighted_minkowski(x, y, w=_mock_ones, p=2):
-    """A weighted version of Minkowski distance.
+    r"""A weighted version of Minkowski distance.
 
-    ..math::
+    .. math::
         D(x, y) = \left(\sum_i w_i |x_i - y_i|^p\right)^{\frac{1}{p}}
 
     If weights w_i are inverse standard deviations of data in each dimension
