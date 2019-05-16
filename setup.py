@@ -30,6 +30,8 @@ configuration = {
     ],
     "keywords": "nearest neighbor, knn, ANN",
     "url": "http://github.com/lmcinnes/pynndescent",
+    "author": "Leland McInnes",
+    "author_email": "leland.mcinnes@gmail.com",
     "maintainer": "Leland McInnes",
     "maintainer_email": "leland.mcinnes@gmail.com",
     "license": "BSD",
@@ -40,6 +42,7 @@ configuration = {
     "test_suite": "nose.collector",
     "tests_require": ["nose"],
     "data_files": (),
+    "zip_safe": True,
 }
 
 setup(**configuration)
