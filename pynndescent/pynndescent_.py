@@ -531,9 +531,13 @@ class NNDescent(object):
             self._rp_forest = None
             leaf_array = np.array([[-1]])
 
-        if algorithm == "threaded":
+        if threaded.get_requested_n_jobs(n_jobs) != 1:
+            if algorithm != "standard":
+                raise ValueError(
+                    "Algorithm {} not supported in parallel mode".format(algorithm)
+                )
             if verbose:
-                print(ts(), "threaded NN descent for", str(n_iters), "iterations")
+                print(ts(), "parallel NN descent for", str(n_iters), "iterations")
             self._neighbor_graph = threaded.nn_descent(
                 self._raw_data,
                 self.n_neighbors,
