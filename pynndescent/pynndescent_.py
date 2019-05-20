@@ -448,6 +448,11 @@ class NNDescent(object):
         indexes and less accurate searching. Don't tweak this value unless
         you know what you're doing.
 
+    n_jobs: int or None, optional (default=None)
+        The number of parallel jobs to run for neighbors index construction.
+        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
+        ``-1`` means using all processors.
+
     verbose: bool (optional, default=False)
         Whether to print status data during the computation.
     """
@@ -469,7 +474,7 @@ class NNDescent(object):
         delta=0.001,
         rho=0.5,
         chunk_size=None,
-        threads=2,
+        n_jobs=None,
         seed_per_row=False,
         verbose=False,
     ):
@@ -526,9 +531,13 @@ class NNDescent(object):
             self._rp_forest = None
             leaf_array = np.array([[-1]])
 
-        if algorithm == "threaded":
+        if threaded.get_requested_n_jobs(n_jobs) != 1:
+            if algorithm != "standard":
+                raise ValueError(
+                    "Algorithm {} not supported in parallel mode".format(algorithm)
+                )
             if verbose:
-                print(ts(), "threaded NN descent for", str(n_iters), "iterations")
+                print(ts(), "parallel NN descent for", str(n_iters), "iterations")
             self._neighbor_graph = threaded.nn_descent(
                 self._raw_data,
                 self.n_neighbors,
@@ -543,7 +552,7 @@ class NNDescent(object):
                 rp_tree_init=self.tree_init,
                 leaf_array=leaf_array,
                 verbose=verbose,
-                threads=threads,
+                n_jobs=n_jobs,
                 seed_per_row=seed_per_row,
             )
         elif algorithm == "standard" or leaf_array.shape[0] == 1:
