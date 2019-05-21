@@ -36,7 +36,7 @@ configuration = {
     "maintainer_email": "leland.mcinnes@gmail.com",
     "license": "BSD",
     "packages": ["pynndescent"],
-    "install_requires": ["scikit-learn >= 0.18", "scipy >= 1.0", "numba >= 0.39"],
+    "install_requires": ["scikit-learn >= 0.18", "scipy >= 1.0", "numba >= 0.39", "joblib >= 0.11"],
     "ext_modules": [],
     "cmdclass": {},
     "test_suite": "nose.collector",
