@@ -171,7 +171,6 @@ def test_nn_descent():
         delta=0,
         tree_init=False,
         seed_per_row=True,
-        chunk_size=chunk_size,
         n_jobs=2,
     )._neighbor_graph
 

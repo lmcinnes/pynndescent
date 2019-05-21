@@ -552,7 +552,6 @@ def nn_descent(
     data,
     n_neighbors,
     rng_state,
-    chunk_size,
     max_candidates=50,
     dist=dst.euclidean,
     dist_args=(),
@@ -572,7 +571,8 @@ def nn_descent(
     with joblib.Parallel(prefer="threads", n_jobs=n_jobs) as parallel:
 
         n_vertices = data.shape[0]
-        n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
+        n_tasks = get_requested_n_jobs(n_jobs)
+        chunk_size = int(math.ceil(n_vertices / n_tasks))
 
         current_graph = init_current_graph(
             data,
