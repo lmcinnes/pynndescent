@@ -40,20 +40,26 @@ def accuracy(expected, actual):
     )
 
 
-def test_get_requested_n_jobs():
-    assert_equal(threaded.get_requested_n_jobs(), 1, "Default to 1 job")
-    assert_equal(threaded.get_requested_n_jobs(2), 2, "Use n_jobs if specified")
+def test_effective_n_jobs_with_context():
+    assert_equal(threaded.effective_n_jobs_with_context(), 1, "Default to 1 job")
+    assert_equal(
+        threaded.effective_n_jobs_with_context(2), 2, "Use n_jobs if specified"
+    )
     with joblib.parallel_backend("threading"):
         assert_equal(
-            threaded.get_requested_n_jobs(), -1, "Use all cores with context manager"
+            threaded.effective_n_jobs_with_context(),
+            joblib.cpu_count(),
+            "Use all cores with context manager",
         )
     with joblib.parallel_backend("threading", n_jobs=3):
         assert_equal(
-            threaded.get_requested_n_jobs(), 3, "Use n_jobs from context manager"
+            threaded.effective_n_jobs_with_context(),
+            3,
+            "Use n_jobs from context manager",
         )
     with joblib.parallel_backend("threading", n_jobs=3):
         assert_equal(
-            threaded.get_requested_n_jobs(2),
+            threaded.effective_n_jobs_with_context(2),
             2,
             "Use n_jobs specified rather than from context manager",
         )
@@ -183,6 +189,38 @@ def test_nn_descent():
 
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)
     _, nn_gold_indices = nbrs.kneighbors(data)
+
+    assert_allclose(nn_indices_threaded, nn_indices)
+    assert_allclose(nn_distances_threaded, nn_distances)
+
+
+def test_nn_decent_with_parallel_backend():
+
+    np.random.seed(42)
+    N = 100
+    D = 128
+    chunk_size = N // 8
+    n_neighbors = 25
+    data = np.random.rand(N, D).astype(np.float32)
+
+    nn_indices, nn_distances = NNDescent(
+        data,
+        n_neighbors=n_neighbors,
+        max_candidates=max_candidates,
+        n_iters=2,
+        tree_init=False,
+        seed_per_row=True,
+    )._neighbor_graph
+
+    with joblib.parallel_backend("threading"):
+        nn_indices_threaded, nn_distances_threaded = NNDescent(
+            data,
+            n_neighbors=n_neighbors,
+            max_candidates=max_candidates,
+            n_iters=2,
+            tree_init=False,
+            seed_per_row=True,
+        )._neighbor_graph
 
     assert_allclose(nn_indices_threaded, nn_indices)
     assert_allclose(nn_distances_threaded, nn_distances)
