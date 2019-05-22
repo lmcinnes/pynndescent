@@ -33,12 +33,12 @@ def parallel_calls(fn, n_tasks):
     return [(fn, [i], {}) for i in range(n_tasks)]
 
 
-def get_requested_n_jobs(n_jobs=None):
-    """Find the number of jobs, either specified directly, or from the joblib.parallel_backend context."""
-    if n_jobs is not None and n_jobs != 1:
-        return n_jobs
-    _, n_jobs_from_context = joblib.parallel.get_active_backend()
-    return n_jobs_from_context
+def effective_n_jobs_with_context(n_jobs=None):
+    """Find the effective number of jobs, either specified directly, or from the joblib.parallel_backend context."""
+    if n_jobs is None:
+        _, n_jobs_from_context = joblib.parallel.get_active_backend()
+        n_jobs = n_jobs_from_context
+    return joblib.effective_n_jobs(n_jobs)
 
 
 @numba.njit("i8[:](i8, i8, i8)", nogil=True)
@@ -571,7 +571,7 @@ def nn_descent(
     with joblib.Parallel(prefer="threads", n_jobs=n_jobs) as parallel:
 
         n_vertices = data.shape[0]
-        n_tasks = get_requested_n_jobs(n_jobs)
+        n_tasks = effective_n_jobs_with_context(n_jobs)
         chunk_size = int(math.ceil(n_vertices / n_tasks))
 
         current_graph = init_current_graph(
