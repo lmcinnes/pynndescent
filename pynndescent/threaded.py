@@ -95,7 +95,8 @@ def make_current_graph_map_jit(dist, dist_args):
         for i in rows:
             if seed_per_row:
                 seed(rng_state_local, i)
-            indices = rejection_sample(n_neighbors, n_vertices, rng_state_local)
+            indices = rejection_sample(
+                n_neighbors, n_vertices, rng_state_local)
             for j in range(indices.shape[0]):
                 d = dist(data[i], data[indices[j]], *dist_args)
                 hu = heap_updates[count]
@@ -255,7 +256,8 @@ def init_rp_tree(
     n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
 
     # store the updates in an array
-    max_heap_update_count = chunk_size * leaf_array.shape[1] * leaf_array.shape[1] * 2
+    max_heap_update_count = chunk_size * \
+        leaf_array.shape[1] * leaf_array.shape[1] * 2
     heap_updates = np.zeros((n_tasks, max_heap_update_count, 4))
     heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
 
@@ -307,15 +309,16 @@ def candidates_map_jit(
             idx = current_graph[0, i - offset, j]
             isn = current_graph[2, i - offset, j]
             d = tau_rand(rng_state_local)
+            hu = heap_updates[count]
+            hu[0] = i
+            hu[1] = d
+            hu[2] = idx
+            hu[3] = isn
+            hu[4] = j
+            count += 1
+
             if tau_rand(rng_state_local) < rho:
                 # updates are common to old and new - decided by 'isn' flag
-                hu = heap_updates[count]
-                hu[0] = i
-                hu[1] = d
-                hu[2] = idx
-                hu[3] = isn
-                hu[4] = j
-                count += 1
                 hu = heap_updates[count]
                 hu[0] = idx
                 hu[1] = d
