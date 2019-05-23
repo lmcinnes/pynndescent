@@ -401,8 +401,9 @@ class NNDescent(object):
         computation at the cost of performance. The default of None means
         a value will be chosen based on the size of the data.
 
-    leaf_size: int (optional, default=15)
+    leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
+        The default of None means a value will be chosen based on n_neighbors.
 
     pruning_level: int (optional, default=0)
         How aggressively to prune the graph. Higher values perform more
@@ -465,7 +466,7 @@ class NNDescent(object):
         metric_kwds=None,
         n_neighbors=15,
         n_trees=None,
-        leaf_size=15,
+        leaf_size=None,
         pruning_level=0,
         tree_init=True,
         random_state=np.random,
@@ -527,7 +528,12 @@ class NNDescent(object):
             if verbose:
                 print(ts(), "Building RP forest with", str(n_trees), "trees")
             self._rp_forest = make_forest(
-                data, n_neighbors, n_trees, self.rng_state, self._angular_trees
+                data,
+                n_neighbors,
+                n_trees,
+                leaf_size,
+                self.rng_state,
+                self._angular_trees,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
         else:
@@ -783,8 +789,9 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         computation at the cost of performance. The default of None means
         a value will be chosen based on the size of the data.
 
-    leaf_size: int (optional, default=15)
+    leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
+        The default of None means a value will be chosen based on n_neighbors.
 
     pruning_level: int (optional, default=0)
         How aggressively to prune the graph. Higher values perform more
@@ -850,7 +857,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         metric="euclidean",
         metric_kwds=None,
         n_trees=None,
-        leaf_size=15,
+        leaf_size=None,
         search_queue_size=4.0,
         pruning_level=0,
         tree_init=True,
