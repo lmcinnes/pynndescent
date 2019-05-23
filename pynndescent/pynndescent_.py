@@ -394,11 +394,12 @@ class NNDescent(object):
         will result in more accurate search results at the cost of
         computation time.
 
-    n_trees: int (optional, default=8)
+    n_trees: int (optional, default=None)
         This implementation uses random projection forests for initialization
         of searches. This parameter controls the number of trees in that
-        forest. A larger number will result in ore accurate neighbor
-        computation at the cost of performance.
+        forest. A larger number will result in more accurate neighbor
+        computation at the cost of performance. The default of None means
+        a value will be chosen based on the size of the data.
 
     leaf_size: int (optional, default=15)
         The maximum number of points in a leaf for the random projection trees.
@@ -463,7 +464,7 @@ class NNDescent(object):
         metric="euclidean",
         metric_kwds=None,
         n_neighbors=15,
-        n_trees=8,
+        n_trees=None,
         leaf_size=15,
         pruning_level=0,
         tree_init=True,
@@ -477,6 +478,9 @@ class NNDescent(object):
         seed_per_row=False,
         verbose=False,
     ):
+
+        if n_trees is None:
+            n_trees = 5 + int(round((data.shape[0]) ** 0.5 / 20.0))
 
         self.n_trees = n_trees
         self.n_neighbors = n_neighbors
@@ -772,11 +776,12 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         Arguments to pass on to the metric, such as the ``p`` value for
         Minkowski distance.
 
-    n_trees: int (optional, default=8)
+    n_trees: int (optional, default=None)
         This implementation uses random projection forests for initialization
         of searches. This parameter controls the number of trees in that
-        forest. A larger number will result in ore accurate neighbor
-        computation at the cost of performance.
+        forest. A larger number will result in more accurate neighbor
+        computation at the cost of performance. The default of None means
+        a value will be chosen based on the size of the data.
 
     leaf_size: int (optional, default=15)
         The maximum number of points in a leaf for the random projection trees.
@@ -844,7 +849,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         n_neighbors=5,
         metric="euclidean",
         metric_kwds=None,
-        n_trees=8,
+        n_trees=None,
         leaf_size=15,
         search_queue_size=4.0,
         pruning_level=0,
