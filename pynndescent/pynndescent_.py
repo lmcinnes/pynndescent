@@ -530,7 +530,7 @@ class NNDescent(object):
             self._rp_forest = None
             leaf_array = np.array([[-1]])
 
-        if threaded.get_requested_n_jobs(n_jobs) != 1:
+        if threaded.effective_n_jobs_with_context(n_jobs) != 1:
             if algorithm != "standard":
                 raise ValueError(
                     "Algorithm {} not supported in parallel mode".format(algorithm)
