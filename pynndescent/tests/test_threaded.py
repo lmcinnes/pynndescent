@@ -98,7 +98,9 @@ def test_init_rp_tree():
     current_graph = pynndescent_.init_current_graph(
         data, dist, dist_args, n_neighbors, rng_state=rng_state, seed_per_row=True
     )
-    _rp_forest = make_forest(data, n_neighbors, n_trees=8, rng_state=rng_state)
+    _rp_forest = make_forest(
+        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state
+    )
     leaf_array = rptree_leaf_array(_rp_forest)
     pynndescent_.init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
 
@@ -106,7 +108,9 @@ def test_init_rp_tree():
     current_graph_threaded = pynndescent_.init_current_graph(
         data, dist, dist_args, n_neighbors, rng_state=rng_state, seed_per_row=True
     )
-    _rp_forest = make_forest(data, n_neighbors, n_trees=8, rng_state=rng_state)
+    _rp_forest = make_forest(
+        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state
+    )
     leaf_array = rptree_leaf_array(_rp_forest)
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
     threaded.init_rp_tree(
