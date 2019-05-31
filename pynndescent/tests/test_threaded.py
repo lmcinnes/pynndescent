@@ -240,7 +240,7 @@ def test_heap_updates():
             [4, 7, 40, 0],
             [0, 0, 0, 0],
         ],
-        dtype=np.float64,
+        dtype=np.float32,
     )
     num_heap_updates = 5
     chunk_size = 2
@@ -255,7 +255,7 @@ def test_heap_updates():
             [4, 7, 40, 0],
             [0, 0, 0, 0],
         ],
-        dtype=np.float64,
+        dtype=np.float32,
     )
     assert_allclose(heap_updates, sorted_heap_updates)
 
