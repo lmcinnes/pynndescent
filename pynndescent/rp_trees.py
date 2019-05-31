@@ -726,7 +726,7 @@ def search_sparse_flat_tree(
     return indices[-children[node, 0]]
 
 
-def make_forest(data, n_neighbors, n_trees, rng_state, angular=False):
+def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False):
     """Build a random projection forest with ``n_trees``.
 
     Parameters
@@ -734,6 +734,7 @@ def make_forest(data, n_neighbors, n_trees, rng_state, angular=False):
     data
     n_neighbors
     n_trees
+    leaf_size
     rng_state
     angular
 
@@ -743,7 +744,8 @@ def make_forest(data, n_neighbors, n_trees, rng_state, angular=False):
         A list of random projection trees.
     """
     result = []
-    leaf_size = max(10, n_neighbors)
+    if leaf_size is None:
+        leaf_size = max(10, n_neighbors)
     try:
         result = [
             flatten_tree(make_tree(data, rng_state, leaf_size, angular), leaf_size)

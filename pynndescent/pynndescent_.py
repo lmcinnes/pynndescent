@@ -394,14 +394,16 @@ class NNDescent(object):
         will result in more accurate search results at the cost of
         computation time.
 
-    n_trees: int (optional, default=8)
+    n_trees: int (optional, default=None)
         This implementation uses random projection forests for initialization
         of searches. This parameter controls the number of trees in that
-        forest. A larger number will result in ore accurate neighbor
-        computation at the cost of performance.
+        forest. A larger number will result in more accurate neighbor
+        computation at the cost of performance. The default of None means
+        a value will be chosen based on the size of the data.
 
-    leaf_size: int (optional, default=15)
+    leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
+        The default of None means a value will be chosen based on n_neighbors.
 
     pruning_level: int (optional, default=0)
         How aggressively to prune the graph. Higher values perform more
@@ -430,11 +432,12 @@ class NNDescent(object):
         non-negligible computation cost in building the index. Don't tweak
         this value unless you know what you're doing.
 
-    n_iters: int (optional, default=10)
+    n_iters: int (optional, default=None)
         The maximum number of NN-descent iterations to perform. The
         NN-descent algorithm can abort early if limited progress is being
         made, so this only controls the worst case. Don't tweak
-        this value unless you know what you're doing.
+        this value unless you know what you're doing. The default of None means
+        a value will be chosen based on the size of the data.
 
     delta: float (optional, default=0.001)
         Controls the early abort due to limited progress. Larger values
@@ -463,20 +466,25 @@ class NNDescent(object):
         metric="euclidean",
         metric_kwds=None,
         n_neighbors=15,
-        n_trees=8,
-        leaf_size=15,
+        n_trees=None,
+        leaf_size=None,
         pruning_level=0,
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
         max_candidates=20,
-        n_iters=10,
+        n_iters=None,
         delta=0.001,
         rho=0.5,
         n_jobs=None,
         seed_per_row=False,
         verbose=False,
     ):
+
+        if n_trees is None:
+            n_trees = 5 + int(round((data.shape[0]) ** 0.5 / 20.0))
+        if n_iters is None:
+            n_iters = max(5, int(round(np.log2(data.shape[0]))))
 
         self.n_trees = n_trees
         self.n_neighbors = n_neighbors
@@ -523,7 +531,12 @@ class NNDescent(object):
             if verbose:
                 print(ts(), "Building RP forest with", str(n_trees), "trees")
             self._rp_forest = make_forest(
-                data, n_neighbors, n_trees, self.rng_state, self._angular_trees
+                data,
+                n_neighbors,
+                n_trees,
+                leaf_size,
+                self.rng_state,
+                self._angular_trees,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
         else:
@@ -772,14 +785,16 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         Arguments to pass on to the metric, such as the ``p`` value for
         Minkowski distance.
 
-    n_trees: int (optional, default=8)
+    n_trees: int (optional, default=None)
         This implementation uses random projection forests for initialization
         of searches. This parameter controls the number of trees in that
-        forest. A larger number will result in ore accurate neighbor
-        computation at the cost of performance.
+        forest. A larger number will result in more accurate neighbor
+        computation at the cost of performance. The default of None means
+        a value will be chosen based on the size of the data.
 
-    leaf_size: int (optional, default=15)
+    leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
+        The default of None means a value will be chosen based on n_neighbors.
 
     pruning_level: int (optional, default=0)
         How aggressively to prune the graph. Higher values perform more
@@ -808,11 +823,12 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         non-negligible computation cost in building the index. Don't tweak
         this value unless you know what you're doing.
 
-    n_iters: int (optional, default=10)
+    n_iters: int (optional, default=None)
         The maximum number of NN-descent iterations to perform. The
         NN-descent algorithm can abort early if limited progress is being
         made, so this only controls the worst case. Don't tweak
-        this value unless you know what you're doing.
+        this value unless you know what you're doing. The default of None means
+        a value will be chosen based on the size of the data.
 
     early_termination_value: float (optional, default=0.001)
         Controls the early abort due to limited progress. Larger values
@@ -844,15 +860,15 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         n_neighbors=5,
         metric="euclidean",
         metric_kwds=None,
-        n_trees=8,
-        leaf_size=15,
+        n_trees=None,
+        leaf_size=None,
         search_queue_size=4.0,
         pruning_level=0,
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
         max_candidates=20,
-        n_iters=10,
+        n_iters=None,
         early_termination_value=0.001,
         sampling_rate=0.5,
         verbose=False,
