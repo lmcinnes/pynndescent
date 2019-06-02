@@ -72,7 +72,7 @@ def test_angular_nn_descent_neighbor_accuracy():
 
 def test_sparse_nn_descent_neighbor_accuracy():
     knn_indices, _ = NNDescent(
-        sparse_nn_data, "euclidean", {}, 10, random_state=np.random
+        sparse_nn_data, "euclidean", n_neighbors=10, random_state=np.random
     )._neighbor_graph
 
     tree = KDTree(sparse_nn_data.todense())
