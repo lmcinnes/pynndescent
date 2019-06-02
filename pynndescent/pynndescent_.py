@@ -507,7 +507,8 @@ class NNDescent(object):
         else:
             self.tree_init = True
 
-        self._dist_args = tuple((metric_kwds or {}).values())
+        metric_kwds = metric_kwds or {}
+        self._dist_args = tuple(metric_kwds.values())
 
         self.random_state = check_random_state(random_state)
 
