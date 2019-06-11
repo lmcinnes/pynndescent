@@ -9,7 +9,6 @@ import numba
 
 from pynndescent.utils import (
     tau_rand,
-    norm,
     make_heap,
     heap_push,
     unchecked_heap_push,
@@ -19,6 +18,7 @@ from pynndescent.utils import (
     deheap_sort,
 )
 
+from pynndescent.sparse import sparse_euclidean
 from pynndescent.rp_trees import search_sparse_flat_tree
 
 locale.setlocale(locale.LC_NUMERIC, "C")
