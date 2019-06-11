@@ -91,8 +91,8 @@ def test_sparse_nn_descent_neighbor_accuracy():
     percent_correct = num_correct / (sparse_nn_data.shape[0] * 10)
     assert_greater_equal(
         percent_correct,
-        0.85,
-        "Sparse NN-descent did not get 99% " "accuracy on nearest neighbors",
+        0.95,
+        "Sparse NN-descent did not get 95% " "accuracy on nearest neighbors",
     )
 
 
@@ -112,8 +112,8 @@ def test_sparse_angular_nn_descent_neighbor_accuracy():
     percent_correct = num_correct / (sparse_nn_data.shape[0] * 10)
     assert_greater_equal(
         percent_correct,
-        0.90,
-        "NN-descent did not get 99% " "accuracy on nearest neighbors",
+        0.98,
+        "Sparse angular NN-descent did not get 98% " "accuracy on nearest neighbors",
     )
 
 
@@ -160,8 +160,8 @@ def test_sparse_nn_descent_query_accuracy():
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert_greater_equal(
         percent_correct,
-        0.90,
-        "Sparse NN-descent query did not get 99% " "accuracy on nearest neighbors",
+        0.97,
+        "Sparse NN-descent query did not get 97% " "accuracy on nearest neighbors",
     )
 
 

@@ -14,7 +14,7 @@ from pynndescent.utils import (
     unchecked_heap_push,
     smallest_flagged,
     rejection_sample,
-    build_candidates,
+    new_build_candidates,
     deheap_sort,
 )
 
@@ -111,23 +111,25 @@ def sparse_nn_descent(
         if verbose:
             print("\t", n, " / ", n_iters)
 
-        candidate_neighbors = build_candidates(
-            current_graph, n_vertices, n_neighbors, max_candidates, rng_state
+        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
+            current_graph,
+            n_vertices,
+            n_neighbors,
+            max_candidates,
+            rng_state,
+            rho,
+            False,
         )
 
         c = 0
         for i in range(n_vertices):
             for j in range(max_candidates):
-                p = int(candidate_neighbors[0, i, j])
-                if p < 0 or tau_rand(rng_state) < rho:
+                p = int(new_candidate_neighbors[0, i, j])
+                if p < 0:
                     continue
-                for k in range(max_candidates):
-                    q = int(candidate_neighbors[0, i, k])
-                    if (
-                        q < 0
-                        or not candidate_neighbors[2, i, j]
-                        and not candidate_neighbors[2, i, k]
-                    ):
+                for k in range(j, max_candidates):
+                    q = int(new_candidate_neighbors[0, i, k])
+                    if q < 0 or (p, q) in tried:
                         continue
 
                     from_inds = inds[indptr[p] : indptr[p + 1]]
@@ -138,8 +140,30 @@ def sparse_nn_descent(
 
                     d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
 
-                    c += heap_push(current_graph, p, d, q, 1)
-                    c += heap_push(current_graph, q, d, p, 1)
+                    c += unchecked_heap_push(current_graph, p, d, q, 1)
+                    tried.add((p, q))
+                    if p != q:
+                        c += unchecked_heap_push(current_graph, q, d, p, 1)
+                        tried.add((q, p))
+
+                for k in range(max_candidates):
+                    q = int(old_candidate_neighbors[0, i, k])
+                    if q < 0 or (p, q) in tried:
+                        continue
+
+                    from_inds = inds[indptr[p] : indptr[p + 1]]
+                    from_data = data[indptr[p] : indptr[p + 1]]
+
+                    to_inds = inds[indptr[q] : indptr[q + 1]]
+                    to_data = data[indptr[q] : indptr[q + 1]]
+
+                    d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
+
+                    c += unchecked_heap_push(current_graph, p, d, q, 1)
+                    tried.add((p, q))
+                    if p != q:
+                        c += unchecked_heap_push(current_graph, q, d, p, 1)
+                        tried.add((q, p))
 
         if c <= delta * n_neighbors * n_vertices:
             break
