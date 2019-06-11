@@ -553,8 +553,13 @@ class NNDescent(object):
                 raise ValueError(
                     "Algorithm {} not supported in parallel mode".format(algorithm)
                 )
+            if isspmatrix_csr(self._raw_data):
+                raise ValueError(
+                    "Sparse input is not currently supported in parallel mode"
+                )
             if verbose:
                 print(ts(), "parallel NN descent for", str(n_iters), "iterations")
+
             self._neighbor_graph = threaded.nn_descent(
                 self._raw_data,
                 self.n_neighbors,
