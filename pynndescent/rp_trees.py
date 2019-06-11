@@ -188,7 +188,7 @@ def euclidean_random_projection_split(data, indices, rng_state):
             margin += hyperplane_vector[d] * data[indices[i], d]
 
         if abs(margin) < EPS:
-            side[i] = tau_rand_int(rng_state) % 2
+            side[i] = abs(tau_rand_int(rng_state)) % 2
             if side[i] == 0:
                 n_left += 1
             else:
@@ -409,7 +409,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
             margin += mul_data[d]
 
         if abs(margin) < EPS:
-            side[i] = tau_rand_int(rng_state) % 2
+            side[i] = abs(tau_rand_int(rng_state)) % 2
             if side[i] == 0:
                 n_left += 1
             else:
