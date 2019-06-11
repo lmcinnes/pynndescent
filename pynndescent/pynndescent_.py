@@ -744,7 +744,7 @@ class NNDescent(object):
             )
         else:
             # Sparse case
-            query_data = check_array(query_data, accept_sparse='csr')
+            query_data = check_array(query_data, accept_sparse="csr")
             if not isspmatrix_csr(query_data):
                 query_data = csr_matrix(query_data)
             self._init_search_graph()
@@ -774,7 +774,6 @@ class NNDescent(object):
                 self._distance_func,
                 self._dist_args,
             )
-
 
         indices, dists = deheap_sort(result)
         return indices[:, :k], dists[:, :k]
