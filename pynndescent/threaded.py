@@ -85,34 +85,31 @@ def shuffle_jit(
 # Map Reduce functions to be jitted
 
 
-def make_current_graph_map_jit(dist, dist_args):
-    @numba.njit("i8(i8[:], i8, i8, f4[:, :], f4[:, :], i8[:], b1)", nogil=True)
-    def current_graph_map_jit(
-        rows, n_vertices, n_neighbors, data, heap_updates, rng_state, seed_per_row
-    ):
-        rng_state_local = rng_state.copy()
-        count = 0
-        for i in rows:
-            if seed_per_row:
-                seed(rng_state_local, i)
-            indices = rejection_sample(n_neighbors, n_vertices, rng_state_local)
-            for j in range(indices.shape[0]):
-                d = dist(data[i], data[indices[j]], *dist_args)
-                hu = heap_updates[count]
-                hu[0] = i
-                hu[1] = d
-                hu[2] = indices[j]
-                hu[3] = 1
-                count += 1
-                hu = heap_updates[count]
-                hu[0] = indices[j]
-                hu[1] = d
-                hu[2] = i
-                hu[3] = 1
-                count += 1
-        return count
-
-    return current_graph_map_jit
+@numba.njit(nogil=True)
+def current_graph_map_jit(
+    rows, n_vertices, n_neighbors, data, heap_updates, rng_state, seed_per_row, dist, dist_args
+):
+    rng_state_local = rng_state.copy()
+    count = 0
+    for i in rows:
+        if seed_per_row:
+            seed(rng_state_local, i)
+        indices = rejection_sample(n_neighbors, n_vertices, rng_state_local)
+        for j in range(indices.shape[0]):
+            d = dist(data[i], data[indices[j]], *dist_args)
+            hu = heap_updates[count]
+            hu[0] = i
+            hu[1] = d
+            hu[2] = indices[j]
+            hu[3] = 1
+            count += 1
+            hu = heap_updates[count]
+            hu[0] = indices[j]
+            hu[1] = d
+            hu[2] = i
+            hu[3] = 1
+            count += 1
+    return count
 
 
 @numba.njit("void(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
@@ -152,8 +149,6 @@ def init_current_graph(
     heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
     rng_state_threads = per_thread_rng_state(n_tasks, rng_state)
 
-    current_graph_map_jit = make_current_graph_map_jit(dist, dist_args)
-
     def current_graph_map(index):
         rows = chunk_rows(chunk_size, index, n_vertices)
         return (
@@ -166,6 +161,8 @@ def init_current_graph(
                 heap_updates[index],
                 rng_state_threads[index],
                 seed_per_row=seed_per_row,
+                dist=dist,
+                dist_args=dist_args,
             ),
         )
 
@@ -195,42 +192,40 @@ def init_current_graph(
     return current_graph
 
 
-def make_init_rp_tree_map_jit(dist, dist_args):
-    @numba.njit("i8(i8[:], i8[:, :], f4[:, :], f4[:, :])", nogil=True, fastmath=True)
-    def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates):
-        count = 0
-        for n in rows:
-            if n >= leaf_array.shape[0]:
+@numba.njit(nogil=True, fastmath=True)
+def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates, dist, dist_args):
+    count = 0
+    for n in rows:
+        if n >= leaf_array.shape[0]:
+            break
+        tried = set([(-1, -1)])
+        for i in range(leaf_array.shape[1]):
+            la_n_i = leaf_array[n, i]
+            if la_n_i < 0:
                 break
-            tried = set([(-1, -1)])
-            for i in range(leaf_array.shape[1]):
-                la_n_i = leaf_array[n, i]
-                if la_n_i < 0:
+            for j in range(i + 1, leaf_array.shape[1]):
+                la_n_j = leaf_array[n, j]
+                if la_n_j < 0:
                     break
-                for j in range(i + 1, leaf_array.shape[1]):
-                    la_n_j = leaf_array[n, j]
-                    if la_n_j < 0:
-                        break
-                    if (la_n_i, la_n_j) in tried:
-                        continue
-                    d = dist(data[la_n_i], data[la_n_j], *dist_args)
-                    hu = heap_updates[count]
-                    hu[0] = la_n_i
-                    hu[1] = d
-                    hu[2] = la_n_j
-                    hu[3] = 1
-                    count += 1
-                    hu = heap_updates[count]
-                    hu[0] = la_n_j
-                    hu[1] = d
-                    hu[2] = la_n_i
-                    hu[3] = 1
-                    count += 1
-                    tried.add((la_n_i, la_n_j))
-                    tried.add((la_n_j, la_n_i))
-        return count
+                if (la_n_i, la_n_j) in tried:
+                    continue
+                d = dist(data[la_n_i], data[la_n_j], *dist_args)
+                hu = heap_updates[count]
+                hu[0] = la_n_i
+                hu[1] = d
+                hu[2] = la_n_j
+                hu[3] = 1
+                count += 1
+                hu = heap_updates[count]
+                hu[0] = la_n_j
+                hu[1] = d
+                hu[2] = la_n_i
+                hu[3] = 1
+                count += 1
+                tried.add((la_n_i, la_n_j))
+                tried.add((la_n_j, la_n_i))
+    return count
 
-    return init_rp_tree_map_jit
 
 
 @numba.njit("void(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
@@ -259,13 +254,11 @@ def init_rp_tree(
     heap_updates = np.zeros((n_tasks, max_heap_update_count, 4), dtype=np.float32)
     heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
 
-    init_rp_tree_map_jit = make_init_rp_tree_map_jit(dist, dist_args)
-
     def init_rp_tree_map(index):
         rows = chunk_rows(chunk_size, index, n_vertices)
         return (
             index,
-            init_rp_tree_map_jit(rows, leaf_array, data, heap_updates[index]),
+            init_rp_tree_map_jit(rows, leaf_array, data, heap_updates[index], dist, dist_args),
         )
 
     def init_rp_tree_reduce(index):
@@ -440,68 +433,63 @@ def new_build_candidates(
     return new_candidate_neighbors, old_candidate_neighbors
 
 
-def make_nn_descent_map_jit(dist, dist_args):
-    @numba.njit(
-        "i8(i8[:], i8, f4[:, :], f8[:, :, :], f8[:, :, :], f4[:, :], i8)",
-        nogil=True,
-        fastmath=True,
-    )
-    def nn_descent_map_jit(
-        rows,
-        max_candidates,
-        data,
-        new_candidate_neighbors,
-        old_candidate_neighbors,
-        heap_updates,
-        offset,
-    ):
-        count = 0
-        for i in rows:
-            i -= offset
-            for j in range(max_candidates):
-                p = int(new_candidate_neighbors[0, i, j])
-                if p < 0:
+@numba.njit(nogil=True, fastmath=True)
+def nn_descent_map_jit(
+    rows,
+    max_candidates,
+    data,
+    new_candidate_neighbors,
+    old_candidate_neighbors,
+    heap_updates,
+    offset,
+    dist,
+    dist_args,
+):
+    count = 0
+    for i in rows:
+        i -= offset
+        for j in range(max_candidates):
+            p = int(new_candidate_neighbors[0, i, j])
+            if p < 0:
+                continue
+            for k in range(j, max_candidates):
+                q = int(new_candidate_neighbors[0, i, k])
+                if q < 0:
                     continue
-                for k in range(j, max_candidates):
-                    q = int(new_candidate_neighbors[0, i, k])
-                    if q < 0:
-                        continue
 
-                    d = dist(data[p], data[q], *dist_args)
-                    hu = heap_updates[count]
-                    hu[0] = p
-                    hu[1] = d
-                    hu[2] = q
-                    hu[3] = 1
-                    count += 1
-                    hu = heap_updates[count]
-                    hu[0] = q
-                    hu[1] = d
-                    hu[2] = p
-                    hu[3] = 1
-                    count += 1
+                d = dist(data[p], data[q], *dist_args)
+                hu = heap_updates[count]
+                hu[0] = p
+                hu[1] = d
+                hu[2] = q
+                hu[3] = 1
+                count += 1
+                hu = heap_updates[count]
+                hu[0] = q
+                hu[1] = d
+                hu[2] = p
+                hu[3] = 1
+                count += 1
 
-                for k in range(max_candidates):
-                    q = int(old_candidate_neighbors[0, i, k])
-                    if q < 0:
-                        continue
+            for k in range(max_candidates):
+                q = int(old_candidate_neighbors[0, i, k])
+                if q < 0:
+                    continue
 
-                    d = dist(data[p], data[q], *dist_args)
-                    hu = heap_updates[count]
-                    hu[0] = p
-                    hu[1] = d
-                    hu[2] = q
-                    hu[3] = 1
-                    count += 1
-                    hu = heap_updates[count]
-                    hu[0] = q
-                    hu[1] = d
-                    hu[2] = p
-                    hu[3] = 1
-                    count += 1
-        return count
-
-    return nn_descent_map_jit
+                d = dist(data[p], data[q], *dist_args)
+                hu = heap_updates[count]
+                hu[0] = p
+                hu[1] = d
+                hu[2] = q
+                hu[3] = 1
+                count += 1
+                hu = heap_updates[count]
+                hu[0] = q
+                hu[1] = d
+                hu[2] = p
+                hu[3] = 1
+                count += 1
+    return count
 
 
 @numba.njit("i8(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
@@ -597,8 +585,6 @@ def nn_descent(
         heap_updates = np.zeros((n_tasks, max_heap_update_count, 4), dtype=np.float32)
         heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
 
-        nn_descent_map_jit = make_nn_descent_map_jit(dist, dist_args)
-
         for n in range(n_iters):
             if verbose:
                 print("\t", n, " / ", n_iters)
@@ -627,6 +613,8 @@ def nn_descent(
                         old_candidate_neighbors,
                         heap_updates[index],
                         offset=0,
+                        dist=dist,
+                        dist_args=dist_args
                     ),
                 )
 
