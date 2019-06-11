@@ -8,11 +8,12 @@ import numba
 import numpy as np
 from sklearn.utils import check_random_state, check_array
 from sklearn.base import BaseEstimator, TransformerMixin
-from scipy.sparse import lil_matrix, isspmatrix_csr
+from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr
 from scipy.sparse.csgraph import minimum_spanning_tree
 
-import pynndescent.distances as dist
 import pynndescent.sparse as sparse
+import pynndescent.sparse_nndescent as sparse_nnd
+import pynndescent.distances as dist
 import pynndescent.threaded as threaded
 
 from pynndescent.utils import (
@@ -572,6 +573,9 @@ class NNDescent(object):
             )
         elif algorithm == "standard" or leaf_array.shape[0] == 1:
             if isspmatrix_csr(self._raw_data):
+
+                self._is_sparse = True
+
                 if metric in sparse.sparse_named_distances:
                     distance_func = sparse.sparse_named_distances[metric]
                     if metric in sparse.sparse_need_n_features:
@@ -580,13 +584,11 @@ class NNDescent(object):
                     raise ValueError(
                         "Metric {} not supported for sparse data".format(metric)
                     )
-                metric_nn_descent = sparse.make_sparse_nn_descent(
-                    distance_func, tuple(metric_kwds.values())
-                )
+
                 if verbose:
                     print(ts(), "metric NN descent for", str(n_iters), "iterations")
 
-                self._neighbor_graph = metric_nn_descent(
+                self._neighbor_graph = sparse_nnd.sparse_nn_descent(
                     self._raw_data.indices,
                     self._raw_data.indptr,
                     self._raw_data.data,
@@ -594,13 +596,18 @@ class NNDescent(object):
                     self.n_neighbors,
                     self.rng_state,
                     self.max_candidates,
+                    sparse_dist=distance_func,
+                    dist_args=tuple(metric_kwds.values()),
+                    n_iters=self.n_iters,
                     rp_tree_init=False,
                     leaf_array=leaf_array,
-                    n_iters=self.n_iters,
                     verbose=verbose,
                 )
 
             else:
+
+                self._is_sparse = False
+
                 if verbose:
                     print(ts(), "NN descent for", str(n_iters), "iterations")
 
@@ -620,6 +627,9 @@ class NNDescent(object):
                     seed_per_row=seed_per_row,
                 )
         elif algorithm == "alternative":
+
+            self._is_sparse = False
+
             if verbose:
                 print(ts(), "Using alternative algorithm")
 
@@ -704,27 +714,62 @@ class NNDescent(object):
             from the ith query point to its jth nearest neighbor in the
             training data.
         """
-        # query_data = check_array(query_data, dtype=np.float64, order='C')
-        query_data = np.asarray(query_data).astype(np.float32)
-        self._init_search_graph()
-        init = initialise_search(
-            self._rp_forest,
-            self._raw_data,
-            query_data,
-            int(k * queue_size),
-            self._distance_func,
-            self._dist_args,
-            self.rng_state,
-        )
-        result = initialized_nnd_search(
-            self._raw_data,
-            self._search_graph.indptr,
-            self._search_graph.indices,
-            init,
-            query_data,
-            self._distance_func,
-            self._dist_args,
-        )
+        if not self._is_sparse:
+            # Standard case
+            # query_data = check_array(query_data, dtype=np.float64, order='C')
+            query_data = np.asarray(query_data).astype(np.float32)
+            self._init_search_graph()
+            init = initialise_search(
+                self._rp_forest,
+                self._raw_data,
+                query_data,
+                int(k * queue_size),
+                self._distance_func,
+                self._dist_args,
+                self.rng_state,
+            )
+            result = initialized_nnd_search(
+                self._raw_data,
+                self._search_graph.indptr,
+                self._search_graph.indices,
+                init,
+                query_data,
+                self._distance_func,
+                self._dist_args,
+            )
+        else:
+            # Sparse case
+            query_data = check_array(query_data, accept_sparse='csr')
+            if not isspmatrix_csr(query_data):
+                query_data = csr_matrix(query_data)
+            self._init_search_graph()
+            init = sparse_nnd.sparse_initialise_search(
+                self._rp_forest,
+                self._raw_data.indices,
+                self._raw_data.indptr,
+                self._raw_data.data,
+                query_data.indices,
+                query_data.indptr,
+                query_data.data,
+                int(k * queue_size),
+                self._distance_func,
+                self._dist_args,
+                self.rng_state,
+            )
+            result = sparse_nnd.sparse_initialized_nnd_search(
+                self._raw_data.indices,
+                self._raw_data.indptr,
+                self._raw_data.data,
+                self._search_graph.indptr,
+                self._search_graph.indices,
+                init,
+                query_data.indices,
+                query_data.indptr,
+                query_data.data,
+                self._distance_func,
+                self._dist_args,
+            )
+
 
         indices, dists = deheap_sort(result)
         return indices[:, :k], dists[:, :k]
