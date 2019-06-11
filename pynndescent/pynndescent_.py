@@ -582,9 +582,10 @@ class NNDescent(object):
                 self._is_sparse = True
 
                 if metric in sparse.sparse_named_distances:
-                    distance_func = sparse.sparse_named_distances[metric]
+                    self._distance_func = sparse.sparse_named_distances[metric]
                     if metric in sparse.sparse_need_n_features:
                         metric_kwds["n_features"] = self._raw_data.shape[1]
+                    self._dist_args = tuple(metric_kwds.values())
                 else:
                     raise ValueError(
                         "Metric {} not supported for sparse data".format(metric)
@@ -601,8 +602,8 @@ class NNDescent(object):
                     self.n_neighbors,
                     self.rng_state,
                     self.max_candidates,
-                    sparse_dist=distance_func,
-                    dist_args=tuple(metric_kwds.values()),
+                    sparse_dist=self._distance_func,
+                    dist_args=self._dist_args,
                     n_iters=self.n_iters,
                     rp_tree_init=False,
                     leaf_array=leaf_array,
@@ -757,9 +758,9 @@ class NNDescent(object):
                 query_data.indptr,
                 query_data.data,
                 int(k * queue_size),
+                self.rng_state,
                 self._distance_func,
                 self._dist_args,
-                self.rng_state,
             )
             result = sparse_nnd.sparse_initialized_nnd_search(
                 self._raw_data.indices,
