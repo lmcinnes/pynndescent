@@ -33,85 +33,88 @@ INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
 
-def make_initialisations(dist, dist_args):
-    @numba.njit(parallel=True, fastmath=True)
-    def init_from_random(n_neighbors, data, query_points, heap, rng_state):
-        for i in range(query_points.shape[0]):
-            indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-            for j in range(indices.shape[0]):
-                if indices[j] < 0:
-                    continue
-                d = dist(data[indices[j]], query_points[i], *dist_args)
-                heap_push(heap, i, d, indices[j], 1)
-        return
-
-    @numba.njit(parallel=True, fastmath=True)
-    def init_from_tree(tree, data, query_points, heap, rng_state):
-        for i in range(query_points.shape[0]):
-            indices = search_flat_tree(
-                query_points[i],
-                tree.hyperplanes,
-                tree.offsets,
-                tree.children,
-                tree.indices,
-                rng_state,
-            )
-
-            for j in range(indices.shape[0]):
-                if indices[j] < 0:
-                    continue
-                d = dist(data[indices[j]], query_points[i], *dist_args)
-                heap_push(heap, i, d, indices[j], 1)
-
-        return
-
-    return init_from_random, init_from_tree
+@numba.njit(parallel=True, fastmath=True)
+def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
+    for i in range(query_points.shape[0]):
+        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
+        for j in range(indices.shape[0]):
+            if indices[j] < 0:
+                continue
+            d = dist(data[indices[j]], query_points[i], *dist_args)
+            heap_push(heap, i, d, indices[j], 1)
+    return
 
 
+@numba.njit(parallel=True, fastmath=True)
+def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
+    for i in range(query_points.shape[0]):
+        indices = search_flat_tree(
+            query_points[i],
+            tree.hyperplanes,
+            tree.offsets,
+            tree.children,
+            tree.indices,
+            rng_state,
+        )
+
+        for j in range(indices.shape[0]):
+            if indices[j] < 0:
+                continue
+            d = dist(data[indices[j]], query_points[i], *dist_args)
+            heap_push(heap, i, d, indices[j], 1)
+
+    return
+
+
+@numba.njit()
 def initialise_search(
-    forest, data, query_points, n_neighbors, init_from_random, init_from_tree, rng_state
+    forest, data, query_points, n_neighbors, dist, dist_args, rng_state
 ):
     results = make_heap(query_points.shape[0], n_neighbors)
-    init_from_random(n_neighbors, data, query_points, results, rng_state)
+    init_from_random(
+        n_neighbors, data, query_points, results, dist, dist_args, rng_state
+    )
     if forest is not None:
         for tree in forest:
-            init_from_tree(tree, data, query_points, results, rng_state)
+            init_from_tree(
+                tree, data, query_points, results, dist, dist_args, rng_state
+            )
 
     return results
 
 
-def make_initialized_nnd_search(dist, dist_args):
-    @numba.njit(parallel=True, fastmath=True)
-    def initialized_nnd_search(data, indptr, indices, initialization, query_points):
+@numba.njit(parallel=True, fastmath=True)
+def initialized_nnd_search(
+    data, indptr, indices, initialization, query_points, dist, dist_args
+):
 
-        for i in numba.prange(query_points.shape[0]):
+    for i in numba.prange(query_points.shape[0]):
 
-            tried = set(initialization[0, i])
+        tried = set(initialization[0, i])
 
-            while True:
+        while True:
 
-                # Find smallest flagged vertex
-                vertex = smallest_flagged(initialization, i)
+            # Find smallest flagged vertex
+            vertex = smallest_flagged(initialization, i)
 
-                if vertex == -1:
-                    break
-                candidates = indices[indptr[vertex] : indptr[vertex + 1]]
-                for j in range(candidates.shape[0]):
-                    if (
-                        candidates[j] == vertex
-                        or candidates[j] == -1
-                        or candidates[j] in tried
-                    ):
-                        continue
-                    d = dist(data[candidates[j]], query_points[i], *dist_args)
-                    unchecked_heap_push(initialization, i, d, candidates[j], 1)
-                    tried.add(candidates[j])
+            if vertex == -1:
+                break
+            candidates = indices[indptr[vertex] : indptr[vertex + 1]]
+            for j in range(candidates.shape[0]):
+                if (
+                    candidates[j] == vertex
+                    or candidates[j] == -1
+                    or candidates[j] in tried
+                ):
+                    continue
+                d = dist(data[candidates[j]], query_points[i], *dist_args)
+                unchecked_heap_push(initialization, i, d, candidates[j], 1)
+                tried.add(candidates[j])
 
-        return initialization
-
-    return initialized_nnd_search
+    return initialization
 
 
+@numba.njit(fastmath=True)
 def init_current_graph(
     data, dist, dist_args, n_neighbors, rng_state, seed_per_row=False
 ):
@@ -620,10 +623,6 @@ class NNDescent(object):
             if verbose:
                 print(ts(), "Using alternative algorithm")
 
-            self._search = make_initialized_nnd_search(
-                self._distance_func, self._dist_args
-            )
-
             graph_heap, search_heap = initialize_heaps(
                 self._raw_data,
                 self.n_neighbors,
@@ -635,12 +634,14 @@ class NNDescent(object):
             graph.rows, graph.data = deheap_sort(graph_heap)
             graph = graph.maximum(graph.transpose())
             self._neighbor_graph = deheap_sort(
-                self._search(
+                initialized_nnd_search(
                     self._raw_data,
                     graph.indptr,
                     graph.indices,
                     search_heap,
                     self._raw_data,
+                    self._distance_func,
+                    self._dist_args,
                 )
             )
         else:
@@ -671,12 +672,6 @@ class NNDescent(object):
             n_neighbors=self.n_neighbors,
         )
         self._search_graph = (self._search_graph != 0).astype(np.int8)
-
-        self._random_init, self._tree_init = make_initialisations(
-            self._distance_func, self._dist_args
-        )
-
-        self._search = make_initialized_nnd_search(self._distance_func, self._dist_args)
 
     def query(self, query_data, k=10, queue_size=5.0):
         """Query the training data for the k nearest neighbors
@@ -717,16 +712,18 @@ class NNDescent(object):
             self._raw_data,
             query_data,
             int(k * queue_size),
-            self._random_init,
-            self._tree_init,
+            self._distance_func,
+            self._dist_args,
             self.rng_state,
         )
-        result = self._search(
+        result = initialized_nnd_search(
             self._raw_data,
             self._search_graph.indptr,
             self._search_graph.indices,
             init,
             query_data,
+            self._distance_func,
+            self._dist_args,
         )
 
         indices, dists = deheap_sort(result)
