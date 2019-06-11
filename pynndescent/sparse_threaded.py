@@ -3,7 +3,7 @@ import math
 import numba
 import numpy as np
 
-import pynndescent.distances as dst
+import pynndescent.sparse as sparse
 
 from pynndescent.utils import (
     heap_push,
@@ -305,10 +305,11 @@ def sparse_nn_descent(
     inds,
     indptr,
     data,
+    n_vertices,
     n_neighbors,
     rng_state,
     max_candidates=50,
-    dist=dst.euclidean,
+    dist=sparse.sparse_euclidean,
     dist_args=(),
     n_iters=10,
     delta=0.001,
@@ -325,7 +326,6 @@ def sparse_nn_descent(
 
     with joblib.Parallel(prefer="threads", n_jobs=n_jobs) as parallel:
 
-        n_vertices = data.shape[0]
         n_tasks = effective_n_jobs_with_context(n_jobs)
         chunk_size = int(math.ceil(n_vertices / n_tasks))
 

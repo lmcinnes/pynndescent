@@ -15,6 +15,7 @@ import pynndescent.sparse as sparse
 import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as dist
 import pynndescent.threaded as threaded
+import pynndescent.sparse_threaded as sparse_threaded
 
 from pynndescent.utils import (
     rejection_sample,
@@ -560,22 +561,56 @@ class NNDescent(object):
             if verbose:
                 print(ts(), "parallel NN descent for", str(n_iters), "iterations")
 
-            self._neighbor_graph = threaded.nn_descent(
-                self._raw_data,
-                self.n_neighbors,
-                self.rng_state,
-                self.max_candidates,
-                self._distance_func,
-                self._dist_args,
-                self.n_iters,
-                self.delta,
-                self.rho,
-                rp_tree_init=self.tree_init,
-                leaf_array=leaf_array,
-                verbose=verbose,
-                n_jobs=n_jobs,
-                seed_per_row=seed_per_row,
-            )
+            if isspmatrix_csr(self._raw_data):
+                # Sparse case
+                self._is_sparse = True
+                if metric in sparse.sparse_named_distances:
+                    self._distance_func = sparse.sparse_named_distances[metric]
+                    if metric in sparse.sparse_need_n_features:
+                        metric_kwds["n_features"] = self._raw_data.shape[1]
+                    self._dist_args = tuple(metric_kwds.values())
+                else:
+                    raise ValueError(
+                        "Metric {} not supported for sparse data".format(metric)
+                    )
+                self._neighbor_graph = sparse_threaded.sparse_nn_descent(
+                    self._raw_data.indices,
+                    self._raw_data.indptr,
+                    self._raw_data.data,
+                    self._raw_data.shape[0],
+                    self.n_neighbors,
+                    self.rng_state,
+                    self.max_candidates,
+                    self._distance_func,
+                    self._dist_args,
+                    self.n_iters,
+                    self.delta,
+                    self.rho,
+                    rp_tree_init=self.tree_init,
+                    leaf_array=leaf_array,
+                    verbose=verbose,
+                    n_jobs=n_jobs,
+                    seed_per_row=seed_per_row,
+                )
+            else:
+                # Regular case
+                self._is_sparse = False
+                self._neighbor_graph = threaded.nn_descent(
+                    self._raw_data,
+                    self.n_neighbors,
+                    self.rng_state,
+                    self.max_candidates,
+                    self._distance_func,
+                    self._dist_args,
+                    self.n_iters,
+                    self.delta,
+                    self.rho,
+                    rp_tree_init=self.tree_init,
+                    leaf_array=leaf_array,
+                    verbose=verbose,
+                    n_jobs=n_jobs,
+                    seed_per_row=seed_per_row,
+                )
         elif algorithm == "standard" or leaf_array.shape[0] == 1:
             if isspmatrix_csr(self._raw_data):
 
