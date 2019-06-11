@@ -25,8 +25,9 @@ locale.setlocale(locale.LC_NUMERIC, "C")
 
 
 @numba.njit(fastmath=True)
-def sparse_init_rp_tree(inds, indptr, data, sparse_dist, dist_args, current_graph, leaf_array,
-                        tried=None):
+def sparse_init_rp_tree(
+    inds, indptr, data, sparse_dist, dist_args, current_graph, leaf_array, tried=None
+):
     if tried is None:
         tried = set([(-1, -1)])
 
@@ -42,22 +43,12 @@ def sparse_init_rp_tree(inds, indptr, data, sparse_dist, dist_args, current_grap
                 if (p, q) in tried:
                     continue
 
-                from_inds = inds[
-                            indptr[p]: indptr[p + 1]
-                            ]
-                from_data = data[
-                            indptr[p]: indptr[p + 1]
-                            ]
+                from_inds = inds[indptr[p] : indptr[p + 1]]
+                from_data = data[indptr[p] : indptr[p + 1]]
 
-                to_inds = inds[
-                          indptr[q]: indptr[q + 1]
-                          ]
-                to_data = data[
-                          indptr[q]: indptr[q + 1]
-                          ]
-                d = sparse_dist(
-                    from_inds, from_data, to_inds, to_data, *dist_args
-                )
+                to_inds = inds[indptr[q] : indptr[q + 1]]
+                to_data = data[indptr[q] : indptr[q + 1]]
+                d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
                 heap_push(current_graph, p, d, q, 1)
                 tried.add((p, q))
                 if p != q:
@@ -105,8 +96,16 @@ def sparse_nn_descent(
             tried.add((indices[j], i))
 
     if rp_tree_init:
-        sparse_init_rp_tree(inds, indptr, data, sparse_dist, dist_args, current_graph, leaf_array,
-                            tried=tried)
+        sparse_init_rp_tree(
+            inds,
+            indptr,
+            data,
+            sparse_dist,
+            dist_args,
+            current_graph,
+            leaf_array,
+            tried=tried,
+        )
 
     for n in range(n_iters):
         if verbose:
@@ -137,9 +136,7 @@ def sparse_nn_descent(
                     to_inds = inds[indptr[q] : indptr[q + 1]]
                     to_data = data[indptr[q] : indptr[q + 1]]
 
-                    d = sparse_dist(
-                        from_inds, from_data, to_inds, to_data, *dist_args
-                    )
+                    d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
 
                     c += heap_push(current_graph, p, d, q, 1)
                     c += heap_push(current_graph, q, d, p, 1)
