@@ -36,9 +36,20 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 # Map Reduce functions to be jitted
 
+
 @numba.njit(nogil=True)
 def sparse_current_graph_map_jit(
-    rows, n_vertices, n_neighbors, inds, indptr, data, heap_updates, rng_state, seed_per_row, sparse_dist, dist_args
+    rows,
+    n_vertices,
+    n_neighbors,
+    inds,
+    indptr,
+    data,
+    heap_updates,
+    rng_state,
+    seed_per_row,
+    sparse_dist,
+    dist_args,
 ):
     rng_state_local = rng_state.copy()
     count = 0
@@ -141,7 +152,9 @@ def sparse_init_current_graph(
 
 
 @numba.njit(nogil=True, fastmath=True)
-def sparse_init_rp_tree_map_jit(rows, leaf_array, inds, indptr, data, heap_updates, sparse_dist, dist_args):
+def sparse_init_rp_tree_map_jit(
+    rows, leaf_array, inds, indptr, data, heap_updates, sparse_dist, dist_args
+):
     count = 0
     for n in rows:
         if n >= leaf_array.shape[0]:
@@ -158,11 +171,11 @@ def sparse_init_rp_tree_map_jit(rows, leaf_array, inds, indptr, data, heap_updat
                 if (la_n_i, la_n_j) in tried:
                     continue
 
-                from_inds = inds[indptr[la_n_i]: indptr[la_n_i + 1]]
-                from_data = data[indptr[la_n_i]: indptr[la_n_i + 1]]
+                from_inds = inds[indptr[la_n_i] : indptr[la_n_i + 1]]
+                from_data = data[indptr[la_n_i] : indptr[la_n_i + 1]]
 
-                to_inds = inds[indptr[la_n_j]: indptr[la_n_j + 1]]
-                to_data = data[indptr[la_n_j]: indptr[la_n_j + 1]]
+                to_inds = inds[indptr[la_n_j] : indptr[la_n_j + 1]]
+                to_data = data[indptr[la_n_j] : indptr[la_n_j + 1]]
 
                 d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
 
@@ -199,7 +212,16 @@ def sparse_init_rp_tree(
         rows = chunk_rows(chunk_size, index, n_vertices)
         return (
             index,
-            sparse_init_rp_tree_map_jit(rows, leaf_array, inds, indptr, data, heap_updates[index], dist, dist_args),
+            sparse_init_rp_tree_map_jit(
+                rows,
+                leaf_array,
+                inds,
+                indptr,
+                data,
+                heap_updates[index],
+                dist,
+                dist_args,
+            ),
         )
 
     def init_rp_tree_reduce(index):
@@ -344,7 +366,15 @@ def sparse_nn_descent(
 
         if rp_tree_init:
             sparse_init_rp_tree(
-                inds, indptr, data, dist, dist_args, current_graph, leaf_array, chunk_size, parallel
+                inds,
+                indptr,
+                data,
+                dist,
+                dist_args,
+                current_graph,
+                leaf_array,
+                chunk_size,
+                parallel,
             )
 
         # store the updates in an array
