@@ -28,8 +28,8 @@ nn_data = np.vstack(
 #     [binary_nn_data, np.zeros((2, 500))]
 # )  # Add some all zero data for corner case test
 # sparse_nn_data = sparse.csr_matrix(for_sparse_nn_data * binary_nn_data)
-sparse_nn_data = sparse.random(1000, 50, density=0.5, format='csr')
-#sparse_nn_data = sparse.csr_matrix(nn_data)
+sparse_nn_data = sparse.random(1000, 50, density=0.5, format="csr")
+# sparse_nn_data = sparse.csr_matrix(nn_data)
 
 
 def test_nn_descent_neighbor_accuracy():
@@ -75,10 +75,7 @@ def test_angular_nn_descent_neighbor_accuracy():
 
 def test_sparse_nn_descent_neighbor_accuracy():
     knn_indices, _ = NNDescent(
-        sparse_nn_data,
-        "euclidean",
-        n_neighbors=20,
-        random_state=np.random
+        sparse_nn_data, "euclidean", n_neighbors=20, random_state=np.random
     )._neighbor_graph
 
     tree = KDTree(sparse_nn_data.toarray())
@@ -118,12 +115,7 @@ def test_sparse_angular_nn_descent_neighbor_accuracy():
 
 
 def test_nn_descent_query_accuracy():
-    nnd = NNDescent(
-        nn_data[200:],
-        "euclidean",
-        n_neighbors=10,
-        random_state=np.random
-    )
+    nnd = NNDescent(nn_data[200:], "euclidean", n_neighbors=10, random_state=np.random)
     knn_indices, _ = nnd.query(nn_data[:200], k=10)
 
     tree = KDTree(nn_data[200:])
@@ -143,10 +135,7 @@ def test_nn_descent_query_accuracy():
 
 def test_sparse_nn_descent_query_accuracy():
     nnd = NNDescent(
-        sparse_nn_data[200:],
-        "euclidean",
-        n_neighbors=10,
-        random_state=np.random
+        sparse_nn_data[200:], "euclidean", n_neighbors=10, random_state=np.random
     )
     knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10)
 

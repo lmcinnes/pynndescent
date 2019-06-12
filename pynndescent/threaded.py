@@ -87,7 +87,15 @@ def shuffle_jit(
 
 @numba.njit(nogil=True)
 def current_graph_map_jit(
-    rows, n_vertices, n_neighbors, data, heap_updates, rng_state, seed_per_row, dist, dist_args
+    rows,
+    n_vertices,
+    n_neighbors,
+    data,
+    heap_updates,
+    rng_state,
+    seed_per_row,
+    dist,
+    dist_args,
 ):
     rng_state_local = rng_state.copy()
     count = 0
@@ -227,7 +235,6 @@ def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates, dist, dist_args):
     return count
 
 
-
 @numba.njit("void(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
 def init_rp_tree_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     for update_i in range(n_tasks):
@@ -258,7 +265,9 @@ def init_rp_tree(
         rows = chunk_rows(chunk_size, index, n_vertices)
         return (
             index,
-            init_rp_tree_map_jit(rows, leaf_array, data, heap_updates[index], dist, dist_args),
+            init_rp_tree_map_jit(
+                rows, leaf_array, data, heap_updates[index], dist, dist_args
+            ),
         )
 
     def init_rp_tree_reduce(index):
@@ -614,7 +623,7 @@ def nn_descent(
                         heap_updates[index],
                         offset=0,
                         dist=dist,
-                        dist_args=dist_args
+                        dist_args=dist_args,
                     ),
                 )
 
