@@ -35,7 +35,7 @@ INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
 
-@numba.njit(parallel=True, fastmath=True)
+@numba.njit(fastmath=True)
 def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
         indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
@@ -47,7 +47,7 @@ def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng
     return
 
 
-@numba.njit(parallel=True, fastmath=True)
+@numba.njit(fastmath=True)
 def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
         indices = search_flat_tree(
