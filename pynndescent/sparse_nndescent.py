@@ -171,7 +171,7 @@ def sparse_nn_descent(
     return deheap_sort(current_graph)
 
 
-@numba.njit()
+@numba.njit(parallel=True)
 def sparse_init_from_random(
     n_neighbors,
     inds,
@@ -203,7 +203,7 @@ def sparse_init_from_random(
     return
 
 
-@numba.njit()
+@numba.njit(parallel=True)
 def sparse_init_from_tree(
     tree,
     inds,
