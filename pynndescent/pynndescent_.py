@@ -1024,7 +1024,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
 
         Returns
         -------
-        Xt : CSR sparse matrix, shape (n_samples_fit, n_samples_transform)
+        Xt : CSR sparse matrix, shape (n_samples_transform, n_samples_fit)
             Xt[i, j] is assigned the weight of edge that connects i to j.
             Only the neighbors have an explicit value.
         """
@@ -1042,7 +1042,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             )
 
         result = lil_matrix(
-            (n_samples_transform, n_samples_transform), dtype=np.float32
+            (n_samples_transform, self.n_samples_fit), dtype=np.float32
         )
         result.rows = indices
         result.data = distances
