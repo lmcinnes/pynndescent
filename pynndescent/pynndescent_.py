@@ -1041,9 +1041,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
                 X, k=self.n_neighbors, queue_size=self.search_queue_size
             )
 
-        result = lil_matrix(
-            (n_samples_transform, self.n_samples_fit), dtype=np.float32
-        )
+        result = lil_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
         result.rows = indices
         result.data = distances
 

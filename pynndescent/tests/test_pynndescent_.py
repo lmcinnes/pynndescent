@@ -160,24 +160,16 @@ def test_transformer_equivalence():
     train = nn_data[:400]
     test = nn_data[:200]
 
-    nnd = NNDescent(
-        data=train,
-        n_neighbors=N_NEIGHBORS,
-        random_state=42
-    )
+    nnd = NNDescent(data=train, n_neighbors=N_NEIGHBORS, random_state=42)
     indices, dists = nnd.query(test, k=N_NEIGHBORS, queue_size=QUEUE_SIZE)
     sort_idx = np.argsort(indices, axis=1)
     indices_sorted = np.vstack(
-         [indices[i, sort_idx[i]] for i in range(sort_idx.shape[0])]
+        [indices[i, sort_idx[i]] for i in range(sort_idx.shape[0])]
     )
-    dists_sorted = np.vstack(
-        [dists[i, sort_idx[i]] for i in range(sort_idx.shape[0])]
-    )
+    dists_sorted = np.vstack([dists[i, sort_idx[i]] for i in range(sort_idx.shape[0])])
 
     transformer = PyNNDescentTransformer(
-        n_neighbors=N_NEIGHBORS,
-        search_queue_size=QUEUE_SIZE,
-        random_state=42
+        n_neighbors=N_NEIGHBORS, search_queue_size=QUEUE_SIZE, random_state=42
     ).fit(train)
     Xt = transformer.transform(test).sorted_indices()
 
