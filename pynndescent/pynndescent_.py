@@ -156,7 +156,6 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=None):
                     tried.add((q, p))
 
 
-
 @numba.njit(fastmath=True)
 def nn_descent_internal_low_memory(
     current_graph,

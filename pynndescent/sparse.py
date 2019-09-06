@@ -403,7 +403,6 @@ def sparse_hellinger(ind1, data1, ind2, data2):
         return np.sqrt(1.0 - (result / sqrt_norm_prod))
 
 
-
 sparse_named_distances = {
     # general minkowski distances
     "euclidean": sparse_euclidean,

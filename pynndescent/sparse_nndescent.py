@@ -56,23 +56,22 @@ def sparse_init_rp_tree(
                     tried.add((q, p))
 
 
-
 @numba.njit(fastmath=True)
 def sparse_nn_descent_internal_low_memory(
-        current_graph,
-        inds,
-        indptr,
-        data,
-        n_vertices,
-        n_neighbors,
-        rng_state,
-        max_candidates=50,
-        sparse_dist=sparse_euclidean,
-        dist_args=(),
-        n_iters=10,
-        delta=0.001,
-        rho=0.5,
-        verbose=False,
+    current_graph,
+    inds,
+    indptr,
+    data,
+    n_vertices,
+    n_neighbors,
+    rng_state,
+    max_candidates=50,
+    sparse_dist=sparse_euclidean,
+    dist_args=(),
+    n_iters=10,
+    delta=0.001,
+    rho=0.5,
+    verbose=False,
 ):
     for n in range(n_iters):
         if verbose:
@@ -134,21 +133,21 @@ def sparse_nn_descent_internal_low_memory(
 
 @numba.njit(fastmath=True)
 def sparse_nn_descent_internal_high_memory(
-        current_graph,
-        inds,
-        indptr,
-        data,
-        n_vertices,
-        n_neighbors,
-        rng_state,
-        max_candidates=50,
-        sparse_dist=sparse_euclidean,
-        dist_args=(),
-        n_iters=10,
-        delta=0.001,
-        rho=0.5,
-        tried=set([(-1, -1)]),
-        verbose=False,
+    current_graph,
+    inds,
+    indptr,
+    data,
+    n_vertices,
+    n_neighbors,
+    rng_state,
+    max_candidates=50,
+    sparse_dist=sparse_euclidean,
+    dist_args=(),
+    n_iters=10,
+    delta=0.001,
+    rho=0.5,
+    tried=set([(-1, -1)]),
+    verbose=False,
 ):
     for n in range(n_iters):
         if verbose:
@@ -299,7 +298,6 @@ def sparse_nn_descent(
             tried=tried,
             verbose=verbose,
         )
-
 
     return deheap_sort(current_graph)
 
