@@ -347,6 +347,26 @@ def correlation(x, y):
         return 1.0 - (dot_product / np.sqrt(norm_x * norm_y))
 
 
+@numba.njit()
+def hellinger(x, y):
+    result = 0.0
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+
+    for i in range(x.shape[0]):
+        result += np.sqrt(x[i] * y[i])
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0 and l1_norm_y == 0:
+        return 0.0
+    elif l1_norm_x == 0 or l1_norm_y == 0:
+        return 1.0
+    else:
+        return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
+
+
+
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
@@ -369,6 +389,7 @@ named_distances = {
     "canberra": canberra,
     "cosine": cosine,
     "correlation": correlation,
+    "hellinger": hellinger,
     "haversine": haversine,
     "braycurtis": bray_curtis,
     # Binary distances
