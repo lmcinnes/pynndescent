@@ -35,7 +35,7 @@ INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
 
-@numba.njit(parallel=True, fastmath=True)
+@numba.njit(fastmath=True)
 def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
         indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
@@ -47,7 +47,7 @@ def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng
     return
 
 
-@numba.njit(parallel=True, fastmath=True)
+@numba.njit(fastmath=True)
 def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
         indices = search_flat_tree(
@@ -1024,7 +1024,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
 
         Returns
         -------
-        Xt : CSR sparse matrix, shape (n_samples_fit, n_samples_transform)
+        Xt : CSR sparse matrix, shape (n_samples_transform, n_samples_fit)
             Xt[i, j] is assigned the weight of edge that connects i to j.
             Only the neighbors have an explicit value.
         """
@@ -1041,9 +1041,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
                 X, k=self.n_neighbors, queue_size=self.search_queue_size
             )
 
-        result = lil_matrix(
-            (n_samples_transform, n_samples_transform), dtype=np.float32
-        )
+        result = lil_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
         result.rows = indices
         result.data = distances
 
