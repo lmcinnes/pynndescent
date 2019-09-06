@@ -381,6 +381,7 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
     else:
         return 1.0 - (dot_product / (norm1 * norm2))
 
+
 @numba.njit()
 def sparse_hellinger(ind1, data1, ind2, data2):
     aux_inds, aux_data = sparse_mul(ind1, data1, ind2, data2)
