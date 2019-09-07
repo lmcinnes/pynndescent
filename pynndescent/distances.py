@@ -366,7 +366,6 @@ def hellinger(x, y):
         return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
 
 
-
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
