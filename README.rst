@@ -13,6 +13,7 @@
 .. image:: https://img.shields.io/lgtm/grade/python/g/lmcinnes/pynndescent.svg
     :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/context:python
     :alt: LGTM Grade
+
 ===========
 PyNNDescent
 ===========
