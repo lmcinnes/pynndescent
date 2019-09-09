@@ -43,6 +43,11 @@ def accuracy(expected, actual):
 def test_effective_n_jobs_with_context():
     assert_equal(threaded.effective_n_jobs_with_context(), 1, "Default to 1 job")
     assert_equal(
+        threaded.effective_n_jobs_with_context(-1),
+        joblib.cpu_count(),
+        "Use all cores with num_jobs=-1",
+    )
+    assert_equal(
         threaded.effective_n_jobs_with_context(2), 2, "Use n_jobs if specified"
     )
     with joblib.parallel_backend("threading"):
@@ -225,6 +230,49 @@ def test_nn_decent_with_parallel_backend():
             tree_init=False,
             seed_per_row=True,
         )._neighbor_graph
+
+    assert_allclose(nn_indices_threaded, nn_indices)
+    assert_allclose(nn_distances_threaded, nn_distances)
+
+
+def test_nn_decent_with_n_jobs_minus_one():
+    nn_indices, nn_distances = NNDescent(
+        data,
+        n_neighbors=n_neighbors,
+        max_candidates=max_candidates,
+        n_iters=2,
+        delta=0,
+        tree_init=False,
+        seed_per_row=True,
+    )._neighbor_graph
+
+    for i in range(data.shape[0]):
+        assert_equal(
+            len(nn_indices[i]),
+            len(np.unique(nn_indices[i])),
+            "Duplicate indices in unthreaded knn graph",
+        )
+
+    nn_indices_threaded, nn_distances_threaded = NNDescent(
+        data,
+        n_neighbors=n_neighbors,
+        max_candidates=max_candidates,
+        n_iters=2,
+        delta=0,
+        tree_init=False,
+        seed_per_row=True,
+        n_jobs=-1,
+    )._neighbor_graph
+
+    for i in range(data.shape[0]):
+        assert_equal(
+            len(nn_indices_threaded[i]),
+            len(np.unique(nn_indices_threaded[i])),
+            "Duplicate indices in threaded knn graph",
+        )
+
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)
+    _, nn_gold_indices = nbrs.kneighbors(data)
 
     assert_allclose(nn_indices_threaded, nn_indices)
     assert_allclose(nn_distances_threaded, nn_distances)

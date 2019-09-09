@@ -157,7 +157,8 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=None):
 
 
 @numba.njit(fastmath=True)
-def nn_descent(
+def nn_descent_internal_low_memory(
+    current_graph,
     data,
     n_neighbors,
     rng_state,
@@ -167,28 +168,72 @@ def nn_descent(
     n_iters=10,
     delta=0.001,
     rho=0.5,
-    rp_tree_init=True,
-    leaf_array=None,
     verbose=False,
     seed_per_row=False,
 ):
     n_vertices = data.shape[0]
-    tried = set([(-1, -1)])
 
-    current_graph = make_heap(data.shape[0], n_neighbors)
-    for i in range(data.shape[0]):
-        if seed_per_row:
-            seed(rng_state, i)
-        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-        for j in range(indices.shape[0]):
-            d = dist(data[i], data[indices[j]], *dist_args)
-            heap_push(current_graph, i, d, indices[j], 1)
-            heap_push(current_graph, indices[j], d, i, 1)
-            tried.add((i, indices[j]))
-            tried.add((indices[j], i))
+    for n in range(n_iters):
+        if verbose:
+            print("\t", n, " / ", n_iters)
 
-    if rp_tree_init:
-        init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=tried)
+        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
+            current_graph,
+            n_vertices,
+            n_neighbors,
+            max_candidates,
+            rng_state,
+            rho,
+            seed_per_row,
+        )
+
+        c = 0
+        for i in range(n_vertices):
+            for j in range(max_candidates):
+                p = int(new_candidate_neighbors[0, i, j])
+                if p < 0:
+                    continue
+                for k in range(j, max_candidates):
+                    q = int(new_candidate_neighbors[0, i, k])
+                    if q < 0:
+                        continue
+
+                    d = dist(data[p], data[q], *dist_args)
+                    c += heap_push(current_graph, p, d, q, 1)
+                    if p != q:
+                        c += heap_push(current_graph, q, d, p, 1)
+
+                for k in range(max_candidates):
+                    q = int(old_candidate_neighbors[0, i, k])
+                    if q < 0:
+                        continue
+
+                    d = dist(data[p], data[q], *dist_args)
+                    c += heap_push(current_graph, p, d, q, 1)
+                    if p != q:
+                        c += heap_push(current_graph, q, d, p, 1)
+
+        if c <= delta * n_neighbors * data.shape[0]:
+            return
+
+
+@numba.njit(fastmath=True)
+def nn_descent_internal_high_memory(
+    current_graph,
+    data,
+    n_neighbors,
+    rng_state,
+    tried,
+    max_candidates=50,
+    dist=dist.euclidean,
+    dist_args=(),
+    n_iters=10,
+    delta=0.001,
+    rho=0.5,
+    verbose=False,
+    seed_per_row=False,
+):
+    n_vertices = data.shape[0]
 
     for n in range(n_iters):
         if verbose:
@@ -235,7 +280,74 @@ def nn_descent(
                         tried.add((q, p))
 
         if c <= delta * n_neighbors * data.shape[0]:
-            break
+            return
+
+
+@numba.njit(fastmath=True)
+def nn_descent(
+    data,
+    n_neighbors,
+    rng_state,
+    max_candidates=50,
+    dist=dist.euclidean,
+    dist_args=(),
+    n_iters=10,
+    delta=0.001,
+    rho=0.5,
+    rp_tree_init=True,
+    leaf_array=None,
+    low_memory=False,
+    verbose=False,
+    seed_per_row=False,
+):
+    tried = set([(-1, -1)])
+
+    current_graph = make_heap(data.shape[0], n_neighbors)
+    for i in range(data.shape[0]):
+        if seed_per_row:
+            seed(rng_state, i)
+        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
+        for j in range(indices.shape[0]):
+            d = dist(data[i], data[indices[j]], *dist_args)
+            heap_push(current_graph, i, d, indices[j], 1)
+            heap_push(current_graph, indices[j], d, i, 1)
+            tried.add((i, indices[j]))
+            tried.add((indices[j], i))
+
+    if rp_tree_init:
+        init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=tried)
+
+    if low_memory:
+        nn_descent_internal_low_memory(
+            current_graph,
+            data,
+            n_neighbors,
+            rng_state,
+            max_candidates=max_candidates,
+            dist=dist,
+            dist_args=dist_args,
+            n_iters=n_iters,
+            delta=delta,
+            rho=rho,
+            verbose=verbose,
+            seed_per_row=seed_per_row,
+        )
+    else:
+        nn_descent_internal_high_memory(
+            current_graph,
+            data,
+            n_neighbors,
+            rng_state,
+            tried,
+            max_candidates=max_candidates,
+            dist=dist,
+            dist_args=dist_args,
+            n_iters=n_iters,
+            delta=delta,
+            rho=rho,
+            verbose=verbose,
+            seed_per_row=seed_per_row,
+        )
 
     return deheap_sort(current_graph)
 
@@ -429,6 +541,13 @@ class NNDescent(object):
         alternative algorithm can be fast for large ``n_neighbors`` values.
         To use the alternative algorithm specify ``'alternative'``.
 
+    low_memory: boolean (optional, default=False)
+        Whether to use a lower memory, but more computationally expensive
+        approach to index construction. This defaults to false as for most
+        cases it speeds index construction, but if you are having issues
+        with excessive memory use for your dataset consider setting this
+        to True.
+
     max_candidates: int (optional, default=20)
         Internally each "self-join" keeps a maximum number of candidates (
         nearest neighbors and reverse nearest neighbors) to be considered.
@@ -477,6 +596,7 @@ class NNDescent(object):
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
+        low_memory=False,
         max_candidates=20,
         n_iters=None,
         delta=0.001,
@@ -498,6 +618,7 @@ class NNDescent(object):
         self.leaf_size = leaf_size
         self.prune_level = pruning_level
         self.max_candidates = max_candidates
+        self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
         self.rho = rho
@@ -637,6 +758,8 @@ class NNDescent(object):
                     self.n_neighbors,
                     self.rng_state,
                     self.max_candidates,
+                    rho=self.rho,
+                    low_memory=self.low_memory,
                     sparse_dist=self._distance_func,
                     dist_args=self._dist_args,
                     n_iters=self.n_iters,
@@ -662,6 +785,7 @@ class NNDescent(object):
                     self.n_iters,
                     self.delta,
                     self.rho,
+                    low_memory=self.low_memory,
                     rp_tree_init=True,
                     leaf_array=leaf_array,
                     verbose=verbose,
@@ -898,6 +1022,14 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         alternative algorithm can be fast for large ``n_neighbors`` values.
         To use the alternative algorithm specify ``'alternative'``.
 
+
+    low_memory: boolean (optional, default=False)
+        Whether to use a lower memory, but more computationally expensive
+        approach to index construction. This defaults to false as for most
+        cases it speeds index construction, but if you are having issues
+        with excessive memory use for your dataset consider setting this
+        to True.
+
     max_candidates: int (optional, default=20)
         Internally each "self-join" keeps a maximum number of candidates (
         nearest neighbors and reverse nearest neighbors) to be considered.
@@ -950,6 +1082,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
+        low_memory=False,
         max_candidates=20,
         n_iters=None,
         early_termination_value=0.001,
@@ -967,6 +1100,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.tree_init = tree_init
         self.random_state = random_state
         self.algorithm = algorithm
+        self.low_memory = low_memory
         self.max_candidates = max_candidates
         self.n_iters = n_iters
         self.early_termination_value = early_termination_value
@@ -1005,6 +1139,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             self.tree_init,
             self.random_state,
             self.algorithm,
+            self.low_memory,
             self.max_candidates,
             self.n_iters,
             self.early_termination_value,
