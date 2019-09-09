@@ -140,13 +140,13 @@ def sparse_nn_descent_internal_high_memory(
     n_vertices,
     n_neighbors,
     rng_state,
+    tried,
     max_candidates=50,
     sparse_dist=sparse_euclidean,
     dist_args=(),
     n_iters=10,
     delta=0.001,
     rho=0.5,
-    tried=set([(-1, -1)]),
     verbose=False,
 ):
     for n in range(n_iters):
@@ -289,13 +289,13 @@ def sparse_nn_descent(
             n_vertices,
             n_neighbors,
             rng_state,
+            tried,
             max_candidates=max_candidates,
             sparse_dist=sparse_dist,
             dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
             rho=rho,
-            tried=tried,
             verbose=verbose,
         )
 
