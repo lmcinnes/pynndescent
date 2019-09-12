@@ -90,7 +90,7 @@ def initialized_nnd_search(
     data, indptr, indices, initialization, query_points, dist, dist_args
 ):
 
-    for i in numba.prange(query_points.shape[0]):
+    for i in range(query_points.shape[0]):
 
         tried = set(initialization[0, i])
 
