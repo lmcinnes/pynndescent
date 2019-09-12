@@ -68,7 +68,7 @@ def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
     return
 
 
-@numba.njit()
+#@numba.njit()
 def initialise_search(
     forest, data, query_points, n_neighbors, dist, dist_args, rng_state
 ):
@@ -85,7 +85,7 @@ def initialise_search(
     return results
 
 
-@numba.njit(parallel=True, fastmath=True)
+@numba.njit(fastmath=True)
 def initialized_nnd_search(
     data, indptr, indices, initialization, query_points, dist, dist_args
 ):
