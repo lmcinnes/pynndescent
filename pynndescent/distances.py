@@ -22,6 +22,19 @@ def euclidean(x, y):
 
 
 @numba.njit(fastmath=True)
+def squared_euclidean(x, y):
+    r"""Squared euclidean distance.
+
+    .. math::
+        D(x, y) = \sum_i (x_i - y_i)^2
+    """
+    result = 0.0
+    for i in range(x.shape[0]):
+        result += (x[i] - y[i]) ** 2
+    return result
+
+
+@numba.njit(fastmath=True)
 def standardised_euclidean(x, y, sigma=_mock_ones):
     r"""Euclidean distance standardised against a vector of standard
     deviations per coordinate.

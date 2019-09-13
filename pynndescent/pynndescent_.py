@@ -73,14 +73,15 @@ def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
 
 
 def initialise_search(
-    forest, data, query_points, n_neighbors, dist, dist_args, rng_state
+    forest, n_search_trees, data, query_points, n_neighbors, dist, dist_args, rng_state
 ):
     results = make_heap(query_points.shape[0], n_neighbors)
     init_from_random(
         n_neighbors, data, query_points, results, dist, dist_args, rng_state
     )
     if forest is not None:
-        for tree in forest:
+        for i in range(n_search_trees):
+            tree = forest[i]
             init_from_tree(
                 tree, data, query_points, results, dist, dist_args, rng_state
             )
@@ -358,6 +359,36 @@ def nn_descent(
         )
 
     return deheap_sort(current_graph)
+
+
+@numba.njit()
+def diversify(indices, distances, data, dist, dist_args):
+
+    for i in range(indices.shape[0]):
+
+        new_indices = [indices[i, 0]]
+        new_distances = [distances[i, 0]]
+        for j in range(1, indices.shape[1]):
+            flag = True
+            for c in new_indices:
+                d = dist(data[indices[i, j]], data[c], *dist_args)
+                if d < distances[i, j]:
+                    flag = False
+                    break
+
+            if flag:
+                new_indices.append(indices[i, j])
+                new_distances.append(distances[i, j])
+
+        for j in range(indices.shape[1]):
+            if j < len(new_indices):
+                indices[i, j] = new_indices[j]
+                distances[i, j] = new_distances[j]
+            else:
+                indices[i, j] = 0
+                distances[i, j] = 0.0
+
+    return indices, distances
 
 
 @numba.njit(parallel=True)
@@ -841,6 +872,14 @@ class NNDescent(object):
         if hasattr(self, "_search_graph"):
             return
 
+        # diversified_rows, diversified_data = diversify(
+        #     self._neighbor_graph[0],
+        #     self._neighbor_graph[1],
+        #     self._raw_data,
+        #     self._distance_func,
+        #     self._dist_args,
+        # )
+
         self._search_graph = lil_matrix(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
         )
@@ -856,7 +895,7 @@ class NNDescent(object):
         )
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
-    def query(self, query_data, k=10, queue_size=5.0):
+    def query(self, query_data, k=10, queue_size=5.0, n_search_trees=0):
         """Query the training data for the k nearest neighbors
 
         Parameters
@@ -894,6 +933,7 @@ class NNDescent(object):
             self._init_search_graph()
             init = initialise_search(
                 self._rp_forest,
+                n_search_trees,
                 self._raw_data,
                 query_data,
                 int(k * queue_size),
