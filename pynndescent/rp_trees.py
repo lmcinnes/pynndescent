@@ -661,7 +661,7 @@ def select_side(hyperplane, offset, point, rng_state):
         margin += hyperplane[d] * point[d]
 
     if abs(margin) < EPS:
-        side = tau_rand_int(rng_state) % 2
+        side = np.abs(tau_rand_int(rng_state)) % 2
         if side == 0:
             return 0
         else:

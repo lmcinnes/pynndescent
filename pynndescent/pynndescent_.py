@@ -19,6 +19,7 @@ import pynndescent.sparse_threaded as sparse_threaded
 
 from pynndescent.utils import (
     rejection_sample,
+    tau_rand_int,
     seed,
     make_heap,
     heap_push,
@@ -38,12 +39,13 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 @numba.njit(fastmath=True)
 def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
-        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-        for j in range(indices.shape[0]):
-            if indices[j] < 0:
-                continue
-            d = dist(data[indices[j]], query_points[i], *dist_args)
-            heap_push(heap, i, d, indices[j], 1)
+        # indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
+        for j in range(n_neighbors):
+            # if indices[j] < 0:
+            #     continue
+            idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+            d = dist(data[idx], query_points[i], *dist_args)
+            heap_push(heap, i, d, idx, 1)
     return
 
 
@@ -93,25 +95,22 @@ def initialized_nnd_search(
     for i in range(query_points.shape[0]):
 
         tried = set(initialization[0, i])
+        # Find smallest flagged vertex
+        vertex = smallest_flagged(initialization, i)
 
-        while True:
+        while vertex >= 0:
+
+            for j in range(indptr[vertex], indptr[vertex + 1]):
+
+                candidate = indices[j]
+
+                if candidate not in tried:
+                    d = dist(data[candidate], query_points[i], *dist_args)
+                    unchecked_heap_push(initialization, i, d, candidate, 1)
+                    tried.add(candidate)
 
             # Find smallest flagged vertex
             vertex = smallest_flagged(initialization, i)
-
-            if vertex == -1:
-                break
-            candidates = indices[indptr[vertex] : indptr[vertex + 1]]
-            for j in range(candidates.shape[0]):
-                if (
-                    candidates[j] == vertex
-                    or candidates[j] == -1
-                    or candidates[j] in tried
-                ):
-                    continue
-                d = dist(data[candidates[j]], query_points[i], *dist_args)
-                unchecked_heap_push(initialization, i, d, candidates[j], 1)
-                tried.add(candidates[j])
 
     return initialization
 
