@@ -913,6 +913,11 @@ class NNDescent(object):
             accurately, but will require more computation to do so. Values
             should generally be in the range 1.0 to 10.0.
 
+        n_search_trees: int (default 0)
+            The number of random projection trees to use in intializing the
+            search. More trees will tend to produce more accurate results,
+            but cost runtime performance.
+
         Returns
         -------
         indices, distances: array (n_query_points, k), array (n_query_points, k)
