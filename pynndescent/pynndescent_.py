@@ -11,6 +11,8 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr
 from scipy.sparse.csgraph import minimum_spanning_tree
 
+import heapq
+
 import pynndescent.sparse as sparse
 import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as dist
@@ -70,7 +72,6 @@ def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
     return
 
 
-#@numba.njit()
 def initialise_search(
     forest, data, query_points, n_neighbors, dist, dist_args, rng_state
 ):
@@ -87,18 +88,23 @@ def initialise_search(
     return results
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, locals={'candidate' : numba.types.int64})
 def initialized_nnd_search(
     data, indptr, indices, initialization, query_points, dist, dist_args
 ):
 
     for i in range(query_points.shape[0]):
 
-        tried = set(initialization[0, i])
-        # Find smallest flagged vertex
-        vertex = smallest_flagged(initialization, i)
+        tried = set(initialization[0, i].astype(np.int64))
+        seed_set = [(np.inf, -1)]
+        for j in range(initialization.shape[2]):
+            heapq.heappush(seed_set, (initialization[1, i, j], int(initialization[0, i, j])))
 
-        while vertex >= 0:
+        # Find smallest flagged vertex
+        # vertex = smallest_flagged(initialization, i)
+        d, vertex = heapq.heappop(seed_set)
+
+        while vertex >= 0 and d < initialization[1, i, 0]:
 
             for j in range(indptr[vertex], indptr[vertex + 1]):
 
@@ -106,11 +112,14 @@ def initialized_nnd_search(
 
                 if candidate not in tried:
                     d = dist(data[candidate], query_points[i], *dist_args)
-                    unchecked_heap_push(initialization, i, d, candidate, 1)
+                    if d <= initialization[1, i, 0]:
+                        unchecked_heap_push(initialization, i, d, candidate, 1)
+                        heapq.heappush(seed_set, (d, candidate))
                     tried.add(candidate)
 
             # Find smallest flagged vertex
-            vertex = smallest_flagged(initialization, i)
+            # vertex = smallest_flagged(initialization, i)
+            d, vertex = heapq.heappop(seed_set)
 
     return initialization
 
