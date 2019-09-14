@@ -89,17 +89,22 @@ def initialise_search(
     return results
 
 
-@numba.njit(fastmath=True, locals={'candidate' : numba.types.int64})
+@numba.njit(fastmath=True, locals={"candidate": numba.types.int64})
 def initialized_nnd_search(
     data, indptr, indices, initialization, query_points, dist, dist_args
 ):
+    tried = np.zeros(data.shape[0], dtype=np.uint8)
 
     for i in range(query_points.shape[0]):
 
-        tried = set(initialization[0, i].astype(np.int64))
+        # tried = set(initialization[0, i].astype(np.int64))
+        tried[:] = 0
         seed_set = [(np.inf, -1)]
         for j in range(initialization.shape[2]):
-            heapq.heappush(seed_set, (initialization[1, i, j], int(initialization[0, i, j])))
+            heapq.heappush(
+                seed_set, (initialization[1, i, j], int(initialization[0, i, j]))
+            )
+            tried[int(initialization[0, i, j])] = 1
 
         # Find smallest flagged vertex
         # vertex = smallest_flagged(initialization, i)
@@ -111,12 +116,14 @@ def initialized_nnd_search(
 
                 candidate = indices[j]
 
-                if candidate not in tried:
+                # if candidate not in tried:
+                if tried[candidate] == 0:
                     d = dist(data[candidate], query_points[i], *dist_args)
                     if d <= initialization[1, i, 0]:
                         unchecked_heap_push(initialization, i, d, candidate, 1)
                         heapq.heappush(seed_set, (d, candidate))
-                    tried.add(candidate)
+                    # tried.add(candidate)
+                    tried[candidate] = 1
 
             # Find smallest flagged vertex
             # vertex = smallest_flagged(initialization, i)
@@ -677,10 +684,18 @@ class NNDescent(object):
 
         self.random_state = check_random_state(random_state)
 
+        self._distance_correction = None
+
         if callable(metric):
             self._distance_func = metric
         elif metric in dist.named_distances:
-            self._distance_func = dist.named_distances[metric]
+            if metric in dist.fast_distance_alternatives:
+                self._distance_func = dist.fast_distance_alternatives[metric]["dist"]
+                self._distance_correction = dist.fast_distance_alternatives[metric][
+                    "correction"
+                ]
+            else:
+                self._distance_func = dist.named_distances[metric]
         else:
             raise ValueError("Metric is neither callable, " + "nor a recognised string")
 
@@ -781,6 +796,8 @@ class NNDescent(object):
                     if metric in sparse.sparse_need_n_features:
                         metric_kwds["n_features"] = self._raw_data.shape[1]
                     self._dist_args = tuple(metric_kwds.values())
+                    if self._distance_correction is not None:
+                        self._distance_correction = None
                 else:
                     raise ValueError(
                         "Metric {} not supported for sparse data".format(metric)
@@ -866,6 +883,12 @@ class NNDescent(object):
                 "Failed to correctly find n_neighbors for some samples."
                 "Results may be less than ideal. Try re-running with"
                 "different parameters."
+            )
+
+        if self._distance_correction is not None:
+            self._neighbor_graph = (
+                self._neighbor_graph[0],
+                self._distance_correction(self._neighbor_graph[1]),
             )
 
     def _init_search_graph(self):
@@ -989,7 +1012,10 @@ class NNDescent(object):
             )
 
         indices, dists = deheap_sort(result)
-        return indices[:, :k], dists[:, :k]
+        indices, dists = indices[:, :k], dists[:, :k]
+        if self._distance_correction is not None:
+            dists = self._distance_correction(dists)
+        return indices, dists
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):

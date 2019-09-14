@@ -331,6 +331,29 @@ def cosine(x, y):
 
 
 @numba.njit(fastmath=True)
+def fast_cosine(x, y):
+    result = 0.0
+    norm_x = 0.0
+    norm_y = 0.0
+    for i in range(x.shape[0]):
+        result += x[i] * y[i]
+        norm_x += x[i] ** 2
+        norm_y += y[i] ** 2
+
+    if norm_x == 0.0 and norm_y == 0.0:
+        return 0.0
+    elif norm_x == 0.0 or norm_y == 0.0:
+        return 1.0
+    else:
+        return 1.0 - (result * result / norm_x * norm_y)
+
+
+@numba.vectorize(fastmath=True)
+def correct_fast_cosine(d):
+    return 1.0 - np.sqrt(1.0 - d)
+
+
+@numba.njit(fastmath=True)
 def correlation(x, y):
     mu_x = 0.0
     mu_y = 0.0
@@ -415,4 +438,16 @@ named_distances = {
     "sokalsneath": sokal_sneath,
     "sokalmichener": sokal_michener,
     "yule": yule,
+}
+
+# Some distances have a faster to compute alternative that
+# retains the same ordering of distances. We can compute with
+# this instead, and then correct the final distances when complete.
+# This provides a list of distances that have such an alternative
+# along with the alternative distance function and the correction
+# function to be applied.
+fast_distance_alternatives = {
+    "euclidean": {"dist": squared_euclidean, "correction": np.sqrt},
+    "l2": {"dist": squared_euclidean, "correction": np.sqrt},
+    "cosine": {"dist": fast_cosine, "correction": correct_fast_cosine},
 }
