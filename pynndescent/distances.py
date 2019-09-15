@@ -345,7 +345,7 @@ def fast_cosine(x, y):
     elif norm_x == 0.0 or norm_y == 0.0:
         return 1.0
     else:
-        return 1.0 - (result * result / norm_x * norm_y)
+        return 1.0 - ((result * result) / (norm_x * norm_y))
 
 
 @numba.vectorize(fastmath=True)
