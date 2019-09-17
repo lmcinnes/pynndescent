@@ -39,10 +39,10 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 
 @numba.njit(fastmath=True)
-def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
+def init_from_random(n_random_starts, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
         # indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-        for j in range(n_neighbors):
+        for j in range(n_random_starts):
             # if indices[j] < 0:
             #     continue
             idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
@@ -73,11 +73,12 @@ def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
 
 
 def initialise_search(
-    forest, n_search_trees, data, query_points, n_neighbors, dist, dist_args, rng_state
+    forest, n_search_trees, n_random_starts, data, query_points, n_neighbors, dist,
+        dist_args, rng_state
 ):
     results = make_heap(query_points.shape[0], n_neighbors)
     init_from_random(
-        n_neighbors, data, query_points, results, dist, dist_args, rng_state
+        n_random_starts, data, query_points, results, dist, dist_args, rng_state
     )
     if forest is not None:
         for i in range(n_search_trees):
@@ -93,41 +94,60 @@ def initialise_search(
 def initialized_nnd_search(
     data, indptr, indices, initialization, query_points, dist, dist_args
 ):
-    tried = np.zeros(data.shape[0], dtype=np.uint8)
+    # tried = np.zeros(data.shape[0], dtype=np.uint8)
 
     for i in range(query_points.shape[0]):
 
-        # tried = set(initialization[0, i].astype(np.int64))
-        tried[:] = 0
+        tried = set(initialization[0, i].astype(np.int64))
+        # n_dist_comps = 0
+        # n_candidates = 0
+        # tried[:] = 0
         seed_set = [(np.inf, -1)]
         for j in range(initialization.shape[2]):
             heapq.heappush(
                 seed_set, (initialization[1, i, j], int(initialization[0, i, j]))
             )
-            tried[int(initialization[0, i, j])] = 1
+            # tried[int(initialization[0, i, j])] = 1
 
         # Find smallest flagged vertex
         # vertex = smallest_flagged(initialization, i)
-        d, vertex = heapq.heappop(seed_set)
+        d_vertex, vertex = heapq.heappop(seed_set)
 
-        while vertex >= 0 and d < initialization[1, i, 0]:
+        while vertex >= 0 and d_vertex < initialization[1, i, 0]:
 
             for j in range(indptr[vertex], indptr[vertex + 1]):
 
                 candidate = indices[j]
 
-                # if candidate not in tried:
-                if tried[candidate] == 0:
+                # n_candidates += 1
+
+                if candidate not in tried:
+                # if tried[candidate] == 0:
+                    # n_dist_comps += 1
                     d = dist(data[candidate], query_points[i], *dist_args)
                     if d <= initialization[1, i, 0]:
                         unchecked_heap_push(initialization, i, d, candidate, 1)
                         heapq.heappush(seed_set, (d, candidate))
-                    # tried.add(candidate)
-                    tried[candidate] = 1
+
+                        # If we are better than the current seed, make this
+                        # the new seed and start back again
+                        # if d < d_vertex:
+                        #     if d_vertex < initialization[1, i, 0]:
+                        #         heapq.heappush(seed_set, (d_vertex, vertex))
+                        #     tried[candidate] = 1
+                        #     break
+
+                    tried.add(candidate)
+                    # tried[candidate] = 1
+
+
 
             # Find smallest flagged vertex
             # vertex = smallest_flagged(initialization, i)
-            d, vertex = heapq.heappop(seed_set)
+            d_vertex, vertex = heapq.heappop(seed_set)
+
+        # print("Seed heap size: ", len(seed_set), "; dist comps: ", n_dist_comps,
+        #       "; candidates: ", n_candidates)
 
     return initialization
 
@@ -962,6 +982,7 @@ class NNDescent(object):
             init = initialise_search(
                 self._rp_forest,
                 n_search_trees,
+                int(k * queue_size),
                 self._raw_data,
                 query_data,
                 int(k * queue_size),
