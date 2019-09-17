@@ -402,6 +402,31 @@ def hellinger(x, y):
         return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
 
 
+@numba.njit()
+def fast_hellinger(x, y):
+    result = 0.0
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+
+    for i in range(x.shape[0]):
+        result += np.sqrt(x[i] * y[i])
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0 and l1_norm_y == 0:
+        return 0.0
+    elif l1_norm_x == 0 or l1_norm_y == 0:
+        return 1.0
+    else:
+        return (1 - (result * result) / (l1_norm_x * l1_norm_y))
+
+
+@numba.vectorize(fastmath=True)
+def correct_fast_hellinger(d):
+    return np.arccos(np.sqrt(1.0 - d))
+
+
+
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
@@ -450,4 +475,5 @@ fast_distance_alternatives = {
     "euclidean": {"dist": squared_euclidean, "correction": np.sqrt},
     "l2": {"dist": squared_euclidean, "correction": np.sqrt},
     "cosine": {"dist": fast_cosine, "correction": correct_fast_cosine},
+    "hellinger": {"dist": fast_hellinger, "correction": correct_fast_hellinger},
 }
