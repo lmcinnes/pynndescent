@@ -91,7 +91,8 @@ def initialise_search(
 
 @numba.njit(fastmath=True, locals={"candidate": numba.types.int64})
 def initialized_nnd_search(
-    data, indptr, indices, initialization, query_points, dist, dist_args
+    data, indptr, indices, initialization, query_points, epsilon, epsilon_decay, dist,
+        dist_args
 ):
     tried = np.zeros(data.shape[0], dtype=np.uint8)
 
@@ -100,6 +101,8 @@ def initialized_nnd_search(
         # tried = set(initialization[0, i].astype(np.int64))
         tried[:] = 0
         seed_set = [(np.inf, -1)]
+        distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
+
         for j in range(initialization.shape[2]):
             heapq.heappush(
                 seed_set, (initialization[1, i, j], int(initialization[0, i, j]))
@@ -110,7 +113,8 @@ def initialized_nnd_search(
         # vertex = smallest_flagged(initialization, i)
         d, vertex = heapq.heappop(seed_set)
 
-        while vertex >= 0 and d < initialization[1, i, 0]:
+        # while vertex >= 0 and d < initialization[1, i, 0]:
+        while vertex >= 0 and d < distance_bound:
 
             for j in range(indptr[vertex], indptr[vertex + 1]):
 
@@ -119,12 +123,16 @@ def initialized_nnd_search(
                 # if candidate not in tried:
                 if tried[candidate] == 0:
                     d = dist(data[candidate], query_points[i], *dist_args)
-                    if d <= initialization[1, i, 0]:
-                        unchecked_heap_push(initialization, i, d, candidate, 1)
+                    if d < distance_bound:
+                        if d <= initialization[1, i, 0]:
+                            unchecked_heap_push(initialization, i, d, candidate, 1)
+                            distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
                         heapq.heappush(seed_set, (d, candidate))
+
                     # tried.add(candidate)
                     tried[candidate] = 1
 
+            epsilon *= epsilon_decay
             # Find smallest flagged vertex
             # vertex = smallest_flagged(initialization, i)
             d, vertex = heapq.heappop(seed_set)
@@ -918,7 +926,8 @@ class NNDescent(object):
         )
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
-    def query(self, query_data, k=10, queue_size=5.0, n_search_trees=0):
+    def query(self, query_data, k=10, queue_size=5.0, n_search_trees=0, epsilon=0.1,
+              epsilon_decay=1.0):
         """Query the training data for the k nearest neighbors
 
         Parameters
@@ -975,6 +984,8 @@ class NNDescent(object):
                 self._search_graph.indices,
                 init,
                 query_data,
+                epsilon,
+                epsilon_decay,
                 self._distance_func,
                 self._dist_args,
             )
