@@ -39,7 +39,9 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 
 @numba.njit(fastmath=True)
-def init_from_random(n_random_starts, data, query_points, heap, dist, dist_args, rng_state):
+def init_from_random(
+    n_random_starts, data, query_points, heap, dist, dist_args, rng_state
+):
     for i in range(query_points.shape[0]):
         # indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
         for j in range(n_random_starts):
@@ -73,8 +75,15 @@ def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
 
 
 def initialise_search(
-    forest, n_search_trees, n_random_starts, data, query_points, n_neighbors, dist,
-        dist_args, rng_state
+    forest,
+    n_search_trees,
+    n_random_starts,
+    data,
+    query_points,
+    n_neighbors,
+    dist,
+    dist_args,
+    rng_state,
 ):
     results = make_heap(query_points.shape[0], n_neighbors)
     init_from_random(
@@ -122,7 +131,7 @@ def initialized_nnd_search(
                 # n_candidates += 1
 
                 if candidate not in tried:
-                # if tried[candidate] == 0:
+                    # if tried[candidate] == 0:
                     # n_dist_comps += 1
                     d = dist(data[candidate], query_points[i], *dist_args)
                     if d <= initialization[1, i, 0]:
@@ -139,8 +148,6 @@ def initialized_nnd_search(
 
                     tried.add(candidate)
                     # tried[candidate] = 1
-
-
 
             # Find smallest flagged vertex
             # vertex = smallest_flagged(initialization, i)
