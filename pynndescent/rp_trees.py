@@ -126,7 +126,7 @@ def angular_random_projection_split(data, indices, rng_state):
             indices_right[n_right] = indices[i]
             n_right += 1
 
-    return indices_left, indices_right, hyperplane_vector, None
+    return indices_left, indices_right, hyperplane_vector, 0.0
 
 
 @numba.njit(fastmath=True, nogil=True)
@@ -331,7 +331,7 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
 
     hyperplane = np.vstack((hyperplane_inds, hyperplane_data))
 
-    return indices_left, indices_right, hyperplane, None
+    return indices_left, indices_right, hyperplane, 0.0
 
 
 @numba.njit(fastmath=True)
@@ -442,20 +442,20 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
 
 
 @numba.njit(nogil=True)
-def new_make_euclidean_tree(data, indices, hyperplanes, offsets, children,
-                            point_indices,
-                            rng_state, leaf_size=30):
+def make_euclidean_tree(data, indices, hyperplanes, offsets, children,
+                        point_indices,
+                        rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = euclidean_random_projection_split(
             data, indices, rng_state
         )
 
-        new_make_euclidean_tree(data, left_indices, hyperplanes, offsets, children,
+        make_euclidean_tree(data, left_indices, hyperplanes, offsets, children,
                             point_indices, rng_state, leaf_size)
 
         left_node_num = len(point_indices) - 1
 
-        new_make_euclidean_tree(data, right_indices, hyperplanes, offsets, children,
+        make_euclidean_tree(data, right_indices, hyperplanes, offsets, children,
                             point_indices, rng_state, leaf_size)
 
         right_node_num = len(point_indices) - 1
@@ -473,22 +473,22 @@ def new_make_euclidean_tree(data, indices, hyperplanes, offsets, children,
     return
 
 @numba.njit(nogil=True)
-def new_make_angular_tree(data, indices, hyperplanes, offsets, children,
-                            point_indices,
-                            rng_state, leaf_size=30):
+def make_angular_tree(data, indices, hyperplanes, offsets, children,
+                      point_indices,
+                      rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = \
             angular_random_projection_split(
             data, indices, rng_state
         )
 
-        new_make_angular_tree(data, left_indices, hyperplanes, offsets, children,
-                            point_indices, rng_state, leaf_size)
+        make_angular_tree(data, left_indices, hyperplanes, offsets, children,
+                          point_indices, rng_state, leaf_size)
 
         left_node_num = len(point_indices) - 1
 
-        new_make_angular_tree(data, right_indices, hyperplanes, offsets, children,
-                            point_indices, rng_state, leaf_size)
+        make_angular_tree(data, right_indices, hyperplanes, offsets, children,
+                          point_indices, rng_state, leaf_size)
 
         right_node_num = len(point_indices) - 1
 
@@ -505,25 +505,25 @@ def new_make_angular_tree(data, indices, hyperplanes, offsets, children,
     return
 
 @numba.njit(nogil=True)
-def new_make_sparse_euclidean_tree(inds, indptr, data, indices, hyperplanes, offsets,
-                                   children,
-                            point_indices,
-                            rng_state, leaf_size=30):
+def make_sparse_euclidean_tree(inds, indptr, data, indices, hyperplanes, offsets,
+                               children,
+                               point_indices,
+                               rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = \
             sparse_euclidean_random_projection_split(
             inds, indptr, data, indices, rng_state
         )
 
-        new_make_sparse_euclidean_tree(inds, indptr, data, left_indices, hyperplanes,
-                                       offsets, children,
-                            point_indices, rng_state, leaf_size)
+        make_sparse_euclidean_tree(inds, indptr, data, left_indices, hyperplanes,
+                                   offsets, children,
+                                   point_indices, rng_state, leaf_size)
 
         left_node_num = len(point_indices) - 1
 
-        new_make_sparse_euclidean_tree(inds, indptr, data, right_indices, hyperplanes,
-                                       offsets, children,
-                            point_indices, rng_state, leaf_size)
+        make_sparse_euclidean_tree(inds, indptr, data, right_indices, hyperplanes,
+                                   offsets, children,
+                                   point_indices, rng_state, leaf_size)
 
         right_node_num = len(point_indices) - 1
 
@@ -532,7 +532,7 @@ def new_make_sparse_euclidean_tree(inds, indptr, data, indices, hyperplanes, off
         children.append((left_node_num, right_node_num))
         point_indices.append(np.array([-1], dtype=np.int64))
     else:
-        hyperplanes.append(np.array([-1.0], dtype=np.float32))
+        hyperplanes.append(np.array([[-1.0],[-1.0]], dtype=np.float64))
         offsets.append(-np.inf)
         children.append((-1, -1))
         point_indices.append(indices)
@@ -541,25 +541,25 @@ def new_make_sparse_euclidean_tree(inds, indptr, data, indices, hyperplanes, off
 
 
 @numba.njit(nogil=True)
-def new_make_sparse_angular_tree(inds, indptr, data, indices, hyperplanes, offsets,
-                                   children,
-                            point_indices,
-                            rng_state, leaf_size=30):
+def make_sparse_angular_tree(inds, indptr, data, indices, hyperplanes, offsets,
+                             children,
+                             point_indices,
+                             rng_state, leaf_size=30):
     if indices.shape[0] > leaf_size:
         left_indices, right_indices, hyperplane, offset = \
             sparse_angular_random_projection_split(
             inds, indptr, data, indices, rng_state
         )
 
-        new_make_sparse_angular_tree(inds, indptr, data, left_indices, hyperplanes,
-                                       offsets, children,
-                            point_indices, rng_state, leaf_size)
+        make_sparse_angular_tree(inds, indptr, data, left_indices, hyperplanes,
+                                 offsets, children,
+                                 point_indices, rng_state, leaf_size)
 
         left_node_num = len(point_indices) - 1
 
-        new_make_sparse_angular_tree(inds, indptr, data, right_indices, hyperplanes,
-                                       offsets, children,
-                            point_indices, rng_state, leaf_size)
+        make_sparse_angular_tree(inds, indptr, data, right_indices, hyperplanes,
+                                 offsets, children,
+                                 point_indices, rng_state, leaf_size)
 
         right_node_num = len(point_indices) - 1
 
@@ -568,90 +568,70 @@ def new_make_sparse_angular_tree(inds, indptr, data, indices, hyperplanes, offse
         children.append((left_node_num, right_node_num))
         point_indices.append(np.array([-1], dtype=np.int64))
     else:
-        hyperplanes.append(np.array([-1.0], dtype=np.float32))
+        hyperplanes.append(np.array([[-1.0],[-1.0]], dtype=np.float64))
         offsets.append(-np.inf)
         children.append((-1, -1))
         point_indices.append(indices)
 
 
-def make_euclidean_tree(data, indices, rng_state, leaf_size=30):
-    if indices.shape[0] > leaf_size:
-        left_indices, right_indices, hyperplane, offset = euclidean_random_projection_split(
-            data, indices, rng_state
-        )
+dense_hyperplane_type = numba.float32[::1]
+sparse_hyperplane_type = numba.float64[:, ::1]
+offset_type = numba.float64
+children_type = numba.typeof((-1, -1))
+point_indices_type = numba.int64[::1]
 
-        left_node = make_euclidean_tree(data, left_indices, rng_state, leaf_size)
-        right_node = make_euclidean_tree(data, right_indices, rng_state, leaf_size)
-
-        node = RandomProjectionTreeNode(
-            None, False, hyperplane, offset, left_node, right_node
-        )
+@numba.njit(nogil=True)
+def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
+    indices = np.arange(data.shape[0])
+    hyperplanes = numba.typed.List.empty_list(dense_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+    if angular:
+        make_angular_tree(data, indices,
+                          hyperplanes,
+                          offsets,
+                          children,
+                          point_indices,
+                          rng_state, leaf_size)
     else:
-        node = RandomProjectionTreeNode(indices, True, None, None, None, None)
+        make_euclidean_tree(data, indices,
+                            hyperplanes,
+                            offsets,
+                            children,
+                            point_indices,
+                            rng_state, leaf_size)
 
-    return node
+    return FlatTree(hyperplanes, offsets, children, point_indices)
 
-def make_angular_tree(data, indices, rng_state, leaf_size=30):
-    if indices.shape[0] > leaf_size:
-        left_indices, right_indices, hyperplane, offset = angular_random_projection_split(
-            data, indices, rng_state
-        )
 
-        left_node = make_angular_tree(data, left_indices, rng_state, leaf_size)
-        right_node = make_angular_tree(data, right_indices, rng_state, leaf_size)
-
-        node = RandomProjectionTreeNode(
-            None, False, hyperplane, offset, left_node, right_node
-        )
+@numba.njit(nogil=True)
+def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=False):
+    indices = np.arange(indptr.shape[0] - 1)
+    # hyperplanes = [np.array([[-1.0], [-1.0]], dtype=np.float64)]
+    # offsets = [-np.inf]
+    # children = [(-1, -1)]
+    # point_indices = [np.array([-1], dtype=np.int64)]
+    hyperplanes = numba.typed.List.empty_list(sparse_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+    if angular:
+        make_sparse_angular_tree(inds, indptr, spdata, indices,
+                                 hyperplanes,
+                                 offsets,
+                                 children,
+                                 point_indices,
+                                 rng_state, leaf_size)
     else:
-        node = RandomProjectionTreeNode(indices, True, None, None, None, None)
+        make_sparse_euclidean_tree(inds, indptr, spdata, indices,
+                                   hyperplanes,
+                                   offsets,
+                                   children,
+                                   point_indices,
+                                   rng_state, leaf_size)
 
-    return node
-
-
-def make_sparse_euclidean_tree(inds, indptr, data, indices, rng_state, leaf_size=30):
-    if indices.shape[0] > leaf_size:
-        left_indices, right_indices, hyperplane, offset = sparse_euclidean_random_projection_split(
-            inds, indptr, data, indices, rng_state
-        )
-
-        left_node = make_sparse_euclidean_tree(
-            inds, indptr, data, left_indices, rng_state, leaf_size
-        )
-        right_node = make_sparse_euclidean_tree(
-            inds, indptr, data, right_indices, rng_state, leaf_size
-        )
-
-        node = RandomProjectionTreeNode(
-            None, False, hyperplane, offset, left_node, right_node
-        )
-    else:
-        node = RandomProjectionTreeNode(indices, True, None, None, None, None)
-
-    return node
-
-
-def make_sparse_angular_tree(inds, indptr, data, indices, rng_state, leaf_size=30):
-    if indices.shape[0] > leaf_size:
-        left_indices, right_indices, hyperplane, offset = sparse_angular_random_projection_split(
-            inds, indptr, data, indices, rng_state
-        )
-
-        left_node = make_sparse_angular_tree(
-            inds, indptr, data, left_indices, rng_state, leaf_size
-        )
-        right_node = make_sparse_angular_tree(
-            inds, indptr, data, right_indices, rng_state, leaf_size
-        )
-
-        node = RandomProjectionTreeNode(
-            None, False, hyperplane, offset, left_node, right_node
-        )
-    else:
-        node = RandomProjectionTreeNode(indices, True, None, None, None, None)
-
-    return node
-
+    return FlatTree(hyperplanes, offsets, children, point_indices)
 
 def make_tree(data, rng_state, leaf_size=30, angular=False):
     """Construct a random projection tree based on ``data`` with leaves
@@ -685,79 +665,45 @@ def make_tree(data, rng_state, leaf_size=30, angular=False):
         spdata = data.data
 
         if angular:
-            return make_sparse_angular_tree(
-                inds, indptr, spdata, indices, rng_state, leaf_size
-            )
+            # return make_sparse_angular_tree(
+            #     inds, indptr, spdata, indices, rng_state, leaf_size
+            # )
             hyperplanes = numba.typed.List()
             offsets = numba.typed.List()
             children = numba.typed.List()
             point_indices = numba.typed.List()
-            hyperplanes.append(np.array([[-1.0],[-1.0]], dtype=np.float32))
+            hyperplanes.append(np.array([[-1.0],[-1.0]], dtype=np.float64))
             offsets.append(-np.inf)
             children.append((-1, -1))
             point_indices.append(np.array([-1], dtype=np.int64))
-            new_make_sparse_angular_tree(inds, indptr, spdata, indices,
-                                  hyperplanes,
-                                  offsets,
-                                  children,
-                                  point_indices,
-                                  rng_state, leaf_size)
+            make_sparse_angular_tree(inds, indptr, spdata, indices,
+                                     hyperplanes,
+                                     offsets,
+                                     children,
+                                     point_indices,
+                                     rng_state, leaf_size)
             return FlatTree(hyperplanes, offsets, children, point_indices)
         else:
-            return make_sparse_euclidean_tree(
-                inds, indptr, spdata, indices, rng_state, leaf_size
-            )
+            # return make_sparse_euclidean_tree(
+            #     inds, indptr, spdata, indices, rng_state, leaf_size
+            # )
             hyperplanes = numba.typed.List()
             offsets = numba.typed.List()
             children = numba.typed.List()
             point_indices = numba.typed.List()
-            hyperplanes.append(np.array([[-1.0],[-1.0]], dtype=np.float32))
+            hyperplanes.append(np.array([[-1.0],[-1.0]], dtype=np.float64))
             offsets.append(-np.inf)
             children.append((-1, -1))
             point_indices.append(np.array([-1], dtype=np.int64))
-            new_make_sparse_euclidean_tree(inds, indptr, spdata, indices,
-                                  hyperplanes,
-                                  offsets,
-                                  children,
-                                  point_indices,
-                                  rng_state, leaf_size)
+            make_sparse_euclidean_tree(inds, indptr, spdata, indices,
+                                       hyperplanes,
+                                       offsets,
+                                       children,
+                                       point_indices,
+                                       rng_state, leaf_size)
             return FlatTree(hyperplanes, offsets, children, point_indices)
     else:
-        if angular:
-            # return make_angular_tree(data, indices, rng_state, leaf_size)
-            hyperplanes = numba.typed.List()
-            offsets = numba.typed.List()
-            children = numba.typed.List()
-            point_indices = numba.typed.List()
-            hyperplanes.append(np.array([-1.0], dtype=np.float32))
-            offsets.append(-np.inf)
-            children.append((-1, -1))
-            point_indices.append(np.array([-1], dtype=np.int64))
-            new_make_angular_tree(data, indices,
-                                    hyperplanes,
-                                    offsets,
-                                    children,
-                                    point_indices,
-                                    rng_state, leaf_size)
-            return FlatTree(hyperplanes, offsets, children, point_indices)
-        else:
-            # return make_euclidean_tree(data, indices, rng_state, leaf_size)
-            hyperplanes = numba.typed.List()
-            offsets = numba.typed.List()
-            children = numba.typed.List()
-            point_indices =  numba.typed.List()
-            hyperplanes.append(np.array([-1.0], dtype=np.float32))
-            offsets.append(-np.inf)
-            children.append((-1, -1))
-            point_indices.append(np.array([-1], dtype=np.int64))
-            new_make_euclidean_tree(data, indices,
-                                    hyperplanes,
-                                    offsets,
-                                    children,
-                                    point_indices,
-                                    rng_state, leaf_size)
-            return FlatTree(hyperplanes, offsets, children, point_indices)
-
+        return make_dense_tree(data, rng_state, leaf_size, angular)
 
 def num_nodes(tree):
     """Determine the number of nodes in a tree"""
@@ -864,17 +810,30 @@ def select_side(hyperplane, offset, point, rng_state):
         return 1
 
 
+# @numba.njit()
+# def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
+#     node = 0
+#     while children[node, 0] > 0:
+#         side = select_side(hyperplanes[node], offsets[node], point, rng_state)
+#         if side == 0:
+#             node = children[node, 0]
+#         else:
+#             node = children[node, 1]
+#
+#     return indices[-children[node, 0]]
+
+
 @numba.njit()
 def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
-    node = 0
-    while children[node, 0] > 0:
+    node = len(children) - 1
+    while children[node][0] > 0:
         side = select_side(hyperplanes[node], offsets[node], point, rng_state)
         if side == 0:
-            node = children[node, 0]
+            node = children[node][0]
         else:
-            node = children[node, 1]
+            node = children[node][1]
 
-    return indices[-children[node, 0]]
+    return indices[node]
 
 
 @numba.njit()
@@ -901,22 +860,37 @@ def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
         return 1
 
 
+# @numba.njit()
+# def search_sparse_flat_tree(
+#     point_inds, point_data, hyperplanes, offsets, children, indices, rng_state
+# ):
+#     node = 0
+#     while children[node, 0] > 0:
+#         side = sparse_select_side(
+#             hyperplanes[node], offsets[node], point_inds, point_data, rng_state
+#         )
+#         if side == 0:
+#             node = children[node, 0]
+#         else:
+#             node = children[node, 1]
+#
+#     return indices[-children[node, 0]]
+
 @numba.njit()
 def search_sparse_flat_tree(
     point_inds, point_data, hyperplanes, offsets, children, indices, rng_state
 ):
     node = 0
-    while children[node, 0] > 0:
+    while children[node][0] > 0:
         side = sparse_select_side(
             hyperplanes[node], offsets[node], point_inds, point_data, rng_state
         )
         if side == 0:
-            node = children[node, 0]
+            node = children[node][0]
         else:
-            node = children[node, 1]
+            node = children[node][1]
 
-    return indices[-children[node, 0]]
-
+    return indices[node]
 
 def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False):
     """Build a random projection forest with ``n_trees``.
@@ -939,10 +913,16 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
     if leaf_size is None:
         leaf_size = max(10, n_neighbors)
     try:
-        result = [
-            flatten_tree(make_tree(data, rng_state, leaf_size, angular), leaf_size)
-            for i in range(n_trees)
-        ]
+        # result = [
+        #     flatten_tree(make_tree(data, rng_state, leaf_size, angular), leaf_size)
+        #     for i in range(n_trees)
+        # ]
+        # result = [make_tree(data, rng_state, leaf_size, angular) for i in range(n_trees)]
+        if scipy.sparse.isspmatrix_csr(data):
+            result = [make_sparse_tree(data.indices, data.indptr, data.data, rng_state,
+                                       leaf_size, angular) for i in range(n_trees)]
+        else:
+            result = [make_dense_tree(data, rng_state, leaf_size, angular) for i in range(n_trees)]
     except (RuntimeError, RecursionError, SystemError):
         warn(
             "Random Projection forest initialisation failed due to recursion"
@@ -952,6 +932,15 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
 
     return result
 
+
+@numba.njit()
+def get_leaves_from_tree(tree):
+    leaf_data = [tree.indices[i] for i in range(len(tree.indices)) if tree.children[i][0] > 0]
+    leaf_size = max([len(x) for x in leaf_data])
+    result = -1 * np.ones((len(leaf_data), leaf_size), dtype=np.int64)
+    for i in range(result.shape[0]):
+        result[i, :len(leaf_data[i])] = leaf_data[i]
+    return result
 
 def rptree_leaf_array(rp_forest):
     """Generate an array of sets of candidate nearest neighbors by
@@ -982,7 +971,8 @@ def rptree_leaf_array(rp_forest):
         to ensure we can return a single ndarray.
     """
     if rp_forest:
-        leaf_array = np.vstack([tree.indices for tree in rp_forest])
+        # leaf_array = np.vstack([tree.indices for tree in rp_forest])
+        leaf_array = np.vstack([get_leaves_from_tree(tree) for tree in rp_forest])
     else:
         leaf_array = np.array([[-1]])
 
