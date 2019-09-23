@@ -34,6 +34,7 @@ from pynndescent.utils import (
 
 from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree
 
+
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
@@ -41,10 +42,7 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 @numba.njit(fastmath=True)
 def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
-        # indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
         for j in range(n_neighbors):
-            # if indices[j] < 0:
-            #     continue
             idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
             d = dist(data[idx], query_points[i], *dist_args)
             heap_push(heap, i, d, idx, 1)
@@ -64,10 +62,9 @@ def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
         )
 
         for j in range(indices.shape[0]):
-            if indices[j] < 0:
-                continue
-            d = dist(data[indices[j]], query_points[i], *dist_args)
-            heap_push(heap, i, d, indices[j], 1)
+            if indices[j] >= 0:
+                d = dist(data[indices[j]], query_points[i], *dist_args)
+                heap_push(heap, i, d, indices[j], 1)
 
     return
 
@@ -76,32 +73,32 @@ def initialise_search(
     forest, n_search_trees, data, query_points, n_neighbors, dist, dist_args, rng_state
 ):
     results = make_heap(query_points.shape[0], n_neighbors)
-    init_from_random(
-        n_neighbors, data, query_points, results, dist, dist_args, rng_state
-    )
     if forest is not None:
         for i in range(n_search_trees):
             tree = forest[i]
             init_from_tree(
                 tree, data, query_points, results, dist, dist_args, rng_state
             )
+    init_from_random(
+        n_neighbors, data, query_points, results, dist, dist_args, rng_state
+    )
 
     return results
 
 
 @numba.njit(fastmath=True, locals={"candidate": numba.types.int64})
 def initialized_nnd_search(
-    data, indptr, indices, initialization, query_points, epsilon, epsilon_decay, dist,
+    data, indptr, indices, initialization, query_points, epsilon, dist,
         dist_args
 ):
     tried = np.zeros(data.shape[0], dtype=np.uint8)
 
     for i in range(query_points.shape[0]):
 
-        # tried = set(initialization[0, i].astype(np.int64))
         tried[:] = 0
         seed_set = [(np.inf, -1)]
         distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
+        current_query = query_points[i]
 
         for j in range(initialization.shape[2]):
             heapq.heappush(
@@ -109,33 +106,34 @@ def initialized_nnd_search(
             )
             tried[int(initialization[0, i, j])] = 1
 
-        # Find smallest flagged vertex
-        # vertex = smallest_flagged(initialization, i)
-        d, vertex = heapq.heappop(seed_set)
+        # Find smallest vertex
+        d_vertex, vertex = heapq.heappop(seed_set)
 
-        # while vertex >= 0 and d < initialization[1, i, 0]:
-        while vertex >= 0 and d < distance_bound:
+        min_d = d_vertex
+
+        while d_vertex < distance_bound:
 
             for j in range(indptr[vertex], indptr[vertex + 1]):
 
                 candidate = indices[j]
 
-                # if candidate not in tried:
                 if tried[candidate] == 0:
-                    d = dist(data[candidate], query_points[i], *dist_args)
+                    d = dist(data[candidate], current_query, *dist_args)
                     if d < distance_bound:
-                        if d <= initialization[1, i, 0]:
-                            unchecked_heap_push(initialization, i, d, candidate, 1)
-                            distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
+                        unchecked_heap_push(initialization, i, d, candidate, 1)
                         heapq.heappush(seed_set, (d, candidate))
 
-                    # tried.add(candidate)
                     tried[candidate] = 1
 
-            epsilon *= epsilon_decay
-            # Find smallest flagged vertex
-            # vertex = smallest_flagged(initialization, i)
-            d, vertex = heapq.heappop(seed_set)
+            # distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
+            if seed_set[0][0] < min_d:
+                min_d = seed_set[0][0]
+
+            distance_bound = initialization[1, i, 0] + epsilon * (
+              (initialization[1, i, 0] - min_d)
+            )
+
+            d_vertex, vertex = heapq.heappop(seed_set)
 
     return initialization
 
@@ -926,6 +924,7 @@ class NNDescent(object):
         )
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
+
     def query(self, query_data, k=10, queue_size=5.0, n_search_trees=0, epsilon=0.1,
               epsilon_decay=1.0):
         """Query the training data for the k nearest neighbors
@@ -985,7 +984,6 @@ class NNDescent(object):
                 init,
                 query_data,
                 epsilon,
-                epsilon_decay,
                 self._distance_func,
                 self._dist_args,
             )
