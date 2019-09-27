@@ -38,14 +38,16 @@ from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tre
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
+FLOAT32_EPS = np.finfo(np.float32).eps
 
 @numba.njit(fastmath=True)
 def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
-        for j in range(n_neighbors):
-            idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-            d = dist(data[idx], query_points[i], *dist_args)
-            heap_push(heap, i, d, idx, 1)
+        if heap[0, i, 0] == -1:
+            for j in range(n_neighbors):
+                idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+                d = dist(data[idx], query_points[i], *dist_args)
+                heap_push(heap, i, d, idx, 1)
     return
 
 
@@ -106,10 +108,8 @@ def initialized_nnd_search(
             )
             tried[int(initialization[0, i, j])] = 1
 
-        # Find smallest vertex
+        # Find smallest seed point
         d_vertex, vertex = heapq.heappop(seed_set)
-
-        min_d = d_vertex
 
         while d_vertex < distance_bound:
 
@@ -118,21 +118,17 @@ def initialized_nnd_search(
                 candidate = indices[j]
 
                 if tried[candidate] == 0:
+
+                    tried[candidate] = 1
+
                     d = dist(data[candidate], current_query, *dist_args)
+
                     if d < distance_bound:
                         unchecked_heap_push(initialization, i, d, candidate, 1)
                         heapq.heappush(seed_set, (d, candidate))
 
-                    tried[candidate] = 1
 
-            # distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
-            if seed_set[0][0] < min_d:
-                min_d = seed_set[0][0]
-
-            distance_bound = initialization[1, i, 0] + epsilon * (
-              (initialization[1, i, 0] - min_d)
-            )
-
+            distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
             d_vertex, vertex = heapq.heappop(seed_set)
 
     return initialization
@@ -382,6 +378,9 @@ def diversify(indices, distances, data, dist, dist_args):
         new_indices = [indices[i, 0]]
         new_distances = [distances[i, 0]]
         for j in range(1, indices.shape[1]):
+            if indices[i, j] <= 0:
+                break
+
             flag = True
             for c in new_indices:
                 d = dist(data[indices[i, j]], data[c], *dist_args)
@@ -403,6 +402,48 @@ def diversify(indices, distances, data, dist, dist_args):
 
     return indices, distances
 
+
+@numba.njit()
+def diversify_csr(csr_indices, csr_indptr, csr_data, data, dist, dist_args,
+                  diversity_factor, max_degree):
+
+    n_eliminated = 0
+
+    for i in range(csr_indptr.shape[0] - 1):
+
+        indices = csr_indices[csr_indptr[i]:csr_indptr[i+1]]
+        distances = csr_data[csr_indptr[i]:csr_indptr[i+1]]
+
+        dist_order = np.argsort(distances)
+
+        new_indices = [indices[dist_order[0]]]
+        new_degree = 0
+
+        for j in range(1, indices.shape[0]):
+            idx = dist_order[j]
+
+            if  new_degree >= max_degree or indices[idx] == -1:
+                distances[idx] = 0.0
+            else:
+                flag = True
+                for c in new_indices:
+                    d1 = dist(data[indices[idx]], data[c], *dist_args)
+                    # d2 = dist(data[indices[idx]], data[i], *dist_args)
+                    # if d1 < d2:
+                    if diversity_factor * d1 < distances[idx]:
+                        flag = False
+                        break
+
+                if flag:
+                    new_indices.append(indices[idx])
+                    new_degree += 1
+                else:
+                    n_eliminated += 1
+                    distances[idx] = 0.0
+
+    print("Diversify killed", n_eliminated, "entries of", csr_data.shape[0])
+
+    return
 
 @numba.njit(parallel=True)
 def initialize_heaps(data, n_neighbors, leaf_array, dist=dist.euclidean, dist_args=()):
@@ -459,7 +500,7 @@ def degree_prune(graph, max_degree=20):
     result = graph.tolil()
     for i, row_data in enumerate(result.data):
         if len(row_data) > max_degree:
-            cut_value = np.argsort(row_data)[max_degree]
+            cut_value = np.sort(row_data)[max_degree]
             row_data = [x if x <= cut_value else 0.0 for x in row_data]
             result.data[i] = row_data
     result = result.tocsr()
@@ -500,15 +541,16 @@ def prune(graph, prune_level=0, n_neighbors=10):
     max_degree = max(5, 3 * n_neighbors - prune_level)
     n_iters = max(3, n_neighbors - prune_level)
     reduced_graph = degree_prune(graph, max_degree=max_degree)
-    result_graph = lil_matrix((graph.shape[0], graph.shape[0])).tocsr()
-
-    for _ in range(n_iters):
-        mst = minimum_spanning_tree(reduced_graph)
-        result_graph = result_graph.maximum(mst)
-        reduced_graph -= mst
-        reduced_graph.eliminate_zeros()
-
-    return result_graph
+    # result_graph = lil_matrix((graph.shape[0], graph.shape[0])).tocsr()
+    #
+    # for _ in range(n_iters):
+    #     mst = minimum_spanning_tree(reduced_graph)
+    #     result_graph = result_graph.maximum(mst)
+    #     reduced_graph -= mst
+    #     reduced_graph.eliminate_zeros()
+    #
+    # return result_graph
+    return reduced_graph
 
 
 class NNDescent(object):
@@ -912,20 +954,50 @@ class NNDescent(object):
         self._search_graph = lil_matrix(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
         )
+
+        # Preserve any distance 0 points
+        search_graph_data = self._neighbor_graph[1].copy()
+        search_graph_data[self._neighbor_graph[1] == 0.0] = FLOAT32_EPS
+
         self._search_graph.rows = self._neighbor_graph[0]
-        self._search_graph.data = self._neighbor_graph[1]
+        self._search_graph.data =search_graph_data
+
+        # Get rid of any -1 index entries
+        self._search_graph = self._search_graph.tocsr()
+        self._search_graph.data[self._search_graph.indices == -1] = 0.0
+        self._search_graph.eliminate_zeros()
+
+        # self._search_graph.rows = diversified_rows
+        # self._search_graph.data = diversified_data
         self._search_graph = self._search_graph.maximum(
             self._search_graph.transpose()
         ).tocsr()
-        self._search_graph = prune(
-            self._search_graph,
-            prune_level=self.prune_level,
-            n_neighbors=self.n_neighbors,
-        )
+        self._search_graph.eliminate_zeros()
+        # diversify_csr(
+        #     self._search_graph.indices,
+        #     self._search_graph.indptr,
+        #     self._search_graph.data,
+        #     self._raw_data,
+        #     self._distance_func,
+        #     self._dist_args,
+        #     100.0,
+        #     int(2 * self.n_neighbors),
+        # )
+        # self._search_graph.eliminate_zeros()
+        # self._search_graph = prune(
+        #     self._search_graph,
+        #     prune_level=self.prune_level,
+        #     n_neighbors=self.n_neighbors,
+        # )
+        self._search_graph = degree_prune(self._search_graph,
+                                          int(np.round((2.0 - self.prune_level / 10.0)
+                                                        *
+                                                        self.n_neighbors)))
+        self._search_graph.eliminate_zeros()
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
 
-    def query(self, query_data, k=10, queue_size=5.0, n_search_trees=0, epsilon=0.1,
+    def query(self, query_data, k=10, queue_size=2.0, n_search_trees=1, epsilon=0.1,
               epsilon_decay=1.0):
         """Query the training data for the k nearest neighbors
 

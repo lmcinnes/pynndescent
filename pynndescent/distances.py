@@ -352,6 +352,30 @@ def fast_cosine(x, y):
 def correct_fast_cosine(d):
     return 1.0 - np.sqrt(1.0 - d)
 
+@numba.njit(fastmath=True)
+def fast_cosine1(x, y):
+    result = 0.0
+    norm_x = 0.0
+    norm_y = 0.0
+    for i in range(x.shape[0]):
+        result += x[i] * y[i]
+        norm_x += x[i] ** 2
+        norm_y += y[i] ** 2
+
+    if norm_x == 0.0 and norm_y == 0.0:
+        return 0.0
+    elif norm_x == 0.0 or norm_y == 0.0:
+        return np.inf
+    elif result <= 0.0:
+        return np.inf
+    else:
+        return 0.5 * (np.log(norm_x) + np.log(norm_y)) - np.log(result)
+
+
+@numba.vectorize(fastmath=True)
+def correct_fast_cosine1(d):
+    return 1.0 - np.exp(-d)
+
 
 @numba.njit(fastmath=True)
 def correlation(x, y):
@@ -474,6 +498,6 @@ named_distances = {
 fast_distance_alternatives = {
     "euclidean": {"dist": squared_euclidean, "correction": np.sqrt},
     "l2": {"dist": squared_euclidean, "correction": np.sqrt},
-    "cosine": {"dist": fast_cosine, "correction": correct_fast_cosine},
+    "cosine": {"dist": fast_cosine1, "correction": correct_fast_cosine1},
     "hellinger": {"dist": fast_hellinger, "correction": correct_fast_hellinger},
 }
