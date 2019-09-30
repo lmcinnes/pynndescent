@@ -371,20 +371,22 @@ def nn_descent(
 
 
 @numba.njit()
-def diversify(indices, distances, data, dist, dist_args):
+def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
 
     for i in range(indices.shape[0]):
 
         new_indices = [indices[i, 0]]
         new_distances = [distances[i, 0]]
         for j in range(1, indices.shape[1]):
-            if indices[i, j] <= 0:
+            if indices[i, j] < 0:
                 break
 
             flag = True
-            for c in new_indices:
+            for k in range(len(new_indices)):
+                c = new_indices[k]
                 d = dist(data[indices[i, j]], data[c], *dist_args)
-                if d < distances[i, j]:
+                if new_distances[k] > FLOAT32_EPS \
+                        and d < (1.0 + epsilon) * distances[i, j]:
                     flag = False
                     break
 
@@ -397,8 +399,8 @@ def diversify(indices, distances, data, dist, dist_args):
                 indices[i, j] = new_indices[j]
                 distances[i, j] = new_distances[j]
             else:
-                indices[i, j] = 0
-                distances[i, j] = 0.0
+                indices[i, j] = -1
+                distances[i, j] = np.inf
 
     return indices, distances
 
@@ -686,7 +688,8 @@ class NNDescent(object):
         n_neighbors=15,
         n_trees=None,
         leaf_size=None,
-        pruning_level=0,
+        pruning_degree_multiplier=2.0,
+        diversify_epsilon=-0.5,
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
@@ -710,7 +713,8 @@ class NNDescent(object):
         self.metric = metric
         self.metric_kwds = metric_kwds
         self.leaf_size = leaf_size
-        self.prune_level = pruning_level
+        self.prune_degree_multiplier = pruning_degree_multiplier
+        self.diversify_epsilon = diversify_epsilon
         self.max_candidates = max_candidates
         self.low_memory = low_memory
         self.n_iters = n_iters
@@ -933,64 +937,51 @@ class NNDescent(object):
                 "different parameters."
             )
 
-        if self._distance_correction is not None:
-            self._neighbor_graph = (
-                self._neighbor_graph[0],
-                self._distance_correction(self._neighbor_graph[1]),
-            )
+        # if self._distance_correction is not None:
+        #     self._neighbor_graph = (
+        #         self._neighbor_graph[0],
+        #         self._distance_correction(self._neighbor_graph[1]),
+        #     )
 
     def _init_search_graph(self):
         if hasattr(self, "_search_graph"):
             return
 
-        # diversified_rows, diversified_data = diversify(
-        #     self._neighbor_graph[0],
-        #     self._neighbor_graph[1],
-        #     self._raw_data,
-        #     self._distance_func,
-        #     self._dist_args,
-        # )
+        diversified_rows, diversified_data = diversify(
+            self._neighbor_graph[0],
+            self._neighbor_graph[1],
+            self._raw_data,
+            self._distance_func,
+            self._dist_args,
+            self.diversify_epsilon,
+        )
 
         self._search_graph = lil_matrix(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
         )
 
         # Preserve any distance 0 points
-        search_graph_data = self._neighbor_graph[1].copy()
-        search_graph_data[self._neighbor_graph[1] == 0.0] = FLOAT32_EPS
+        diversified_data[diversified_data == 0.0] = FLOAT32_EPS
+        # search_graph_data = self._neighbor_graph[1].copy()
+        # search_graph_data[self._neighbor_graph[1] == 0.0] = FLOAT32_EPS
 
-        self._search_graph.rows = self._neighbor_graph[0]
-        self._search_graph.data =search_graph_data
+        self._search_graph.rows = diversified_rows
+        self._search_graph.data = diversified_data
+        # self._search_graph.rows = self._neighbor_graph[0]
+        # self._search_graph.data = search_graph_data
 
         # Get rid of any -1 index entries
         self._search_graph = self._search_graph.tocsr()
         self._search_graph.data[self._search_graph.indices == -1] = 0.0
         self._search_graph.eliminate_zeros()
 
-        # self._search_graph.rows = diversified_rows
-        # self._search_graph.data = diversified_data
         self._search_graph = self._search_graph.maximum(
             self._search_graph.transpose()
         ).tocsr()
         self._search_graph.eliminate_zeros()
-        # diversify_csr(
-        #     self._search_graph.indices,
-        #     self._search_graph.indptr,
-        #     self._search_graph.data,
-        #     self._raw_data,
-        #     self._distance_func,
-        #     self._dist_args,
-        #     100.0,
-        #     int(2 * self.n_neighbors),
-        # )
-        # self._search_graph.eliminate_zeros()
-        # self._search_graph = prune(
-        #     self._search_graph,
-        #     prune_level=self.prune_level,
-        #     n_neighbors=self.n_neighbors,
-        # )
+
         self._search_graph = degree_prune(self._search_graph,
-                                          int(np.round((2.0 - self.prune_level / 10.0)
+                                          int(np.round(self.prune_degree_multiplier
                                                         *
                                                         self.n_neighbors)))
         self._search_graph.eliminate_zeros()
