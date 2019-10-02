@@ -9,7 +9,6 @@ import numpy as np
 from sklearn.utils import check_random_state, check_array
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr
-from scipy.sparse.csgraph import minimum_spanning_tree
 
 import heapq
 
@@ -27,7 +26,6 @@ from pynndescent.utils import (
     heap_push,
     unchecked_heap_push,
     deheap_sort,
-    smallest_flagged,
     new_build_candidates,
     ts,
 )
@@ -405,82 +403,6 @@ def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
     return indices, distances
 
 
-@numba.njit()
-def diversify_csr(csr_indices, csr_indptr, csr_data, data, dist, dist_args,
-                  diversity_factor, max_degree):
-
-    n_eliminated = 0
-
-    for i in range(csr_indptr.shape[0] - 1):
-
-        indices = csr_indices[csr_indptr[i]:csr_indptr[i+1]]
-        distances = csr_data[csr_indptr[i]:csr_indptr[i+1]]
-
-        dist_order = np.argsort(distances)
-
-        new_indices = [indices[dist_order[0]]]
-        new_degree = 0
-
-        for j in range(1, indices.shape[0]):
-            idx = dist_order[j]
-
-            if  new_degree >= max_degree or indices[idx] == -1:
-                distances[idx] = 0.0
-            else:
-                flag = True
-                for c in new_indices:
-                    d1 = dist(data[indices[idx]], data[c], *dist_args)
-                    # d2 = dist(data[indices[idx]], data[i], *dist_args)
-                    # if d1 < d2:
-                    if diversity_factor * d1 < distances[idx]:
-                        flag = False
-                        break
-
-                if flag:
-                    new_indices.append(indices[idx])
-                    new_degree += 1
-                else:
-                    n_eliminated += 1
-                    distances[idx] = 0.0
-
-    print("Diversify killed", n_eliminated, "entries of", csr_data.shape[0])
-
-    return
-
-@numba.njit(parallel=True)
-def initialize_heaps(data, n_neighbors, leaf_array, dist=dist.euclidean, dist_args=()):
-    graph_heap = make_heap(data.shape[0], 10)
-    search_heap = make_heap(data.shape[0], n_neighbors * 2)
-    tried = set([(-1, -1)])
-    for n in range(leaf_array.shape[0]):
-        for i in range(leaf_array.shape[1]):
-            if leaf_array[n, i] < 0:
-                break
-            for j in range(i + 1, leaf_array.shape[1]):
-                if leaf_array[n, j] < 0:
-                    break
-                if (leaf_array[n, i], leaf_array[n, j]) in tried:
-                    continue
-
-                d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]], *dist_args)
-                unchecked_heap_push(
-                    graph_heap, leaf_array[n, i], d, leaf_array[n, j], 1
-                )
-                unchecked_heap_push(
-                    graph_heap, leaf_array[n, j], d, leaf_array[n, i], 1
-                )
-                unchecked_heap_push(
-                    search_heap, leaf_array[n, i], d, leaf_array[n, j], 1
-                )
-                unchecked_heap_push(
-                    search_heap, leaf_array[n, j], d, leaf_array[n, i], 1
-                )
-                tried.add((leaf_array[n, i], leaf_array[n, j]))
-                tried.add((leaf_array[n, j], leaf_array[n, i]))
-
-    return graph_heap, search_heap
-
-
 def degree_prune(graph, max_degree=20):
     """Prune the k-neighbors graph back so that nodes have a maximum
     degree of ``max_degree``.
@@ -508,51 +430,6 @@ def degree_prune(graph, max_degree=20):
     result = result.tocsr()
     result.eliminate_zeros()
     return result
-
-
-def prune(graph, prune_level=0, n_neighbors=10):
-    """Perform pruning on the graph so that there are fewer edges to
-    be followed. In practice this operates in two passes. The first pass
-    removes edges such that no node has degree more than ``3 * n_neighbors -
-    prune_level``. The second pass builds up a graph out of spanning trees;
-    each iteration constructs a minimum panning tree of a graph and then
-    removes those edges from the graph. The result is spanning trees that
-    take various paths through the graph. All these spanning trees are merged
-    into the resulting graph. In practice this prunes away a limited number
-    of edges as long as enough iterations are performed. By default we will
-    do ``n_neighbors - prune_level``iterations.
-
-    Parameters
-    ----------
-    graph: sparse matrix
-        The adjacency matrix of the graph
-
-    prune_level: int (optional default 0)
-        How aggressively to prune the graph, larger values perform more
-        aggressive pruning.
-
-    n_neighbors: int (optional 10)
-        The number of neighbors of the k-neighbor graph that was constructed.
-
-    Returns
-    -------
-    result: sparse matrix
-        The pruned graph
-    """
-
-    max_degree = max(5, 3 * n_neighbors - prune_level)
-    n_iters = max(3, n_neighbors - prune_level)
-    reduced_graph = degree_prune(graph, max_degree=max_degree)
-    # result_graph = lil_matrix((graph.shape[0], graph.shape[0])).tocsr()
-    #
-    # for _ in range(n_iters):
-    #     mst = minimum_spanning_tree(reduced_graph)
-    #     result_graph = result_graph.maximum(mst)
-    #     reduced_graph -= mst
-    #     reduced_graph.eliminate_zeros()
-    #
-    # return result_graph
-    return reduced_graph
 
 
 class NNDescent(object):
@@ -781,10 +658,6 @@ class NNDescent(object):
                 raise ValueError(
                     "Algorithm {} not supported in parallel mode".format(algorithm)
                 )
-            if isspmatrix_csr(self._raw_data):
-                raise ValueError(
-                    "Sparse input is not currently supported in parallel mode"
-                )
             if verbose:
                 print(ts(), "parallel NN descent for", str(n_iters), "iterations")
 
@@ -899,34 +772,6 @@ class NNDescent(object):
                     verbose=verbose,
                     seed_per_row=seed_per_row,
                 )
-        elif algorithm == "alternative":
-
-            self._is_sparse = False
-
-            if verbose:
-                print(ts(), "Using alternative algorithm")
-
-            graph_heap, search_heap = initialize_heaps(
-                self._raw_data,
-                self.n_neighbors,
-                leaf_array,
-                self._distance_func,
-                self._dist_args,
-            )
-            graph = lil_matrix((data.shape[0], data.shape[0]))
-            graph.rows, graph.data = deheap_sort(graph_heap)
-            graph = graph.maximum(graph.transpose())
-            self._neighbor_graph = deheap_sort(
-                initialized_nnd_search(
-                    self._raw_data,
-                    graph.indptr,
-                    graph.indices,
-                    search_heap,
-                    self._raw_data,
-                    self._distance_func,
-                    self._dist_args,
-                )
-            )
         else:
             raise ValueError("Unknown algorithm selected")
 
