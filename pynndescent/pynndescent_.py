@@ -723,7 +723,7 @@ class NNDescent(object):
         self.dim = data.shape[1]
         self.verbose = verbose
 
-        data = check_array(data, dtype=np.float32, accept_sparse="csr")
+        data = check_array(data, dtype=np.float32, accept_sparse="csr", order='C')
         self._raw_data = data
 
         if not tree_init or n_trees == 0:
@@ -1028,7 +1028,7 @@ class NNDescent(object):
         if not self._is_sparse:
             # Standard case
             # query_data = check_array(query_data, dtype=np.float64, order='C')
-            query_data = np.asarray(query_data).astype(np.float32)
+            query_data = np.asarray(query_data).astype(np.float32, order='C')
             self._init_search_graph()
             init = initialise_search(
                 self._rp_forest,
