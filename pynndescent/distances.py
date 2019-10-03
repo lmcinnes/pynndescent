@@ -331,7 +331,7 @@ def cosine(x, y):
 
 
 @numba.njit(fastmath=True)
-def alternative_cosine1(x, y):
+def alternative_cosine(x, y):
     result = 0.0
     norm_x = 0.0
     norm_y = 0.0
@@ -426,7 +426,7 @@ def alternative_hellinger(x, y):
 
 
 @numba.vectorize(fastmath=True)
-def correct_fast_hellinger(d):
+def correct_alternative_hellinger(d):
     return np.arccos(np.exp(-d))
 
 
