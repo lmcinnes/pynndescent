@@ -7,6 +7,8 @@ import locale
 import numpy as np
 import numba
 
+import heapq
+
 from pynndescent.utils import (
     tau_rand,
     make_heap,
@@ -466,5 +468,66 @@ def sparse_initialized_nnd_search(
                 d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
                 unchecked_heap_push(initialization, i, d, candidates[j], 1)
                 tried.add(candidates[j])
+
+    return initialization
+
+
+@numba.njit(fastmath=True, locals={"candidate": numba.types.int64})
+def sparse_initialized_nnd_search(
+    inds,
+    indptr,
+    data,
+    search_indptr,
+    search_inds,
+    initialization,
+    query_inds,
+    query_indptr,
+    query_data,
+    epsilon,
+    sparse_dist,
+    dist_args,
+):
+    tried = np.zeros(data.shape[0], dtype=np.uint8)
+
+    for i in range(query_indptr.shape[0] - 1):
+
+        tried[:] = 0
+        seed_set = [(np.inf, -1)]
+        distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
+
+        to_inds = query_inds[query_indptr[i] : query_indptr[i + 1]]
+        to_data = query_data[query_indptr[i] : query_indptr[i + 1]]
+
+        for j in range(initialization.shape[2]):
+            heapq.heappush(
+                seed_set, (initialization[1, i, j], int(initialization[0, i, j]))
+            )
+            tried[int(initialization[0, i, j])] = 1
+
+        # Find smallest seed point
+        d_vertex, vertex = heapq.heappop(seed_set)
+
+        while d_vertex < distance_bound:
+
+            for j in range(search_indptr[vertex], search_indptr[vertex + 1]):
+
+                candidate = search_inds[j]
+
+                if tried[candidate] == 0:
+
+                    tried[candidate] = 1
+
+                    from_inds = inds[indptr[candidate]: indptr[candidate + 1]]
+                    from_data = data[indptr[candidate]: indptr[candidate + 1]]
+
+                    d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
+
+                    if d < distance_bound:
+                        unchecked_heap_push(initialization, i, d, candidate, 1)
+                        heapq.heappush(seed_set, (d, candidate))
+
+
+            distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
+            d_vertex, vertex = heapq.heappop(seed_set)
 
     return initialization

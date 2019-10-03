@@ -792,14 +792,26 @@ class NNDescent(object):
         if hasattr(self, "_search_graph"):
             return
 
-        diversified_rows, diversified_data = diversify(
-            self._neighbor_graph[0],
-            self._neighbor_graph[1],
-            self._raw_data,
-            self._distance_func,
-            self._dist_args,
-            self.diversify_epsilon,
-        )
+        if self._is_sparse:
+            diversified_rows, diversified_data = sparse.sparse_diversify(
+                self._neighbor_graph[0],
+                self._neighbor_graph[1],
+                self._raw_data.indices,
+                self._raw_data.indptr,
+                self._raw_data.data,
+                self._distance_func,
+                self._dist_args,
+                self.diversify_epsilon,
+            )
+        else:
+            diversified_rows, diversified_data = diversify(
+                self._neighbor_graph[0],
+                self._neighbor_graph[1],
+                self._raw_data,
+                self._distance_func,
+                self._dist_args,
+                self.diversify_epsilon,
+            )
 
         self._search_graph = lil_matrix(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
@@ -833,8 +845,7 @@ class NNDescent(object):
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
 
-    def query(self, query_data, k=10, queue_size=2.0, n_search_trees=1, epsilon=0.1,
-              epsilon_decay=1.0):
+    def query(self, query_data, k=10, queue_size=2.0, n_search_trees=1, epsilon=0.1):
         """Query the training data for the k nearest neighbors
 
         Parameters
@@ -924,6 +935,7 @@ class NNDescent(object):
                 query_data.indices,
                 query_data.indptr,
                 query_data.data,
+                epsilon,
                 self._distance_func,
                 self._dist_args,
             )
@@ -1074,7 +1086,8 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         n_trees=None,
         leaf_size=None,
         search_queue_size=4.0,
-        pruning_level=0,
+        pruning_degree_multiplier=2.0,
+        diversify_epsilon=-0.5,
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
@@ -1092,7 +1105,8 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.n_trees = n_trees
         self.leaf_size = leaf_size
         self.search_queue_size = search_queue_size
-        self.pruning_level = pruning_level
+        self.pruning_degree_multiplier = pruning_degree_multiplier
+        self.diversify_epsilon = diversify_epsilon
         self.tree_init = tree_init
         self.random_state = random_state
         self.algorithm = algorithm
@@ -1131,7 +1145,8 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             self.n_neighbors,
             self.n_trees,
             self.leaf_size,
-            self.pruning_level,
+            self.pruning_degree_multiplier,
+            self.diversify_epsilon,
             self.tree_init,
             self.random_state,
             self.algorithm,
