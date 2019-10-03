@@ -495,9 +495,19 @@ class NNDescent(object):
         The maximum number of points in a leaf for the random projection trees.
         The default of None means a value will be chosen based on n_neighbors.
 
-    pruning_level: int (optional, default=0)
-        How aggressively to prune the graph. Higher values perform more
-        aggressive pruning, resulting in faster search with lower accuracy.
+    pruning_degree_multiplier: float (optional, default=2.0)
+        How aggressively to prune the graph. Since the search graph is undirected
+        (and thus includes nearest neighbors and reverse nearest neighbors) vertices
+        can have very high degree -- the graph will be pruned such that no
+        vertex has degree greater than
+        ``pruning_degree_multiplier * n_neighbors``.
+
+    diversify_epsilon: float (optional, default=0.5)
+        The search graph get "diversified" by removing potentially unnecessary
+        edges. This controls the volume of edges removed. A value of 0.0 ensures
+        that no edges get removed, and larger values result in significantly more
+        aggressive edge removal. Values above 1.0 are not recommended.
+
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -782,11 +792,6 @@ class NNDescent(object):
                 "different parameters."
             )
 
-        # if self._distance_correction is not None:
-        #     self._neighbor_graph = (
-        #         self._neighbor_graph[0],
-        #         self._distance_correction(self._neighbor_graph[1]),
-        #     )
 
     def _init_search_graph(self):
         if hasattr(self, "_search_graph"):
@@ -841,7 +846,20 @@ class NNDescent(object):
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
 
-    def query(self, query_data, k=10, queue_size=2.0, n_search_trees=1, epsilon=0.1):
+    @property
+    def neighbor_graph(self):
+        if self._distance_correction is not None:
+            result = (
+                self._neighbor_graph[0].copy(),
+                self._distance_correction(self._neighbor_graph[1]),
+            )
+        else:
+            result = (self._neighbor_graph[0].copy(), self._neighbor_graph[1].copy())
+
+        return result
+
+
+    def query(self, query_data, k=10, epsilon=0.1, n_search_trees=1, queue_size=1.0):
         """Query the training data for the k nearest neighbors
 
         Parameters
@@ -852,17 +870,24 @@ class NNDescent(object):
         k: integer (default = 10)
             The number of nearest neighbors to return
 
-        queue_size: float (default 5.0)
+        epsilon: float (optional, default=0.1)
+            When searching for nearest neighbors of a query point this values
+            controls the trade-off between accuracy and search cost. Larger values
+            produce more accurate nearest neighbor results at larger computational
+            cost for the search. Values should be in the range 0.0 to 0.5, but
+            should probably not exceed 0.3 without good reason.
+
+        n_search_trees: int (default 1)
+            The number of random projection trees to use in initializing the
+            search. More trees will tend to produce more accurate results,
+            but cost runtime performance.
+
+        queue_size: float (default 1.0)
             The multiplier of the internal search queue. This controls the
             speed/accuracy tradeoff. Low values will search faster but with
             more approximate results. High values will search more
             accurately, but will require more computation to do so. Values
             should generally be in the range 1.0 to 10.0.
-
-        n_search_trees: int (default 0)
-            The number of random projection trees to use in intializing the
-            search. More trees will tend to produce more accurate results,
-            but cost runtime performance.
 
         Returns
         -------
@@ -1007,9 +1032,25 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         The maximum number of points in a leaf for the random projection trees.
         The default of None means a value will be chosen based on n_neighbors.
 
-    pruning_level: int (optional, default=0)
-        How aggressively to prune the graph. Higher values perform more
-        aggressive pruning, resulting in faster search with lower accuracy.
+    pruning_degree_multiplier: float (optional, default=2.0)
+        How aggressively to prune the graph. Since the search graph is undirected
+        (and thus includes nearest neighbors and reverse nearest neighbors) vertices
+        can have very high degree -- the graph will be pruned such that no
+        vertex has degree greater than
+        ``pruning_degree_multiplier * n_neighbors``.
+
+    diversify_epsilon: float (optional, default=0.5)
+        The search graph get "diversified" by removing potentially unnecessary
+        edges. This controls the volume of edges removed. A value of 0.0 ensures
+        that no edges get removed, and larger values result in significantly more
+        aggressive edge removal. Values above 1.0 are not recommended.
+
+    search_epsilon: float (optional, default=0.1)
+        When searching for nearest neighbors of a query point this values
+        controls the trade-off between accuracy and search cost. Larger values
+        produce more accurate nearest neighbor results at larger computational
+        cost for the search. Values should be in the range 0.0 to 0.5, but
+        should probably not exceed 0.3 without good reason.
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -1081,7 +1122,8 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         metric_kwds=None,
         n_trees=None,
         leaf_size=None,
-        search_queue_size=4.0,
+        search_queue_size=1.0,
+        search_epsilon=0.1,
         pruning_degree_multiplier=2.0,
         diversify_epsilon=0.5,
         tree_init=True,
@@ -1101,6 +1143,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.n_trees = n_trees
         self.leaf_size = leaf_size
         self.search_queue_size = search_queue_size
+        self.search_epsilon = search_epsilon
         self.pruning_degree_multiplier = pruning_degree_multiplier
         self.diversify_epsilon = diversify_epsilon
         self.tree_init = tree_init
@@ -1177,10 +1220,13 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             n_samples_transform = X.shape[0]
 
         if X is None:
-            indices, distances = self.pynndescent_._neighbor_graph
+            indices, distances = self.pynndescent_.neighbor_graph
         else:
             indices, distances = self.pynndescent_.query(
-                X, k=self.n_neighbors, queue_size=self.search_queue_size
+                X,
+                k=self.n_neighbors,
+                queue_size=self.search_queue_size,
+                epsilon=self.search_epsilon,
             )
 
         result = lil_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
