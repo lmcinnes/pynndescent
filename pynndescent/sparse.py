@@ -429,7 +429,7 @@ def sparse_diversify(indices, distances, data_indices, data_indptr, data_data, d
 
                 d = dist(from_ind, from_data, to_ind, to_data, *dist_args)
                 if new_distances[k] > FLOAT32_EPS \
-                        and d < (1.0 + epsilon) * distances[i, j]:
+                        and d < epsilon * distances[i, j]:
                     flag = False
                     break
 

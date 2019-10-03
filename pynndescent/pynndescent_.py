@@ -384,7 +384,7 @@ def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
                 c = new_indices[k]
                 d = dist(data[indices[i, j]], data[c], *dist_args)
                 if new_distances[k] > FLOAT32_EPS \
-                        and d < (1.0 + epsilon) * distances[i, j]:
+                        and d < epsilon * distances[i, j]:
                     flag = False
                     break
 
@@ -566,7 +566,7 @@ class NNDescent(object):
         n_trees=None,
         leaf_size=None,
         pruning_degree_multiplier=2.0,
-        diversify_epsilon=-0.5,
+        diversify_epsilon=0.5,
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
@@ -819,13 +819,9 @@ class NNDescent(object):
 
         # Preserve any distance 0 points
         diversified_data[diversified_data == 0.0] = FLOAT32_EPS
-        # search_graph_data = self._neighbor_graph[1].copy()
-        # search_graph_data[self._neighbor_graph[1] == 0.0] = FLOAT32_EPS
 
         self._search_graph.rows = diversified_rows
         self._search_graph.data = diversified_data
-        # self._search_graph.rows = self._neighbor_graph[0]
-        # self._search_graph.data = search_graph_data
 
         # Get rid of any -1 index entries
         self._search_graph = self._search_graph.tocsr()
@@ -1087,7 +1083,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         leaf_size=None,
         search_queue_size=4.0,
         pruning_degree_multiplier=2.0,
-        diversify_epsilon=-0.5,
+        diversify_epsilon=0.5,
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
