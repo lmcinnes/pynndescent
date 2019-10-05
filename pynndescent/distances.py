@@ -331,7 +331,7 @@ def cosine(x, y):
 
 
 @numba.njit(fastmath=True)
-def fast_cosine(x, y):
+def alternative_cosine(x, y):
     result = 0.0
     norm_x = 0.0
     norm_y = 0.0
@@ -343,14 +343,16 @@ def fast_cosine(x, y):
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
     elif norm_x == 0.0 or norm_y == 0.0:
-        return 1.0
+        return np.inf
+    elif result <= 0.0:
+        return np.inf
     else:
-        return 1.0 - ((result * result) / (norm_x * norm_y))
+        return 0.5 * (np.log(norm_x) + np.log(norm_y)) - np.log(result)
 
 
 @numba.vectorize(fastmath=True)
-def correct_fast_cosine(d):
-    return 1.0 - np.sqrt(1.0 - d)
+def correct_alternative_cosine(d):
+    return 1.0 - np.exp(-d)
 
 
 @numba.njit(fastmath=True)
@@ -402,6 +404,33 @@ def hellinger(x, y):
         return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
 
 
+@numba.njit()
+def alternative_hellinger(x, y):
+    result = 0.0
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+
+    for i in range(x.shape[0]):
+        result += np.sqrt(x[i] * y[i])
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0 and l1_norm_y == 0:
+        return 0.0
+    elif l1_norm_x == 0 or l1_norm_y == 0:
+        return np.inf
+    elif result <= 0:
+        return np.inf
+    else:
+        return 0.5 * (np.log(l1_norm_x) + np.log(l1_norm_y)) - np.log(result)
+
+
+@numba.vectorize(fastmath=True)
+def correct_alternative_hellinger(d):
+    return np.arccos(np.exp(-d))
+
+
+
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
@@ -449,5 +478,6 @@ named_distances = {
 fast_distance_alternatives = {
     "euclidean": {"dist": squared_euclidean, "correction": np.sqrt},
     "l2": {"dist": squared_euclidean, "correction": np.sqrt},
-    "cosine": {"dist": fast_cosine, "correction": correct_fast_cosine},
+    "cosine": {"dist": alternative_cosine, "correction": correct_alternative_cosine},
+    "hellinger": {"dist": alternative_hellinger, "correction": correct_alternative_hellinger},
 }

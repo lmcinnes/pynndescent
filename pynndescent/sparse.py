@@ -11,6 +11,8 @@ from pynndescent.utils import norm
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 
+FLOAT32_EPS = np.finfo(np.float32).eps
+
 # Just reproduce a simpler version of numpy unique (not numba supported yet)
 @numba.njit()
 def arr_unique(arr):
@@ -401,6 +403,50 @@ def sparse_hellinger(ind1, data1, ind2, data2):
         return 0.0
     else:
         return np.sqrt(1.0 - (result / sqrt_norm_prod))
+
+
+@numba.njit()
+def sparse_diversify(indices, distances, data_indices, data_indptr, data_data, dist, dist_args,
+              epsilon=0.01):
+
+    for i in range(indices.shape[0]):
+
+        new_indices = [indices[i, 0]]
+        new_distances = [distances[i, 0]]
+        for j in range(1, indices.shape[1]):
+            if indices[i, j] < 0:
+                break
+
+            flag = True
+            for k in range(len(new_indices)):
+                c = new_indices[k]
+
+                from_ind = data_indices[data_indptr[indices[i, j]]:data_indptr[indices[i, j] + 1]]
+                from_data = data_data[data_indptr[indices[i, j]]:data_indptr[indices[i, j] + 1]]
+
+                to_ind = data_indices[data_indptr[c]:data_indptr[c + 1]]
+                to_data = data_data[data_indptr[c]:data_indptr[c + 1]]
+
+                d = dist(from_ind, from_data, to_ind, to_data, *dist_args)
+                if new_distances[k] > FLOAT32_EPS \
+                        and d < epsilon * distances[i, j]:
+                    flag = False
+                    break
+
+            if flag:
+                new_indices.append(indices[i, j])
+                new_distances.append(distances[i, j])
+
+        for j in range(indices.shape[1]):
+            if j < len(new_indices):
+                indices[i, j] = new_indices[j]
+                distances[i, j] = new_distances[j]
+            else:
+                indices[i, j] = -1
+                distances[i, j] = np.inf
+
+    return indices, distances
+
 
 
 sparse_named_distances = {

@@ -116,7 +116,7 @@ def test_sparse_angular_nn_descent_neighbor_accuracy():
 
 def test_nn_descent_query_accuracy():
     nnd = NNDescent(nn_data[200:], "euclidean", n_neighbors=10, random_state=np.random)
-    knn_indices, _ = nnd.query(nn_data[:200], k=10)
+    knn_indices, _ = nnd.query(nn_data[:200], k=10, queue_size=2.0)
 
     tree = KDTree(nn_data[200:])
     true_indices = tree.query(nn_data[:200], 10, return_distance=False)
