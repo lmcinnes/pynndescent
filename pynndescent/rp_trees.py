@@ -496,11 +496,13 @@ def make_euclidean_tree(
         offsets.append(offset)
         children.append((left_node_num, right_node_num))
         point_indices.append(np.array([-1], dtype=np.int64))
+        # print("Made a node in tree with", len(point_indices), "nodes")
     else:
         hyperplanes.append(np.array([-1.0], dtype=np.float32))
         offsets.append(-np.inf)
         children.append((-1, -1))
         point_indices.append(indices)
+        # print("Made a leaf in tree with", len(point_indices), "nodes")
 
     return
 
@@ -712,7 +714,10 @@ def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
             leaf_size,
         )
 
-    return FlatTree(hyperplanes, offsets, children, point_indices, leaf_size)
+    # print("Completed a tree")
+    result = FlatTree(hyperplanes, offsets, children, point_indices, leaf_size)
+    # print("Tree type is:", numba.typeof(result))
+    return result
 
 
 @numba.njit(nogil=True)
@@ -754,7 +759,7 @@ def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=Fals
     return FlatTree(hyperplanes, offsets, children, point_indices, leaf_size)
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def select_side(hyperplane, offset, point, rng_state):
     margin = offset
     for d in range(point.shape[0]):
@@ -785,7 +790,7 @@ def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
     return indices[node]
 
 
-@numba.njit()
+@numba.njit(fastmath=True)
 def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
     margin = offset
 
@@ -860,12 +865,12 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
                 for i in range(n_trees)
             ]
         else:
-            # result = [make_dense_tree(data, rng_state, leaf_size, angular) for i in range(
-            # n_trees)]
-            joblib.Parallel(n_jobs=4, prefer="threads")(
-                joblib.delayed(make_dense_tree)(data, rng_state, leaf_size, angular)
-                for i in range(n_trees)
-            )
+            result = [make_dense_tree(data, rng_state, leaf_size, angular) for i in range(
+            n_trees)]
+            # joblib.Parallel(n_jobs=4, prefer="threads")(
+            #     joblib.delayed(make_dense_tree)(data, rng_state, leaf_size, angular)
+            #     for i in range(n_trees)
+            # )
     except (RuntimeError, RecursionError, SystemError):
         warn(
             "Random Projection forest initialisation failed due to recursion"
@@ -873,17 +878,25 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
             "data, and this may take longer than normal to compute."
         )
 
+    print("Completed forest")
     return result
 
 
 @numba.njit()
 def get_leaves_from_tree(tree):
-    leaf_data = [
-        tree.indices[i] for i in range(len(tree.indices)) if tree.children[i][0] < 0
-    ]
-    result = -1 * np.ones((len(leaf_data), tree.leaf_size), dtype=np.int64)
-    for i in range(result.shape[0]):
-        result[i, : len(leaf_data[i])] = leaf_data[i]
+    n_leaves = 0
+    for i in range(len(tree.children)):
+        if tree.children[i][0] == -1 and tree.children[i][1] == -1:
+            n_leaves += 1
+
+    result = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
+    leaf_index = 0
+    for i in range(len(tree.indices)):
+        if tree.children[i][0] == -1 or tree.children[i][1] == -1:
+            leaf_size = tree.indices[i].shape[0]
+            result[leaf_index, : leaf_size] = tree.indices[i]
+            leaf_index += 1
+
     return result
 
 

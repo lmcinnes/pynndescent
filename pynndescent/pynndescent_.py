@@ -279,6 +279,7 @@ def nn_descent_internal_high_memory(
     n_vertices = data.shape[0]
 
     for n in range(n_iters):
+        print("Starting iter", n)
         if verbose:
             print("\t", n, " / ", n_iters)
 
@@ -322,6 +323,7 @@ def nn_descent_internal_high_memory(
                         c += unchecked_heap_push(current_graph, q, d, p, 1)
                         tried.add((q, p))
 
+        print("Finished iter n:", c, delta * n_neighbors * data.shape[0])
         if c <= delta * n_neighbors * data.shape[0]:
             return
 
