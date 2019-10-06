@@ -148,28 +148,69 @@ def init_current_graph(
     return current_graph
 
 
-@numba.njit(fastmath=True)
+@numba.njit()
+def leaf_all_pairs_distances(data, indices, dist, dist_args):
+
+    n = indices.shape[0]
+    result = np.inf * np.ones((n, n), dtype=np.float64)
+
+    for i in numba.prange(indices.shape[0]):
+        p = indices[i]
+        if p < 0:
+            break
+
+        for j in range(i + 1, indices.shape[0]):
+            q = indices[j]
+            if q < 0:
+                break
+
+            result[i, j] = dist(data[p], data[q], *dist_args)
+
+    return result
+
+@numba.njit()
 def init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=None):
-    if tried is None:
-        tried = set([(-1, -1)])
+    # if tried is None:
+    #     tried = set([(-1, -1)])
 
     for n in range(leaf_array.shape[0]):
-        for i in range(leaf_array.shape[1]):
-            p = leaf_array[n, i]
-            if p < 0:
-                break
-            for j in range(i + 1, leaf_array.shape[1]):
-                q = leaf_array[n, j]
-                if q < 0:
-                    break
-                if (p, q) in tried:
-                    continue
-                d = dist(data[p], data[q], *dist_args)
-                heap_push(current_graph, p, d, q, 1)
-                tried.add((p, q))
-                if p != q:
+        distances = leaf_all_pairs_distances(data, leaf_array[n], dist, dist_args)
+        for i in range(distances.shape[0]):
+            for j in range(i + 1, distances.shape[1]):
+                d = distances[i, j]
+                if np.isfinite(d):
+                    p = leaf_array[n, i]
+                    q = leaf_array[n, j]
+                    heap_push(current_graph, p, d, q, 1)
                     heap_push(current_graph, q, d, p, 1)
-                    tried.add((q, p))
+
+        # for i in range(leaf_array.shape[1]):
+        #     p = leaf_array[n, i]
+        #     if p < 0:
+        #         break
+        #     for j in range(i + 1, leaf_array.shape[1]):
+        #         q = leaf_array[n, j]
+        #         if q < 0:
+        #             break
+        #         if (p, q) in tried:
+        #             continue
+        #         d = dist(data[p], data[q], *dist_args)
+        #         heap_push(current_graph, p, d, q, 1)
+        #         tried.add((p, q))
+        #         if p != q:
+        #             heap_push(current_graph, q, d, p, 1)
+        #             tried.add((q, p))
+
+
+@numba.njit(fastmath=True)
+def init_random(n_neighbors, data, heap, dist, dist_args, rng_state):
+    for i in range(data.shape[0]):
+        if heap[0, i, 0] == -1:
+            for j in range(n_neighbors - np.sum(heap[0, i] == -1)):
+                idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+                d = dist(data[idx], data[i], *dist_args)
+                heap_push(heap, i, d, idx, 1)
+    return
 
 
 @numba.njit(fastmath=True)
@@ -321,19 +362,21 @@ def nn_descent(
     tried = set([(-1, -1)])
 
     current_graph = make_heap(data.shape[0], n_neighbors)
-    for i in range(data.shape[0]):
-        if seed_per_row:
-            seed(rng_state, i)
-        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-        for j in range(indices.shape[0]):
-            d = dist(data[i], data[indices[j]], *dist_args)
-            heap_push(current_graph, i, d, indices[j], 1)
-            heap_push(current_graph, indices[j], d, i, 1)
-            tried.add((i, indices[j]))
-            tried.add((indices[j], i))
+    # for i in range(data.shape[0]):
+    #     if seed_per_row:
+    #         seed(rng_state, i)
+    #     indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
+    #     for j in range(indices.shape[0]):
+    #         d = dist(data[i], data[indices[j]], *dist_args)
+    #         heap_push(current_graph, i, d, indices[j], 1)
+    #         heap_push(current_graph, indices[j], d, i, 1)
+    #         tried.add((i, indices[j]))
+    #         tried.add((indices[j], i))
 
     if rp_tree_init:
         init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=tried)
+
+    init_random(n_neighbors, data, current_graph, dist, dist_args, rng_state)
 
     if low_memory:
         nn_descent_internal_low_memory(
