@@ -148,13 +148,13 @@ def init_current_graph(
     return current_graph
 
 
-@numba.njit(cache=True)
+@numba.njit(parallel=True, cache=True)
 def leaf_all_pairs_distances(data, indices, dist, dist_args):
 
     n = indices.shape[0]
     result = -1 * np.ones((n, n), dtype=np.float64)
 
-    for i in range(indices.shape[0]):
+    for i in numba.prange(indices.shape[0]):
         p = indices[i]
         if p < 0:
             break
@@ -168,46 +168,99 @@ def leaf_all_pairs_distances(data, indices, dist, dist_args):
 
     return result
 
-@numba.njit()
-def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
-    for n in range(leaf_array.shape[0]):
-        # distances = leaf_all_pairs_distances(data, leaf_array[n], dist, dist_args)
-        # for i in range(distances.shape[0]):
-        #     for j in range(i + 1, distances.shape[1]):
-        #         d = distances[i, j]
-        #         if d >= 0:
-        #             p = leaf_array[n, i]
-        #             q = leaf_array[n, j]
-        #             # if (p, q) in tried:
-        #             #     continue
-        #             # else:
-        #             if True:
-        #                 heap_push(current_graph, p, d, q, 1)
-        #                 heap_push(current_graph, q, d, p, 1)
-        #                 # tried.add((p, q))
-        #                 # tried.add((q, p))
 
-        for i in range(leaf_array.shape[1]):
-            p = leaf_array[n, i]
+@numba.njit(parallel=True, cache=True)
+def generate_leaf_updates(leaf_block, dist_thresholds, data, dist, dist_args):
+
+    updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
+
+    for n in numba.prange(leaf_block.shape[0]):
+        for i in range(leaf_block.shape[1]):
+            p = leaf_block[n, i]
             if p < 0:
                 break
-            for j in range(i + 1, leaf_array.shape[1]):
-                q = leaf_array[n, j]
+
+            for j in range(i + 1, leaf_block.shape[1]):
+                q = leaf_block[n, j]
                 if q < 0:
                     break
-                # if (p, q) in tried:
-                #     continue
+
                 d = dist(data[p], data[q], *dist_args)
+                if d < dist_thresholds[p] or d < dist_thresholds[q]:
+                    updates[n].append((p, q, d))
+
+    return updates
+
+
+@numba.njit()
+def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
+
+    n_leaves = leaf_array.shape[0]
+    block_size = 8192
+    n_blocks = n_leaves // block_size
+
+    for i in range(n_blocks):
+        block_start = i * block_size
+        block_end = min(n_leaves, (i + 1) * block_size)
+
+        leaf_block = leaf_array[block_start:block_end]
+        dist_thresholds = current_graph[1, :, 0]
+
+        updates = generate_leaf_updates(leaf_block, dist_thresholds, data, dist,
+                                        dist_args)
+
+        for j in range(len(updates)):
+            for k in range(len(updates[j])):
+                p, q, d = updates[j][k]
+
+                if p == -1 or q == -1:
+                    continue
+
                 heap_push(current_graph, p, d, q, 1)
-                # tried.add((p, q))
-                if p != q:
-                    heap_push(current_graph, q, d, p, 1)
-                    # tried.add((q, p))
+                heap_push(current_graph, q, d, p, 1)
 
 
-@numba.njit(fastmath=True)
+
+# @numba.njit()
+# def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
+#     for n in range(leaf_array.shape[0]):
+#         # distances = leaf_all_pairs_distances(data, leaf_array[n], dist, dist_args)
+#         # for i in range(distances.shape[0]):
+#         #     for j in range(i + 1, distances.shape[1]):
+#         #         d = distances[i, j]
+#         #         if d >= 0:
+#         #             p = leaf_array[n, i]
+#         #             q = leaf_array[n, j]
+#         #             # if (p, q) in tried:
+#         #             #     continue
+#         #             # else:
+#         #             if True:
+#         #                 heap_push(current_graph, p, d, q, 1)
+#         #                 heap_push(current_graph, q, d, p, 1)
+#         #                 # tried.add((p, q))
+#         #                 # tried.add((q, p))
+#
+#         for i in range(leaf_array.shape[1]):
+#             p = leaf_array[n, i]
+#             if p < 0:
+#                 break
+#             for j in range(i + 1, leaf_array.shape[1]):
+#                 q = leaf_array[n, j]
+#                 if q < 0:
+#                     break
+#                 # if (p, q) in tried:
+#                 #     continue
+#                 d = dist(data[p], data[q], *dist_args)
+#                 heap_push(current_graph, p, d, q, 1)
+#                 # tried.add((p, q))
+#                 if p != q:
+#                     heap_push(current_graph, q, d, p, 1)
+#                     # tried.add((q, p))
+
+
+@numba.njit(parallel=True, fastmath=True)
 def init_random(n_neighbors, data, heap, dist, dist_args, rng_state):
-    for i in range(data.shape[0]):
+    for i in numba.prange(data.shape[0]):
         if heap[0, i, 0] == -1:
             for j in range(n_neighbors - np.sum(heap[0, i] == -1)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
@@ -386,7 +439,226 @@ def nn_descent_internal_high_memory(
             return
 
 
+
+@numba.njit(parallel=True, cache=True)
+def generate_graph_updates(
+    new_candidate_block,
+    old_candidate_block,
+    dist_thresholds,
+    data,
+    dist,
+    dist_args,
+):
+
+    block_size = new_candidate_block.shape[0]
+    updates = [[(-1, -1, np.inf)] for i in range(block_size)]
+    max_candidates = new_candidate_block.shape[1]
+
+    for i in numba.prange(block_size):
+        for j in range(max_candidates):
+            p = int(new_candidate_block[i, j])
+            if p < 0:
+                continue
+            for k in range(j, max_candidates):
+                q = int(new_candidate_block[i, k])
+                if q < 0:
+                    continue
+
+                d = dist(data[p], data[q], *dist_args)
+                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
+                    updates[i].append((p, q, d))
+
+                # # Adds more updates but makes sorted and applying easier
+                # if d <= dist_thresholds[q]:
+                #     updates[i].append((q, p, d))
+
+            for k in range(max_candidates):
+                q = int(old_candidate_block[i, k])
+                if q < 0:
+                    continue
+
+                d = dist(data[p], data[q], *dist_args)
+                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
+                    updates[i].append((p, q, d))
+
+                # # Adds more updates but makes sorted and applying easier
+                # if d <= dist_thresholds[q]:
+                #     updates[i].append((q, p, d))
+
+    # n_updates = 0
+    # for i in range(len(updates)):
+    #     n_updates += len(updates[i]) - 1
+    # result = np.empty((n_updates, 3), dtype=np.float64)
+    # start_idx = 0
+    # for i in range(len(updates)):
+    #     if len(updates[i]) > 1:
+    #         result[start_idx:start_idx + len(updates[i]) - 1] = np.array(updates[i][1:])
+    #         start_idx += len(updates[i]) - 1
+    # return result
+
+    return updates
+
+# @numba.njit(parallel=True, cache=True)
+# def apply_graph_updates(current_graph, updates, offsets, in_graph):
+#
+#     counts = np.zeros(offsets.shape[0], dtype=np.int32)
+#
+#     for i in numba.prange(offsets.shape[0]):
+#         for update_idx in range(offsets[i], offsets[i+1]):
+#             p, q, d = updates[update_idx]
+#             if q in in_graph[i]:
+#                 pass
+#             else:
+#                 added = unchecked_heap_push(current_graph, i, d, q, 1)
+#                 if added > 0:
+#                     in_graph[i].add(q)
+#                     counts[i] += added
+#
+#     return np.sum(counts)
+
+
+@numba.njit(cache=True)
+def apply_graph_updates(current_graph, updates, in_graph):
+
+    n_changes = 0
+
+    for i in range(len(updates)):
+        for j in range(len(updates[i])):
+            p, q, d = updates[i][j]
+
+            if p == -1 or q == -1:
+                continue
+
+            if q in in_graph[p] and p in in_graph[q]:
+                continue
+            elif q in in_graph[p]:
+                pass
+            else:
+                added = unchecked_heap_push(current_graph, p, d, q, 1)
+
+                if added > 0:
+                    in_graph[p].add(q)
+                    n_changes += added
+
+            if p == q or p in in_graph[q]:
+                pass
+            else:
+                added = unchecked_heap_push(current_graph, q, d, p, 1)
+
+                if added > 0:
+                    in_graph[q].add(p)
+                    n_changes += added
+
+    return n_changes
+
+
 @numba.njit()
+def nn_descent_internal_high_memory_par(
+    current_graph,
+    data,
+    n_neighbors,
+    rng_state,
+    max_candidates=50,
+    dist=dist.euclidean,
+    dist_args=(),
+    n_iters=10,
+    delta=0.001,
+    rho=0.5,
+    verbose=False,
+    seed_per_row=False,
+):
+    n_vertices = data.shape[0]
+    block_size = 8192
+    n_blocks = n_vertices // block_size
+
+    search_sorted_test_array = np.arange(n_vertices + 1) # plus one to get the end
+    # offset
+
+    # tried = set([(-1, -1)])
+    in_graph = [set(current_graph[0, i]) for i in range(current_graph.shape[1])]
+
+    for n in range(n_iters):
+        print("Starting iter", n)
+        if verbose:
+            print("\t", n, " / ", n_iters)
+
+        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
+            current_graph,
+            n_vertices,
+            n_neighbors,
+            max_candidates,
+            rng_state,
+            rho,
+            seed_per_row,
+        )
+
+        c = 0
+        for i in range(n_blocks + 1):
+            block_start = i * block_size
+            block_end = min(n_vertices, (i + 1) * block_size)
+
+            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
+            dist_thresholds = current_graph[1, :, 0]
+
+            updates = generate_graph_updates(
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                dist,
+                dist_args,
+            )
+
+            # update_order = np.argsort(updates[:, 0])
+            # updates = updates[update_order]
+            # offsets = np.searchsorted(updates[:, 0], search_sorted_test_array)
+            #
+            # c += apply_graph_updates(
+            #     current_graph,
+            #     updates,
+            #     offsets,
+            #     in_graph,
+            # )
+
+            c += apply_graph_updates(
+                current_graph,
+                updates,
+                in_graph,
+            )
+
+            # for j in range(len(updates)):
+            #     for k in range(len(updates[j])):
+            #         p, q, d = updates[j][k]
+            #
+            #         if p == -1 or q == -1:
+            #             continue
+            #
+            #         if q in in_graph[int(p)] and p in in_graph[int(q)]:
+            #             continue
+            #         elif q in in_graph[int(p)]:
+            #             pass
+            #         else:
+            #             added = unchecked_heap_push(current_graph, p, d, q, 1)
+            #
+            #             if added > 0:
+            #                 in_graph[int(p)].add(q)
+            #                 c += added
+            #
+            #         if p == q or p in in_graph[int(q)]:
+            #             pass
+            #         else:
+            #             added = unchecked_heap_push(current_graph, q, d, p, 1)
+            #
+            #             if added > 0:
+            #                 in_graph[int(q)].add(p)
+            #                 c += added
+
+        print("Finished iter", n, ":", c, delta * n_neighbors * data.shape[0])
+        if c <= delta * n_neighbors * data.shape[0]:
+            return
+
+#@numba.njit()
 def nn_descent(
     data,
     n_neighbors,
@@ -405,7 +677,7 @@ def nn_descent(
 ):
     # tried = set([(-1, -1)])
 
-    # print(ts(), "Starting NN-Descent")
+    print(ts(), "Starting NN-Descent")
 
     current_graph = make_heap(data.shape[0], n_neighbors)
     # for i in range(data.shape[0]):
@@ -422,11 +694,11 @@ def nn_descent(
     if rp_tree_init:
         init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
 
-    # print(ts(), "Initialized from trees")
+    print(ts(), "Initialized from trees")
 
     init_random(n_neighbors, data, current_graph, dist, dist_args, rng_state)
 
-    # print(ts(), "Initialized with extra random values")
+    print(ts(), "Initialized with extra random values")
 
     if low_memory:
         nn_descent_internal_low_memory(
@@ -444,7 +716,7 @@ def nn_descent(
             seed_per_row=seed_per_row,
         )
     else:
-        nn_descent_internal_high_memory(
+        nn_descent_internal_high_memory_par(
             current_graph,
             data,
             n_neighbors,
@@ -459,7 +731,7 @@ def nn_descent(
             seed_per_row=seed_per_row,
         )
 
-    # print(ts(), "Finished NN-Descent")
+    print(ts(), "Finished NN-Descent")
 
     return deheap_sort(current_graph)
 

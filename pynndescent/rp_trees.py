@@ -856,7 +856,7 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
     forest: list
         A list of random projection trees.
     """
-    # print(ts(), "Started forest construction")
+    print(ts(), "Started forest construction")
     result = []
     if leaf_size is None:
         leaf_size = max(10, n_neighbors)
@@ -889,7 +889,7 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
             "data, and this may take longer than normal to compute."
         )
 
-    # print(ts(), "Completed forest construction")
+    print(ts(), "Completed forest construction")
     return tuple(result)
 
 
