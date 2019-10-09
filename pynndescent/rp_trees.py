@@ -11,7 +11,7 @@ import numba
 import scipy.sparse
 
 from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_unique
-from pynndescent.utils import tau_rand_int, norm
+from pynndescent.utils import tau_rand_int, norm, ts
 import joblib
 
 locale.setlocale(locale.LC_NUMERIC, "C")
@@ -35,7 +35,7 @@ children_type = numba.typeof((-1, -1))
 point_indices_type = numba.int64[::1]
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, nogil=True, cache=True)
 def angular_random_projection_split(data, indices, rng_state):
     """Given a set of ``indices`` for data points from ``data``, create
     a random hyperplane to split the data, returning two arrays indices
@@ -138,7 +138,7 @@ def angular_random_projection_split(data, indices, rng_state):
     return indices_left, indices_right, hyperplane_vector, 0.0
 
 
-@numba.njit(fastmath=True, nogil=True)
+@numba.njit(fastmath=True, nogil=True, cache=True)
 def euclidean_random_projection_split(data, indices, rng_state):
     """Given a set of ``indices`` for data points from ``data``, create
     a random hyperplane to split the data, returning two arrays indices
@@ -227,7 +227,7 @@ def euclidean_random_projection_split(data, indices, rng_state):
     return indices_left, indices_right, hyperplane_vector, hyperplane_offset
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, nogil=True, cache=True)
 def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_state):
     """Given a set of ``indices`` for data points from a sparse data set
     presented in csr sparse format as inds, indptr and data, create
@@ -343,7 +343,7 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
     return indices_left, indices_right, hyperplane, 0.0
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, nogil=True, cache=True)
 def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_state):
     """Given a set of ``indices`` for data points from a sparse data set
     presented in csr sparse format as inds, indptr and data, create
@@ -450,7 +450,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     return indices_left, indices_right, hyperplane, hyperplane_offset
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_euclidean_tree(
     data,
     indices,
@@ -507,7 +507,7 @@ def make_euclidean_tree(
     return
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_angular_tree(
     data,
     indices,
@@ -562,7 +562,7 @@ def make_angular_tree(
     return
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_sparse_euclidean_tree(
     inds,
     indptr,
@@ -623,7 +623,7 @@ def make_sparse_euclidean_tree(
     return
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_sparse_angular_tree(
     inds,
     indptr,
@@ -682,7 +682,7 @@ def make_sparse_angular_tree(
         point_indices.append(indices)
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
     indices = np.arange(data.shape[0])
 
@@ -720,7 +720,7 @@ def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
     return result
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=False):
     indices = np.arange(indptr.shape[0] - 1)
 
@@ -830,7 +830,7 @@ def search_sparse_flat_tree(
 
     return indices[node]
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def dense_forest_parallel(data, n_trees, leaf_size, rng_state, angular=False):
     result = []
     for i in numba.prange(n_trees):
@@ -856,6 +856,7 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
     forest: list
         A list of random projection trees.
     """
+    # print(ts(), "Started forest construction")
     result = []
     if leaf_size is None:
         leaf_size = max(10, n_neighbors)
@@ -873,13 +874,14 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
                 for i in range(n_trees)
             ]
         else:
-            result = dense_forest_parallel(data, n_trees, leaf_size, rng_state, angular)
+            # result = dense_forest_parallel(data, n_trees, leaf_size, rng_state,
+            #                                angular)
             # result = [make_dense_tree(data, rng_state, leaf_size, angular) for i in range(
             # n_trees)]
-            # joblib.Parallel(n_jobs=4, prefer="threads")(
-            #     joblib.delayed(make_dense_tree)(data, rng_state, leaf_size, angular)
-            #     for i in range(n_trees)
-            # )
+            result = joblib.Parallel(n_jobs=-1, prefer="threads")(
+                joblib.delayed(make_dense_tree)(data, rng_state, leaf_size, angular)
+                for i in range(n_trees)
+            )
     except (RuntimeError, RecursionError, SystemError):
         warn(
             "Random Projection forest initialisation failed due to recursion"
@@ -887,11 +889,11 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
             "data, and this may take longer than normal to compute."
         )
 
-    print("Completed forest")
-    return result
+    # print(ts(), "Completed forest construction")
+    return tuple(result)
 
 
-@numba.njit()
+@numba.njit(nogil=True, cache=True)
 def get_leaves_from_tree(tree):
     n_leaves = 0
     for i in range(len(tree.children)):
@@ -909,17 +911,17 @@ def get_leaves_from_tree(tree):
     return result
 
 
-@numba.njit(parallel=True)
-def rptree_leaf_array_par(rp_forest):
-    result = []
-    for i in numba.prange(len(rp_forest)):
-        leaf_array = get_leaves_from_tree(rp_forest[i])
-        result.append(leaf_array)
+def rptree_leaf_array_parallel(rp_forest):
+    result = joblib.Parallel(prefer="threads")(
+        joblib.delayed(get_leaves_from_tree)(rp_tree)
+        for rp_tree in rp_forest
+    )
     return result
+
 
 def rptree_leaf_array(rp_forest):
     if len(rp_forest) > 0:
-        return np.vstack(rptree_leaf_array_par(rp_forest))
+        return np.vstack(rptree_leaf_array_parallel(rp_forest))
     else:
         return np.array([[-1]])
 # def rptree_leaf_array(rp_forest):
