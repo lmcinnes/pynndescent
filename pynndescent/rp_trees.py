@@ -11,7 +11,7 @@ import numba
 import scipy.sparse
 
 from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_unique
-from pynndescent.utils import tau_rand_int, norm, ts
+from pynndescent.utils import tau_rand_int, norm, seed, ts
 import joblib
 
 locale.setlocale(locale.LC_NUMERIC, "C")
@@ -830,14 +830,14 @@ def search_sparse_flat_tree(
 
     return indices[node]
 
-@numba.njit(parallel=True, cache=True)
-def dense_forest_parallel(data, n_trees, leaf_size, rng_state, angular=False):
-    result = []
-    for i in numba.prange(n_trees):
-        tree = make_dense_tree(data, rng_state, leaf_size, angular)
-        result.append(tree)
-
-    return result
+# @numba.njit(parallel=True, cache=True)
+# def dense_forest_parallel(data, n_trees, leaf_size, rng_state, angular=False):
+#     result = []
+#     for i in numba.prange(n_trees):
+#         tree = make_dense_tree(data, rng_state, leaf_size, angular)
+#         result.append(tree)
+#
+#     return result
 
 def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False):
     """Build a random projection forest with ``n_trees``.
@@ -878,8 +878,19 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
             #                                angular)
             # result = [make_dense_tree(data, rng_state, leaf_size, angular) for i in range(
             # n_trees)]
+
+            # This works, but is suboptimal. Should use random
+            # State / numpy to generate a set of rng_states
+            # Commenting this out for now. TODO: FIX
+            # rng_states = np.ones((n_trees, 3), dtype=np.int64)
+            # for i in range(n_trees):
+            #     seed(rng_states[i], i)
+
             result = joblib.Parallel(n_jobs=-1, prefer="threads")(
-                joblib.delayed(make_dense_tree)(data, rng_state, leaf_size, angular)
+                joblib.delayed(make_dense_tree)(data,
+                                                rng_state,
+                                                leaf_size,
+                                                angular)
                 for i in range(n_trees)
             )
     except (RuntimeError, RecursionError, SystemError):
@@ -912,10 +923,11 @@ def get_leaves_from_tree(tree):
 
 
 def rptree_leaf_array_parallel(rp_forest):
-    result = joblib.Parallel(prefer="threads")(
+    result = joblib.Parallel(n_jobs=-1, prefer="threads")(
         joblib.delayed(get_leaves_from_tree)(rp_tree)
         for rp_tree in rp_forest
     )
+    # result = [get_leaves_from_tree(rp_tree) for rp_tree in rp_forest]
     return result
 
 

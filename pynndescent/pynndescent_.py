@@ -32,6 +32,9 @@ from pynndescent.utils import (
 
 from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree
 
+update_type = numba.types.List(numba.types.List((numba.types.int64,
+                                                 numba.types.int64,
+                                                 numba.types.float64)))
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
@@ -148,28 +151,28 @@ def init_current_graph(
     return current_graph
 
 
-@numba.njit(parallel=True, cache=True)
-def leaf_all_pairs_distances(data, indices, dist, dist_args):
+# @numba.njit(parallel=True, cache=True)
+# def leaf_all_pairs_distances(data, indices, dist, dist_args):
+#
+#     n = indices.shape[0]
+#     result = -1 * np.ones((n, n), dtype=np.float64)
+#
+#     for i in numba.prange(indices.shape[0]):
+#         p = indices[i]
+#         if p < 0:
+#             break
+#
+#         for j in range(i + 1, indices.shape[0]):
+#             q = indices[j]
+#             if q < 0:
+#                 break
+#
+#             result[i, j] = dist(data[p], data[q], *dist_args)
+#
+#     return result
 
-    n = indices.shape[0]
-    result = -1 * np.ones((n, n), dtype=np.float64)
 
-    for i in numba.prange(indices.shape[0]):
-        p = indices[i]
-        if p < 0:
-            break
-
-        for j in range(i + 1, indices.shape[0]):
-            q = indices[j]
-            if q < 0:
-                break
-
-            result[i, j] = dist(data[p], data[q], *dist_args)
-
-    return result
-
-
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True)
 def generate_leaf_updates(leaf_block, dist_thresholds, data, dist, dist_args):
 
     updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
@@ -196,7 +199,7 @@ def generate_leaf_updates(leaf_block, dist_thresholds, data, dist, dist_args):
 def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
-    block_size = 8192
+    block_size = 65536
     n_blocks = n_leaves // block_size
 
     for i in range(n_blocks):
@@ -258,9 +261,9 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
 #                     # tried.add((q, p))
 
 
-@numba.njit(parallel=True, fastmath=True)
+@numba.njit(fastmath=True)
 def init_random(n_neighbors, data, heap, dist, dist_args, rng_state):
-    for i in numba.prange(data.shape[0]):
+    for i in range(data.shape[0]):
         if heap[0, i, 0] == -1:
             for j in range(n_neighbors - np.sum(heap[0, i] == -1)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
@@ -440,7 +443,7 @@ def nn_descent_internal_high_memory(
 
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True)
 def generate_graph_updates(
     new_candidate_block,
     old_candidate_block,
@@ -517,7 +520,7 @@ def generate_graph_updates(
 #     return np.sum(counts)
 
 
-@numba.njit(cache=True)
+@numba.njit()
 def apply_graph_updates(current_graph, updates, in_graph):
 
     n_changes = 0
@@ -568,11 +571,11 @@ def nn_descent_internal_high_memory_par(
     seed_per_row=False,
 ):
     n_vertices = data.shape[0]
-    block_size = 8192
+    block_size = 16384
     n_blocks = n_vertices // block_size
 
-    search_sorted_test_array = np.arange(n_vertices + 1) # plus one to get the end
-    # offset
+    # search_sorted_test_array = np.arange(n_vertices + 1) # plus one to get the end
+    # # offset
 
     # tried = set([(-1, -1)])
     in_graph = [set(current_graph[0, i]) for i in range(current_graph.shape[1])]
@@ -658,7 +661,7 @@ def nn_descent_internal_high_memory_par(
         if c <= delta * n_neighbors * data.shape[0]:
             return
 
-#@numba.njit()
+# @numba.njit()
 def nn_descent(
     data,
     n_neighbors,
@@ -688,8 +691,8 @@ def nn_descent(
     #         d = dist(data[i], data[indices[j]], *dist_args)
     #         heap_push(current_graph, i, d, indices[j], 1)
     #         heap_push(current_graph, indices[j], d, i, 1)
-    #         tried.add((i, indices[j]))
-    #         tried.add((indices[j], i))
+    #         # tried.add((i, indices[j]))
+    #         # tried.add((indices[j], i))
 
     if rp_tree_init:
         init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
@@ -701,6 +704,7 @@ def nn_descent(
     print(ts(), "Initialized with extra random values")
 
     if low_memory:
+    # if True:
         nn_descent_internal_low_memory(
             current_graph,
             data,
@@ -946,7 +950,7 @@ class NNDescent(object):
         pruning_degree_multiplier=2.0,
         diversify_epsilon=0.5,
         tree_init=True,
-        random_state=np.random,
+        random_state=None,
         algorithm="standard",
         low_memory=False,
         max_candidates=20,
@@ -989,7 +993,9 @@ class NNDescent(object):
         metric_kwds = metric_kwds or {}
         self._dist_args = tuple(metric_kwds.values())
 
-        self.random_state = check_random_state(random_state)
+        self.random_state = random_state
+
+        current_random_state = check_random_state(self.random_state)
 
         self._distance_correction = None
 
@@ -1011,7 +1017,7 @@ class NNDescent(object):
         else:
             self._angular_trees = False
 
-        self.rng_state = self.random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
+        self.rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
 
