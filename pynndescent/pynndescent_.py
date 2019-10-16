@@ -30,7 +30,7 @@ from pynndescent.utils import (
     ts,
 )
 
-from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree
+from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree, convert_tree_format
 
 update_type = numba.types.List(numba.types.List((numba.types.int64,
                                                  numba.types.int64,
@@ -803,6 +803,75 @@ def degree_prune(graph, max_degree=20):
     result.eliminate_zeros()
     return result
 
+import scipy.sparse
+import scipy.sparse.linalg
+
+def spectral_embedding(graph, random_state):
+
+    dim = 1
+    n_samples = graph.shape[0]
+
+    diag_data = np.asarray(graph.sum(axis=0))
+    # standard Laplacian
+    # D = scipy.sparse.spdiags(diag_data, 0, graph.shape[0], graph.shape[0])
+    # L = D - graph
+    # Normalized Laplacian
+    I = scipy.sparse.identity(graph.shape[0], dtype=np.float64)
+    D = scipy.sparse.spdiags(
+        1.0 / np.sqrt(diag_data), 0, graph.shape[0], graph.shape[0]
+    )
+    L = I - D * graph * D
+
+    k = dim + 1
+    num_lanczos_vectors = max(2 * k + 1, int(np.sqrt(graph.shape[0])))
+    try:
+        if L.shape[0] < 2000000:
+            eigenvalues, eigenvectors = scipy.sparse.linalg.eigsh(
+                L,
+                k,
+                which="SM",
+                ncv=num_lanczos_vectors,
+                tol=1e-4,
+                v0=np.ones(L.shape[0]),
+                maxiter=graph.shape[0] * 5,
+            )
+        else:
+            eigenvalues, eigenvectors = scipy.sparse.linalg.lobpcg(
+                L, random_state.normal(size=(L.shape[0], k)), largest=False, tol=1e-8
+            )
+        order = np.argsort(eigenvalues)[1:k]
+        return eigenvectors[:, order]
+    except scipy.sparse.linalg.ArpackError:
+        warn(
+            "WARNING: spectral initialisation failed! The eigenvector solver\n"
+            "failed. This is likely due to too small an eigengap. Consider\n"
+            "adding some noise or jitter to your data.\n\n"
+            "Falling back to random initialisation!"
+        )
+        return random_state.uniform(low=-10.0, high=10.0, size=(graph.shape[0], dim))
+
+
+def spectral_order(search_graph, random_state):
+    sym_graph = search_graph + search_graph.T
+    embedding = spectral_embedding(sym_graph, random_state)
+    return np.argsort(embedding.T[0])
+
+
+@numba.njit()
+def fix_tree_indices(indices, order_map):
+    for i in range(indices.shape[0]):
+        for j in range(indices.shape[1]):
+            if indices[i, j] >= 0:
+                indices[i, j] = order_map[indices[i, j]]
+    return
+
+
+def fix_forest_indices(rp_forest, vertex_order):
+    order_map = np.argsort(vertex_order)
+    for tree in rp_forest:
+        fix_tree_indices(tree.indices, order_map)
+    return
+
 
 class NNDescent(object):
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
@@ -1171,6 +1240,8 @@ class NNDescent(object):
         if hasattr(self, "_search_graph"):
             return
 
+        self._rp_forest = [convert_tree_format(tree) for tree in self._rp_forest]
+
         if self._is_sparse:
             diversified_rows, diversified_data = sparse.sparse_diversify(
                 self._neighbor_graph[0],
@@ -1218,6 +1289,18 @@ class NNDescent(object):
                                                         self.n_neighbors)))
         self._search_graph.eliminate_zeros()
         self._search_graph = (self._search_graph != 0).astype(np.int8)
+
+        # re-order graph and data according to a spectral embedding
+        random_state = check_random_state(self.random_state)
+        self._vertex_order = spectral_order(self._search_graph, random_state)
+
+        row_ordered_graph = self._search_graph[self._vertex_order, :]
+        self._search_graph = row_ordered_graph[:, self._vertex_order]
+        self._search_graph = self._search_graph.tocsr()
+        self._search_graph.sort_indices()
+
+        self._raw_data = self._raw_data[self._vertex_order, :]
+        fix_forest_indices(self._rp_forest, self._vertex_order)
 
 
     @property
@@ -1337,6 +1420,9 @@ class NNDescent(object):
 
         indices, dists = deheap_sort(result)
         indices, dists = indices[:, :k], dists[:, :k]
+        # Sort to input data order
+        indices = self._vertex_order[indices]
+
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)
         return indices, dists

@@ -779,15 +779,19 @@ def select_side(hyperplane, offset, point, rng_state):
 
 @numba.njit()
 def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
-    node = len(children) - 1
-    while children[node][0] > 0:
+    # node = len(children) - 1
+    node = 0
+    # while children[node][0] > 0:
+    while children[node, 0] > 0:
         side = select_side(hyperplanes[node], offsets[node], point, rng_state)
         if side == 0:
-            node = children[node][0]
+            # node = children[node][0]
+            node = children[node, 0]
         else:
-            node = children[node][1]
+            # node = children[node][1]
+            node = children[node, 1]
 
-    return indices[node]
+    return indices[-children[node, 0]]
 
 
 @numba.njit(fastmath=True)
@@ -971,3 +975,70 @@ def rptree_leaf_array(rp_forest):
 #         leaf_array = np.array([[-1]])
 #
 #     return leaf_array
+
+
+@numba.njit()
+def recursive_convert(tree, hyperplanes, offsets, children, indices, node_num,
+                      leaf_num, tree_node):
+
+    # print(node_num, leaf_num, tree_node)
+    if tree.children[tree_node][0] < 0:
+        children[node_num, 0] = -leaf_num
+        indices[leaf_num, : len(tree.indices[tree_node])] = tree.indices[tree_node]
+        leaf_num += 1
+        return node_num, leaf_num
+    else:
+        hyperplanes[node_num] = tree.hyperplanes[tree_node]
+        offsets[node_num] = tree.offsets[tree_node]
+        children[node_num, 0] = node_num + 1
+        old_node_num = node_num
+        node_num, leaf_num = recursive_convert(
+            tree,
+            hyperplanes,
+            offsets,
+            children,
+            indices,
+            node_num + 1,
+            leaf_num,
+            tree.children[tree_node][0]
+        )
+        children[old_node_num, 1] = node_num + 1
+        node_num, leaf_num = recursive_convert(
+            tree,
+            hyperplanes,
+            offsets,
+            children,
+            indices,
+            node_num + 1,
+            leaf_num,
+            tree.children[tree_node][1]
+        )
+        return node_num, leaf_num
+
+@numba.njit()
+def num_nodes_and_leaves(tree):
+    n_nodes = 0
+    n_leaves = 0
+    for i in range(len(tree.children)):
+        if tree.children[i][0] < 0:
+            n_leaves += 1
+            n_nodes += 1
+        else:
+            n_nodes += 1
+
+    return n_nodes, n_leaves
+
+#@numba.njit()
+def convert_tree_format(tree):
+    n_nodes, n_leaves = num_nodes_and_leaves(tree)
+    print(n_nodes, n_leaves, len(tree.children))
+    hyperplane_dim = np.max([tree.hyperplanes[i].shape[0] for i in range(len(
+        tree.hyperplanes))])
+
+    hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
+    offsets = np.zeros(n_nodes, dtype=np.float32)
+    children = -1 * np.ones((n_nodes, 2), dtype=np.int64)
+    indices = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
+    recursive_convert(tree, hyperplanes, offsets, children, indices, 0, 0,
+                      len(tree.children) - 1)
+    return FlatTree(hyperplanes, offsets, children, indices, tree.leaf_size)
