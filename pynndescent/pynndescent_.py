@@ -661,7 +661,7 @@ def nn_descent_internal_high_memory_par(
         if c <= delta * n_neighbors * data.shape[0]:
             return
 
-# @numba.njit()
+@numba.njit()
 def nn_descent(
     data,
     n_neighbors,
@@ -680,7 +680,7 @@ def nn_descent(
 ):
     # tried = set([(-1, -1)])
 
-    print(ts(), "Starting NN-Descent")
+    # print(ts(), "Starting NN-Descent")
 
     current_graph = make_heap(data.shape[0], n_neighbors)
     # for i in range(data.shape[0]):
@@ -697,11 +697,11 @@ def nn_descent(
     if rp_tree_init:
         init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
 
-    print(ts(), "Initialized from trees")
+    # print(ts(), "Initialized from trees")
 
     init_random(n_neighbors, data, current_graph, dist, dist_args, rng_state)
 
-    print(ts(), "Initialized with extra random values")
+    # print(ts(), "Initialized with extra random values")
 
     if low_memory:
     # if True:
@@ -735,15 +735,15 @@ def nn_descent(
             seed_per_row=seed_per_row,
         )
 
-    print(ts(), "Finished NN-Descent")
+    # print(ts(), "Finished NN-Descent")
 
     return deheap_sort(current_graph)
 
 
-@numba.njit()
+@numba.njit(parallel=True)
 def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
 
-    for i in range(indices.shape[0]):
+    for i in numba.prange(indices.shape[0]):
 
         new_indices = [indices[i, 0]]
         new_distances = [distances[i, 0]]

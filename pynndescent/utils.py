@@ -455,7 +455,7 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates, rng
     return candidate_neighbors
 
 
-@numba.njit()
+@numba.njit(parallel=True)
 def new_build_candidates(
     current_graph,
     n_vertices,
@@ -494,7 +494,7 @@ def new_build_candidates(
     new_candidate_neighbors = make_heap(n_vertices, max_candidates)
     old_candidate_neighbors = make_heap(n_vertices, max_candidates)
 
-    for i in range(n_vertices):
+    for i in numba.prange(n_vertices):
         if seed_per_row:
             seed(rng_state, i)
         for j in range(n_neighbors):
@@ -503,26 +503,37 @@ def new_build_candidates(
             idx = current_graph[0, i, j]
             isn = current_graph[2, i, j]
 
-            # d = current_graph[1, i, j]
+            d = current_graph[1, i, j]
 
-            d = tau_rand(rng_state)
+            # d = tau_rand(rng_state)
             # if tau_rand(rng_state) < rho:
 
-            if d < rho:
+            # if d < rho:
 
-            # if True:
-                c = 0
-                if isn:
-                    c += heap_push(new_candidate_neighbors, i, d, idx, isn)
-                    c += heap_push(new_candidate_neighbors, idx, d, i, isn)
-                else:
-                    heap_push(old_candidate_neighbors, i, d, idx, isn)
-                    heap_push(old_candidate_neighbors, idx, d, i, isn)
+
+            # c = 0
+            if isn:
+                # c += heap_push(new_candidate_neighbors, i, d, idx, isn)
+                # c += heap_push(new_candidate_neighbors, idx, d, i, isn)
+                heap_push(new_candidate_neighbors, i, d, idx, isn)
+                heap_push(new_candidate_neighbors, idx, d, i, isn)
+            else:
+                heap_push(old_candidate_neighbors, i, d, idx, isn)
+                heap_push(old_candidate_neighbors, idx, d, i, isn)
 
                 # This is slightly questionable; being added is not enough
                 # Being retained is what is required.
-                if c > 0:
+                # if c > 0:
+                #     current_graph[2, i, j] = 0
+
+    for i in numba.prange(n_vertices):
+        for j in range(n_neighbors):
+            idx = current_graph[0, i, j]
+
+            for k in range(max_candidates):
+                if new_candidate_neighbors[0, i, k] == idx:
                     current_graph[2, i, j] = 0
+                    break
 
     return new_candidate_neighbors, old_candidate_neighbors
 
