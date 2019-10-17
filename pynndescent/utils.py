@@ -494,7 +494,7 @@ def new_build_candidates(
     new_candidate_neighbors = make_heap(n_vertices, max_candidates)
     old_candidate_neighbors = make_heap(n_vertices, max_candidates)
 
-    for i in numba.prange(n_vertices):
+    for i in range(n_vertices):
         if seed_per_row:
             seed(rng_state, i)
         for j in range(n_neighbors):
@@ -503,9 +503,9 @@ def new_build_candidates(
             idx = current_graph[0, i, j]
             isn = current_graph[2, i, j]
 
-            d = current_graph[1, i, j]
+            # d = current_graph[1, i, j]
 
-            # d = tau_rand(rng_state)
+            d = tau_rand(rng_state)
             # if tau_rand(rng_state) < rho:
 
             # if d < rho:

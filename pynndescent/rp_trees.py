@@ -871,12 +871,21 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
         # ]
         # result = [make_tree(data, rng_state, leaf_size, angular) for i in range(n_trees)]
         if scipy.sparse.isspmatrix_csr(data):
-            result = [
-                make_sparse_tree(
-                    data.indices, data.indptr, data.data, rng_state, leaf_size, angular
-                )
+            # result = [
+            #     make_sparse_tree(
+            #         data.indices, data.indptr, data.data, rng_state, leaf_size, angular
+            #     )
+            #     for i in range(n_trees)
+            # ]
+            result = joblib.Parallel(n_jobs=-1, prefer="threads")(
+                joblib.delayed(make_sparse_tree)(data.indices,
+                                                 data.indptr,
+                                                 data.data,
+                                                 rng_state,
+                                                 leaf_size,
+                                                 angular)
                 for i in range(n_trees)
-            ]
+            )
         else:
             # result = dense_forest_parallel(data, n_trees, leaf_size, rng_state,
             #                                angular)

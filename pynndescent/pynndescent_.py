@@ -1022,7 +1022,7 @@ class NNDescent(object):
         random_state=None,
         algorithm="standard",
         low_memory=False,
-        max_candidates=20,
+        max_candidates=None,
         n_iters=None,
         delta=0.001,
         rho=0.5,
@@ -1106,6 +1106,11 @@ class NNDescent(object):
             self._rp_forest = None
             leaf_array = np.array([[-1]])
 
+        if self.max_candidates is None:
+            effective_max_candidates = 2 * self.n_neighbors
+        else:
+            effective_max_candidates = self.max_candidates
+
         if threaded.effective_n_jobs_with_context(n_jobs) != 1:
             if algorithm != "standard":
                 raise ValueError(
@@ -1133,7 +1138,7 @@ class NNDescent(object):
                     self._raw_data.shape[0],
                     self.n_neighbors,
                     self.rng_state,
-                    self.max_candidates,
+                    effective_max_candidates,
                     self._distance_func,
                     self._dist_args,
                     self.n_iters,
@@ -1152,7 +1157,7 @@ class NNDescent(object):
                     self._raw_data,
                     self.n_neighbors,
                     self.rng_state,
-                    self.max_candidates,
+                    effective_max_candidates,
                     self._distance_func,
                     self._dist_args,
                     self.n_iters,
@@ -1191,7 +1196,7 @@ class NNDescent(object):
                     self._raw_data.shape[0],
                     self.n_neighbors,
                     self.rng_state,
-                    self.max_candidates,
+                    effective_max_candidates,
                     rho=self.rho,
                     low_memory=self.low_memory,
                     sparse_dist=self._distance_func,
@@ -1213,7 +1218,7 @@ class NNDescent(object):
                     self._raw_data,
                     self.n_neighbors,
                     self.rng_state,
-                    self.max_candidates,
+                    effective_max_candidates,
                     self._distance_func,
                     self._dist_args,
                     self.n_iters,
@@ -1290,17 +1295,17 @@ class NNDescent(object):
         self._search_graph.eliminate_zeros()
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
-        # re-order graph and data according to a spectral embedding
-        random_state = check_random_state(self.random_state)
-        self._vertex_order = spectral_order(self._search_graph, random_state)
-
-        row_ordered_graph = self._search_graph[self._vertex_order, :]
-        self._search_graph = row_ordered_graph[:, self._vertex_order]
-        self._search_graph = self._search_graph.tocsr()
-        self._search_graph.sort_indices()
-
-        self._raw_data = self._raw_data[self._vertex_order, :]
-        fix_forest_indices(self._rp_forest, self._vertex_order)
+        # # re-order graph and data according to a spectral embedding
+        # random_state = check_random_state(self.random_state)
+        # self._vertex_order = spectral_order(self._search_graph, random_state)
+        #
+        # row_ordered_graph = self._search_graph[self._vertex_order, :]
+        # self._search_graph = row_ordered_graph[:, self._vertex_order]
+        # self._search_graph = self._search_graph.tocsr()
+        # self._search_graph.sort_indices()
+        #
+        # self._raw_data = self._raw_data[self._vertex_order, :]
+        # fix_forest_indices(self._rp_forest, self._vertex_order)
 
 
     @property
@@ -1420,8 +1425,8 @@ class NNDescent(object):
 
         indices, dists = deheap_sort(result)
         indices, dists = indices[:, :k], dists[:, :k]
-        # Sort to input data order
-        indices = self._vertex_order[indices]
+        # # Sort to input data order
+        # indices = self._vertex_order[indices]
 
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)
