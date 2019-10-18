@@ -661,7 +661,7 @@ def nn_descent_internal_high_memory_par(
         if c <= delta * n_neighbors * data.shape[0]:
             return
 
-@numba.njit()
+# @numba.njit()
 def nn_descent(
     data,
     n_neighbors,
@@ -680,7 +680,7 @@ def nn_descent(
 ):
     # tried = set([(-1, -1)])
 
-    # print(ts(), "Starting NN-Descent")
+    print(ts(), "Starting NN-Descent")
 
     current_graph = make_heap(data.shape[0], n_neighbors)
     # for i in range(data.shape[0]):
@@ -697,11 +697,11 @@ def nn_descent(
     if rp_tree_init:
         init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
 
-    # print(ts(), "Initialized from trees")
+    print(ts(), "Initialized from trees")
 
     init_random(n_neighbors, data, current_graph, dist, dist_args, rng_state)
 
-    # print(ts(), "Initialized with extra random values")
+    print(ts(), "Initialized with extra random values")
 
     if low_memory:
     # if True:
@@ -735,7 +735,7 @@ def nn_descent(
             seed_per_row=seed_per_row,
         )
 
-    # print(ts(), "Finished NN-Descent")
+    print(ts(), "Finished NN-Descent")
 
     return deheap_sort(current_graph)
 
@@ -1099,6 +1099,7 @@ class NNDescent(object):
                 n_trees,
                 leaf_size,
                 self.rng_state,
+                current_random_state,
                 self._angular_trees,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
@@ -1107,7 +1108,7 @@ class NNDescent(object):
             leaf_array = np.array([[-1]])
 
         if self.max_candidates is None:
-            effective_max_candidates = 2 * self.n_neighbors
+            effective_max_candidates = self.n_neighbors
         else:
             effective_max_candidates = self.max_candidates
 

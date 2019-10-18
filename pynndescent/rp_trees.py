@@ -18,6 +18,8 @@ locale.setlocale(locale.LC_NUMERIC, "C")
 
 # Used for a floating point "nearly zero" comparison
 EPS = 1e-8
+INT32_MIN = np.iinfo(np.int32).min + 1
+INT32_MAX = np.iinfo(np.int32).max - 1
 
 RandomProjectionTreeNode = namedtuple(
     "RandomProjectionTreeNode",
@@ -843,7 +845,8 @@ def search_sparse_flat_tree(
 #
 #     return result
 
-def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False):
+def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
+                random_state, angular=False):
     """Build a random projection forest with ``n_trees``.
 
     Parameters
@@ -864,6 +867,10 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
     result = []
     if leaf_size is None:
         leaf_size = max(10, n_neighbors)
+
+    rng_states = random_state.randint(INT32_MIN, INT32_MAX, size=(n_trees,
+                                                                  3)).astype(
+        np.int64)
     try:
         # result = [
         #     flatten_tree(make_tree(data, rng_state, leaf_size, angular), leaf_size)
@@ -881,7 +888,7 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
                 joblib.delayed(make_sparse_tree)(data.indices,
                                                  data.indptr,
                                                  data.data,
-                                                 rng_state,
+                                                 rng_states[i],
                                                  leaf_size,
                                                  angular)
                 for i in range(n_trees)
@@ -895,13 +902,9 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state, angular=False)
             # This works, but is suboptimal. Should use random
             # State / numpy to generate a set of rng_states
             # Commenting this out for now. TODO: FIX
-            # rng_states = np.ones((n_trees, 3), dtype=np.int64)
-            # for i in range(n_trees):
-            #     seed(rng_states[i], i)
-
             result = joblib.Parallel(n_jobs=-1, prefer="threads")(
                 joblib.delayed(make_dense_tree)(data,
-                                                rng_state,
+                                                rng_states[i],
                                                 leaf_size,
                                                 angular)
                 for i in range(n_trees)
