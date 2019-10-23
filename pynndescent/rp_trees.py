@@ -1040,14 +1040,54 @@ def num_nodes_and_leaves(tree):
 
     return n_nodes, n_leaves
 
-#@numba.njit()
-def convert_tree_format(tree):
-    n_nodes, n_leaves = num_nodes_and_leaves(tree)
-    print(n_nodes, n_leaves, len(tree.children))
-    hyperplane_dim = np.max([tree.hyperplanes[i].shape[0] for i in range(len(
-        tree.hyperplanes))])
+# #@numba.njit()
+# def convert_tree_format(tree):
+#     n_nodes, n_leaves = num_nodes_and_leaves(tree)
+#     print(n_nodes, n_leaves, len(tree.children))
+#     hyperplane_dim = np.max([tree.hyperplanes[i].shape[0] for i in range(len(
+#         tree.hyperplanes))])
+#
+#     hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
+#     offsets = np.zeros(n_nodes, dtype=np.float32)
+#     children = -1 * np.ones((n_nodes, 2), dtype=np.int64)
+#     indices = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
+#     recursive_convert(tree, hyperplanes, offsets, children, indices, 0, 0,
+#                       len(tree.children) - 1)
+#     return FlatTree(hyperplanes, offsets, children, indices, tree.leaf_size)
 
-    hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
+
+@numba.njit()
+def dense_hyperplane_dim(hyperplanes):
+    for i in range(len(hyperplanes)):
+        if hyperplanes[i].shape[0] > 1:
+            return hyperplanes[i].shape[0]
+    else:
+        raise ValueError("No hyperplanes of adequate size were found!")
+
+
+
+@numba.njit()
+def sparse_hyperplane_dim(hyperplanes):
+    max_dim = 0
+    for i in range(len(hyperplanes)):
+        if hyperplanes[i].shape[1] > max_dim:
+            max_dim = hyperplanes[i].shape[1]
+    return max_dim
+
+
+def convert_tree_format(tree):
+
+    n_nodes, n_leaves = num_nodes_and_leaves(tree)
+    if tree.hyperplanes[0].ndim == 1:
+        # dense hyperplanes
+        hyperplane_dim = dense_hyperplane_dim(tree.hyperplanes)
+        hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
+    else:
+        # sparse hyperplanes
+        hyperplane_dim = sparse_hyperplane_dim(tree.hyperplanes)
+        hyperplanes = np.zeros((n_nodes, 2, hyperplane_dim), dtype=np.float32)
+        hyperplanes[:, 0, :] = -1
+
     offsets = np.zeros(n_nodes, dtype=np.float32)
     children = -1 * np.ones((n_nodes, 2), dtype=np.int64)
     indices = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
