@@ -202,7 +202,7 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
     block_size = 65536
     n_blocks = n_leaves // block_size
 
-    for i in range(n_blocks):
+    for i in range(n_blocks + 1):
         block_start = i * block_size
         block_end = min(n_leaves, (i + 1) * block_size)
 
@@ -775,6 +775,48 @@ def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
     return indices, distances
 
 
+# def degree_prune(graph, max_degree=20):
+#     """Prune the k-neighbors graph back so that nodes have a maximum
+#     degree of ``max_degree``.
+#
+#     Parameters
+#     ----------
+#     graph: sparse matrix
+#         The adjacency matrix of the graph
+#
+#     max_degree: int (optional, default 20)
+#         The maximum degree of any node in the pruned graph
+#
+#     Returns
+#     -------
+#     result: sparse matrix
+#         The pruned graph.
+#     """
+#
+#     result = graph.tolil()
+#     for i, row_data in enumerate(result.data):
+#         if len(row_data) > max_degree:
+#             cut_value = np.sort(row_data)[max_degree]
+#             row_data = [x if x <= cut_value else 0.0 for x in row_data]
+#             result.data[i] = row_data
+#     result = result.tocsr()
+#     result.eliminate_zeros()
+#     return result
+
+@numba.njit(parallel=True)
+def degree_prune_internal(indptr, data, max_degree=20):
+
+    for i in numba.prange(indptr.shape[0] - 1):
+        row_data = data[indptr[i] : indptr[i + 1]]
+        if row_data.shape[0] > max_degree:
+            cut_value = np.sort(row_data)[max_degree]
+            for j in range(indptr[i], indptr[i + 1]):
+                if data[j] > cut_value:
+                    data[j] = 0.0
+
+    return
+
+
 def degree_prune(graph, max_degree=20):
     """Prune the k-neighbors graph back so that nodes have a maximum
     degree of ``max_degree``.
@@ -792,85 +834,79 @@ def degree_prune(graph, max_degree=20):
     result: sparse matrix
         The pruned graph.
     """
-
-    result = graph.tolil()
-    for i, row_data in enumerate(result.data):
-        if len(row_data) > max_degree:
-            cut_value = np.sort(row_data)[max_degree]
-            row_data = [x if x <= cut_value else 0.0 for x in row_data]
-            result.data[i] = row_data
-    result = result.tocsr()
-    result.eliminate_zeros()
-    return result
-
-import scipy.sparse
-import scipy.sparse.linalg
-
-def spectral_embedding(graph, random_state):
-
-    dim = 1
-    n_samples = graph.shape[0]
-
-    diag_data = np.asarray(graph.sum(axis=0))
-    # standard Laplacian
-    # D = scipy.sparse.spdiags(diag_data, 0, graph.shape[0], graph.shape[0])
-    # L = D - graph
-    # Normalized Laplacian
-    I = scipy.sparse.identity(graph.shape[0], dtype=np.float64)
-    D = scipy.sparse.spdiags(
-        1.0 / np.sqrt(diag_data), 0, graph.shape[0], graph.shape[0]
-    )
-    L = I - D * graph * D
-
-    k = dim + 1
-    num_lanczos_vectors = max(2 * k + 1, int(np.sqrt(graph.shape[0])))
-    try:
-        if L.shape[0] < 2000000:
-            eigenvalues, eigenvectors = scipy.sparse.linalg.eigsh(
-                L,
-                k,
-                which="SM",
-                ncv=num_lanczos_vectors,
-                tol=1e-4,
-                v0=np.ones(L.shape[0]),
-                maxiter=graph.shape[0] * 5,
-            )
-        else:
-            eigenvalues, eigenvectors = scipy.sparse.linalg.lobpcg(
-                L, random_state.normal(size=(L.shape[0], k)), largest=False, tol=1e-8
-            )
-        order = np.argsort(eigenvalues)[1:k]
-        return eigenvectors[:, order]
-    except scipy.sparse.linalg.ArpackError:
-        warn(
-            "WARNING: spectral initialisation failed! The eigenvector solver\n"
-            "failed. This is likely due to too small an eigengap. Consider\n"
-            "adding some noise or jitter to your data.\n\n"
-            "Falling back to random initialisation!"
-        )
-        return random_state.uniform(low=-10.0, high=10.0, size=(graph.shape[0], dim))
+    degree_prune_internal(graph.indptr, graph.data, max_degree)
+    graph.eliminate_zeros()
+    return graph
 
 
-def spectral_order(search_graph, random_state):
-    sym_graph = search_graph + search_graph.T
-    embedding = spectral_embedding(sym_graph, random_state)
-    return np.argsort(embedding.T[0])
-
-
-@numba.njit()
-def fix_tree_indices(indices, order_map):
-    for i in range(indices.shape[0]):
-        for j in range(indices.shape[1]):
-            if indices[i, j] >= 0:
-                indices[i, j] = order_map[indices[i, j]]
-    return
-
-
-def fix_forest_indices(rp_forest, vertex_order):
-    order_map = np.argsort(vertex_order)
-    for tree in rp_forest:
-        fix_tree_indices(tree.indices, order_map)
-    return
+# import scipy.sparse
+# import scipy.sparse.linalg
+#
+# def spectral_embedding(graph, random_state):
+#
+#     dim = 1
+#     n_samples = graph.shape[0]
+#
+#     diag_data = np.asarray(graph.sum(axis=0))
+#     # standard Laplacian
+#     # D = scipy.sparse.spdiags(diag_data, 0, graph.shape[0], graph.shape[0])
+#     # L = D - graph
+#     # Normalized Laplacian
+#     I = scipy.sparse.identity(graph.shape[0], dtype=np.float64)
+#     D = scipy.sparse.spdiags(
+#         1.0 / np.sqrt(diag_data), 0, graph.shape[0], graph.shape[0]
+#     )
+#     L = I - D * graph * D
+#
+#     k = dim + 1
+#     num_lanczos_vectors = max(2 * k + 1, int(np.sqrt(graph.shape[0])))
+#     try:
+#         if L.shape[0] < 2000000:
+#             eigenvalues, eigenvectors = scipy.sparse.linalg.eigsh(
+#                 L,
+#                 k,
+#                 which="SM",
+#                 ncv=num_lanczos_vectors,
+#                 tol=1e-4,
+#                 v0=np.ones(L.shape[0]),
+#                 maxiter=graph.shape[0] * 5,
+#             )
+#         else:
+#             eigenvalues, eigenvectors = scipy.sparse.linalg.lobpcg(
+#                 L, random_state.normal(size=(L.shape[0], k)), largest=False, tol=1e-8
+#             )
+#         order = np.argsort(eigenvalues)[1:k]
+#         return eigenvectors[:, order]
+#     except scipy.sparse.linalg.ArpackError:
+#         warn(
+#             "WARNING: spectral initialisation failed! The eigenvector solver\n"
+#             "failed. This is likely due to too small an eigengap. Consider\n"
+#             "adding some noise or jitter to your data.\n\n"
+#             "Falling back to random initialisation!"
+#         )
+#         return random_state.uniform(low=-10.0, high=10.0, size=(graph.shape[0], dim))
+#
+#
+# def spectral_order(search_graph, random_state):
+#     sym_graph = search_graph + search_graph.T
+#     embedding = spectral_embedding(sym_graph, random_state)
+#     return np.argsort(embedding.T[0])
+#
+#
+# @numba.njit()
+# def fix_tree_indices(indices, order_map):
+#     for i in range(indices.shape[0]):
+#         for j in range(indices.shape[1]):
+#             if indices[i, j] >= 0:
+#                 indices[i, j] = order_map[indices[i, j]]
+#     return
+#
+#
+# def fix_forest_indices(rp_forest, vertex_order):
+#     order_map = np.argsort(vertex_order)
+#     for tree in rp_forest:
+#         fix_tree_indices(tree.indices, order_map)
+#     return
 
 
 class NNDescent(object):
