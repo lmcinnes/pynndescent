@@ -45,7 +45,8 @@ FLOAT32_EPS = np.finfo(np.float32).eps
 def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
     for i in range(query_points.shape[0]):
         if heap[0, i, 0] == -1:
-            for j in range(n_neighbors):
+            # for j in range(n_neighbors):
+            for j in range(np.sum(heap[0, i] == -1)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], query_points[i], *dist_args)
                 heap_push(heap, i, d, idx, 1)
@@ -135,20 +136,20 @@ def initialized_nnd_search(
     return initialization
 
 
-@numba.njit(fastmath=True)
-def init_current_graph(
-    data, dist, dist_args, n_neighbors, rng_state, seed_per_row=False
-):
-    current_graph = make_heap(data.shape[0], n_neighbors)
-    for i in range(data.shape[0]):
-        if seed_per_row:
-            seed(rng_state, i)
-        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-        for j in range(indices.shape[0]):
-            d = dist(data[i], data[indices[j]], *dist_args)
-            heap_push(current_graph, i, d, indices[j], 1)
-            heap_push(current_graph, indices[j], d, i, 1)
-    return current_graph
+# @numba.njit(fastmath=True)
+# def init_current_graph(
+#     data, dist, dist_args, n_neighbors, rng_state, seed_per_row=False
+# ):
+#     current_graph = make_heap(data.shape[0], n_neighbors)
+#     for i in range(data.shape[0]):
+#         if seed_per_row:
+#             seed(rng_state, i)
+#         indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
+#         for j in range(indices.shape[0]):
+#             d = dist(data[i], data[indices[j]], *dist_args)
+#             heap_push(current_graph, i, d, indices[j], 1)
+#             heap_push(current_graph, indices[j], d, i, 1)
+#     return current_graph
 
 
 # @numba.njit(parallel=True, cache=True)
@@ -277,169 +278,169 @@ def init_random(n_neighbors, data, heap, dist, dist_args, rng_state):
     return
 
 
-@numba.njit(fastmath=True)
-def nn_descent_internal_low_memory(
-    current_graph,
-    data,
-    n_neighbors,
-    rng_state,
-    max_candidates=50,
-    dist=dist.euclidean,
-    dist_args=(),
-    n_iters=10,
-    delta=0.001,
-    rho=0.5,
-    verbose=False,
-    seed_per_row=False,
-):
-    n_vertices = data.shape[0]
-
-    for n in range(n_iters):
-        if verbose:
-            print("\t", n, " / ", n_iters)
-
-        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph,
-            n_vertices,
-            n_neighbors,
-            max_candidates,
-            rng_state,
-            rho,
-            seed_per_row,
-        )
-
-        c = 0
-        for i in range(n_vertices):
-            for j in range(max_candidates):
-                p = int(new_candidate_neighbors[0, i, j])
-                if p < 0:
-                    continue
-                for k in range(j, max_candidates):
-                    q = int(new_candidate_neighbors[0, i, k])
-                    if q < 0:
-                        continue
-
-                    d = dist(data[p], data[q], *dist_args)
-                    c += heap_push(current_graph, p, d, q, 1)
-                    if p != q:
-                        c += heap_push(current_graph, q, d, p, 1)
-
-                for k in range(max_candidates):
-                    q = int(old_candidate_neighbors[0, i, k])
-                    if q < 0:
-                        continue
-
-                    d = dist(data[p], data[q], *dist_args)
-                    c += heap_push(current_graph, p, d, q, 1)
-                    if p != q:
-                        c += heap_push(current_graph, q, d, p, 1)
-
-        if c <= delta * n_neighbors * data.shape[0]:
-            return
-
-
-@numba.njit(fastmath=True)
-def nn_descent_internal_high_memory(
-    current_graph,
-    data,
-    n_neighbors,
-    rng_state,
-    max_candidates=50,
-    dist=dist.euclidean,
-    dist_args=(),
-    n_iters=10,
-    delta=0.001,
-    rho=0.5,
-    verbose=False,
-    seed_per_row=False,
-):
-    n_vertices = data.shape[0]
-
-    # tried = set([(-1, -1)])
-    in_graph = [set(current_graph[0, i]) for i in range(current_graph.shape[1])]
-
-    for n in range(n_iters):
-        # print("Starting iter", n)
-        if verbose:
-            print("\t", n, " / ", n_iters)
-
-        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph,
-            n_vertices,
-            n_neighbors,
-            max_candidates,
-            rng_state,
-            rho,
-            seed_per_row,
-        )
-
-        c = 0
-        for i in range(n_vertices):
-            for j in range(max_candidates):
-                p = int(new_candidate_neighbors[0, i, j])
-                if p < 0:
-                    continue
-                for k in range(j, max_candidates):
-                    q = int(new_candidate_neighbors[0, i, k])
-                    # if q < 0 or (p, q) in tried:
-                    #     continue
-                    if q < 0:
-                        continue
-
-                    if q in in_graph[p] and p in in_graph[q]:
-                        continue
-
-                    d = dist(data[p], data[q], *dist_args)
-                    if q in in_graph[p]:
-                        pass
-                    else:
-                        added = unchecked_heap_push(current_graph, p, d, q, 1)
-                        # tried.add((p, q))
-                        if added > 0:
-                            in_graph[p].add(q)
-                            c += added
-
-                    if p == q or p in in_graph[q]:
-                        pass
-                    else:
-                        added = unchecked_heap_push(current_graph, q, d, p, 1)
-                        # tried.add((q, p))
-                        if added > 0:
-                            in_graph[q].add(p)
-                            c += added
-
-                for k in range(max_candidates):
-                    q = int(old_candidate_neighbors[0, i, k])
-                    # if q < 0 or (p, q) in tried:
-                    #     continue
-                    if q < 0:
-                        continue
-
-                    if q in in_graph[p] and p in in_graph[q]:
-                        continue
-
-                    d = dist(data[p], data[q], *dist_args)
-                    if q in in_graph[p]:
-                        pass
-                    else:
-                        added = unchecked_heap_push(current_graph, p, d, q, 1)
-                        # tried.add((p, q))
-                        if added > 0:
-                            in_graph[p].add(q)
-                            c += added
-
-                    if p == q or p in in_graph[q]:
-                        pass
-                    else:
-                        added = unchecked_heap_push(current_graph, q, d, p, 1)
-                        # tried.add((q, p))
-                        if added > 0:
-                            in_graph[q].add(p)
-                            c += added
-
-        # print("Finished iter n:", c, delta * n_neighbors * data.shape[0])
-        if c <= delta * n_neighbors * data.shape[0]:
-            return
+# @numba.njit(fastmath=True)
+# def nn_descent_internal_low_memory(
+#     current_graph,
+#     data,
+#     n_neighbors,
+#     rng_state,
+#     max_candidates=50,
+#     dist=dist.euclidean,
+#     dist_args=(),
+#     n_iters=10,
+#     delta=0.001,
+#     rho=0.5,
+#     verbose=False,
+#     seed_per_row=False,
+# ):
+#     n_vertices = data.shape[0]
+#
+#     for n in range(n_iters):
+#         if verbose:
+#             print("\t", n, " / ", n_iters)
+#
+#         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
+#             current_graph,
+#             n_vertices,
+#             n_neighbors,
+#             max_candidates,
+#             rng_state,
+#             rho,
+#             seed_per_row,
+#         )
+#
+#         c = 0
+#         for i in range(n_vertices):
+#             for j in range(max_candidates):
+#                 p = int(new_candidate_neighbors[0, i, j])
+#                 if p < 0:
+#                     continue
+#                 for k in range(j, max_candidates):
+#                     q = int(new_candidate_neighbors[0, i, k])
+#                     if q < 0:
+#                         continue
+#
+#                     d = dist(data[p], data[q], *dist_args)
+#                     c += heap_push(current_graph, p, d, q, 1)
+#                     if p != q:
+#                         c += heap_push(current_graph, q, d, p, 1)
+#
+#                 for k in range(max_candidates):
+#                     q = int(old_candidate_neighbors[0, i, k])
+#                     if q < 0:
+#                         continue
+#
+#                     d = dist(data[p], data[q], *dist_args)
+#                     c += heap_push(current_graph, p, d, q, 1)
+#                     if p != q:
+#                         c += heap_push(current_graph, q, d, p, 1)
+#
+#         if c <= delta * n_neighbors * data.shape[0]:
+#             return
+#
+#
+# @numba.njit(fastmath=True)
+# def nn_descent_internal_high_memory(
+#     current_graph,
+#     data,
+#     n_neighbors,
+#     rng_state,
+#     max_candidates=50,
+#     dist=dist.euclidean,
+#     dist_args=(),
+#     n_iters=10,
+#     delta=0.001,
+#     rho=0.5,
+#     verbose=False,
+#     seed_per_row=False,
+# ):
+#     n_vertices = data.shape[0]
+#
+#     # tried = set([(-1, -1)])
+#     in_graph = [set(current_graph[0, i]) for i in range(current_graph.shape[1])]
+#
+#     for n in range(n_iters):
+#         # print("Starting iter", n)
+#         if verbose:
+#             print("\t", n, " / ", n_iters)
+#
+#         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
+#             current_graph,
+#             n_vertices,
+#             n_neighbors,
+#             max_candidates,
+#             rng_state,
+#             rho,
+#             seed_per_row,
+#         )
+#
+#         c = 0
+#         for i in range(n_vertices):
+#             for j in range(max_candidates):
+#                 p = int(new_candidate_neighbors[0, i, j])
+#                 if p < 0:
+#                     continue
+#                 for k in range(j, max_candidates):
+#                     q = int(new_candidate_neighbors[0, i, k])
+#                     # if q < 0 or (p, q) in tried:
+#                     #     continue
+#                     if q < 0:
+#                         continue
+#
+#                     if q in in_graph[p] and p in in_graph[q]:
+#                         continue
+#
+#                     d = dist(data[p], data[q], *dist_args)
+#                     if q in in_graph[p]:
+#                         pass
+#                     else:
+#                         added = unchecked_heap_push(current_graph, p, d, q, 1)
+#                         # tried.add((p, q))
+#                         if added > 0:
+#                             in_graph[p].add(q)
+#                             c += added
+#
+#                     if p == q or p in in_graph[q]:
+#                         pass
+#                     else:
+#                         added = unchecked_heap_push(current_graph, q, d, p, 1)
+#                         # tried.add((q, p))
+#                         if added > 0:
+#                             in_graph[q].add(p)
+#                             c += added
+#
+#                 for k in range(max_candidates):
+#                     q = int(old_candidate_neighbors[0, i, k])
+#                     # if q < 0 or (p, q) in tried:
+#                     #     continue
+#                     if q < 0:
+#                         continue
+#
+#                     if q in in_graph[p] and p in in_graph[q]:
+#                         continue
+#
+#                     d = dist(data[p], data[q], *dist_args)
+#                     if q in in_graph[p]:
+#                         pass
+#                     else:
+#                         added = unchecked_heap_push(current_graph, p, d, q, 1)
+#                         # tried.add((p, q))
+#                         if added > 0:
+#                             in_graph[p].add(q)
+#                             c += added
+#
+#                     if p == q or p in in_graph[q]:
+#                         pass
+#                     else:
+#                         added = unchecked_heap_push(current_graph, q, d, p, 1)
+#                         # tried.add((q, p))
+#                         if added > 0:
+#                             in_graph[q].add(p)
+#                             c += added
+#
+#         # print("Finished iter n:", c, delta * n_neighbors * data.shape[0])
+#         if c <= delta * n_neighbors * data.shape[0]:
+#             return
 
 
 
@@ -521,7 +522,28 @@ def generate_graph_updates(
 
 
 @numba.njit()
-def apply_graph_updates(current_graph, updates, in_graph):
+def apply_graph_updates_low_memory(current_graph, updates):
+
+    n_changes = 0
+
+    for i in range(len(updates)):
+        for j in range(len(updates[i])):
+            p, q, d = updates[i][j]
+
+            if p == -1 or q == -1:
+                continue
+
+            added = heap_push(current_graph, p, d, q, 1)
+            n_changes += added
+
+            added = heap_push(current_graph, q, d, p, 1)
+            n_changes += added
+
+    return n_changes
+
+
+@numba.njit()
+def apply_graph_updates_high_memory(current_graph, updates, in_graph):
 
     n_changes = 0
 
@@ -556,7 +578,69 @@ def apply_graph_updates(current_graph, updates, in_graph):
 
 
 @numba.njit()
-def nn_descent_internal_high_memory_par(
+def nn_descent_internal_low_memory_parallel(
+    current_graph,
+    data,
+    n_neighbors,
+    rng_state,
+    max_candidates=50,
+    dist=dist.euclidean,
+    dist_args=(),
+    n_iters=10,
+    delta=0.001,
+    rho=0.5,
+    verbose=False,
+    seed_per_row=False,
+):
+    n_vertices = data.shape[0]
+    block_size = 16384
+    n_blocks = n_vertices // block_size
+
+    for n in range(n_iters):
+        print("Starting iter", n)
+        if verbose:
+            print("\t", n, " / ", n_iters)
+
+        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
+            current_graph,
+            n_vertices,
+            n_neighbors,
+            max_candidates,
+            rng_state,
+            rho,
+            seed_per_row,
+        )
+
+        c = 0
+        for i in range(n_blocks + 1):
+            block_start = i * block_size
+            block_end = min(n_vertices, (i + 1) * block_size)
+
+            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
+            dist_thresholds = current_graph[1, :, 0]
+
+            updates = generate_graph_updates(
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                dist,
+                dist_args,
+            )
+
+            c += apply_graph_updates_low_memory(
+                current_graph,
+                updates,
+            )
+
+        print("Finished iter", n, ":", c, delta * n_neighbors * data.shape[0])
+        if c <= delta * n_neighbors * data.shape[0]:
+            return
+
+
+@numba.njit()
+def nn_descent_internal_high_memory_parallel(
     current_graph,
     data,
     n_neighbors,
@@ -624,7 +708,7 @@ def nn_descent_internal_high_memory_par(
             #     in_graph,
             # )
 
-            c += apply_graph_updates(
+            c += apply_graph_updates_high_memory(
                 current_graph,
                 updates,
                 in_graph,
@@ -705,7 +789,7 @@ def nn_descent(
 
     if low_memory:
     # if True:
-        nn_descent_internal_low_memory(
+        nn_descent_internal_low_memory_parallel(
             current_graph,
             data,
             n_neighbors,
@@ -720,7 +804,7 @@ def nn_descent(
             seed_per_row=seed_per_row,
         )
     else:
-        nn_descent_internal_high_memory_par(
+        nn_descent_internal_high_memory_parallel(
             current_graph,
             data,
             n_neighbors,
