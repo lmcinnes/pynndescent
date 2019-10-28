@@ -836,17 +836,9 @@ def search_sparse_flat_tree(
 
     return indices[node]
 
-# @numba.njit(parallel=True, cache=True)
-# def dense_forest_parallel(data, n_trees, leaf_size, rng_state, angular=False):
-#     result = []
-#     for i in numba.prange(n_trees):
-#         tree = make_dense_tree(data, rng_state, leaf_size, angular)
-#         result.append(tree)
-#
-#     return result
 
 def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
-                random_state, angular=False):
+                random_state, n_jobs=None, angular=False):
     """Build a random projection forest with ``n_trees``.
 
     Parameters
@@ -863,27 +855,18 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
     forest: list
         A list of random projection trees.
     """
-    print(ts(), "Started forest construction")
+    # print(ts(), "Started forest construction")
     result = []
     if leaf_size is None:
         leaf_size = max(10, n_neighbors)
+    if n_jobs is None:
+        n_jobs = -1
 
     rng_states = random_state.randint(INT32_MIN, INT32_MAX, size=(n_trees,
                                                                   3)).astype(
         np.int64)
     try:
-        # result = [
-        #     flatten_tree(make_tree(data, rng_state, leaf_size, angular), leaf_size)
-        #     for i in range(n_trees)
-        # ]
-        # result = [make_tree(data, rng_state, leaf_size, angular) for i in range(n_trees)]
         if scipy.sparse.isspmatrix_csr(data):
-            # result = [
-            #     make_sparse_tree(
-            #         data.indices, data.indptr, data.data, rng_state, leaf_size, angular
-            #     )
-            #     for i in range(n_trees)
-            # ]
             result = joblib.Parallel(n_jobs=-1, prefer="threads")(
                 joblib.delayed(make_sparse_tree)(data.indices,
                                                  data.indptr,
@@ -894,14 +877,6 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
                 for i in range(n_trees)
             )
         else:
-            # result = dense_forest_parallel(data, n_trees, leaf_size, rng_state,
-            #                                angular)
-            # result = [make_dense_tree(data, rng_state, leaf_size, angular) for i in range(
-            # n_trees)]
-
-            # This works, but is suboptimal. Should use random
-            # State / numpy to generate a set of rng_states
-            # Commenting this out for now. TODO: FIX
             result = joblib.Parallel(n_jobs=-1, prefer="threads")(
                 joblib.delayed(make_dense_tree)(data,
                                                 rng_states[i],
@@ -916,7 +891,6 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
             "data, and this may take longer than normal to compute."
         )
 
-    print(ts(), "Completed forest construction")
     return tuple(result)
 
 
