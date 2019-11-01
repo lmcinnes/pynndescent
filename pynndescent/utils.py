@@ -119,17 +119,17 @@ def make_heap(n_points, size):
     neighbors sorted by their distance. We also flag if potential neighbors
     are newly added to the list or not. Internally this is stored as
     a single ndarray; the first axis determines whether we are looking at the
-    array of candidate indices, the array of distances, or the flag array for
+    array of candidate graph_indices, the array of distances, or the flag array for
     whether elements are new or not. Each of these arrays are of shape
     (``n_points``, ``size``)
 
     Parameters
     ----------
     n_points: int
-        The number of data points to track in the heap.
+        The number of graph_data points to track in the heap.
 
     size: int
-        The number of items to keep on the heap for each data point.
+        The number of items to keep on the heap for each graph_data point.
 
     Returns
     -------
@@ -146,7 +146,7 @@ def make_heap(n_points, size):
 @numba.jit("i8(f8[:,:,:],i8,f8,i8,i8)")
 def heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
-    for each data point. The ``row`` parameter determines which data point we
+    for each graph_data point. The ``row`` parameter determines which graph_data point we
     are addressing, the ``weight`` determines the distance (for heap sorting),
     the ``index`` is the element to add, and the flag determines whether this
     is to be considered a new addition.
@@ -230,7 +230,7 @@ def heap_push(heap, row, weight, index, flag):
 @numba.jit("i8(f8[:,:,:],i8,f8,i8,i8)")
 def unchecked_heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
-    for each data point. The ``row`` parameter determines which data point we
+    for each graph_data point. The ``row`` parameter determines which graph_data point we
     are addressing, the ``weight`` determines the distance (for heap sorting),
     the ``index`` is the element to add, and the flag determines whether this
     is to be considered a new addition.
@@ -331,10 +331,10 @@ def siftdown(heap1, heap2, elt):
 
 @numba.njit()
 def deheap_sort(heap):
-    """Given an array of heaps (of indices and weights), unpack the heap
-    out to give and array of sorted lists of indices and weights by increasing
+    """Given an array of heaps (of graph_indices and weights), unpack the heap
+    out to give and array of sorted lists of graph_indices and weights by increasing
     weight. This is effectively just the second half of heap sort (the first
-    half not being required since we already have the data in a heap).
+    half not being required since we already have the graph_data in a heap).
 
     Parameters
     ----------
@@ -343,8 +343,8 @@ def deheap_sort(heap):
 
     Returns
     -------
-    indices, weights: arrays of shape (n_samples, n_neighbors)
-        The indices and weights sorted by increasing weight.
+    graph_indices, weights: arrays of shape (n_samples, n_neighbors)
+        The graph_indices and weights sorted by increasing weight.
     """
     indices = heap[0]
     weights = heap[1]

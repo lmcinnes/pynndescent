@@ -11,6 +11,7 @@ import heapq
 
 from pynndescent.utils import (
     tau_rand,
+    tau_rand_int,
     make_heap,
     heap_push,
     unchecked_heap_push,
@@ -319,20 +320,19 @@ def sparse_init_from_random(
     dist_args,
 ):
     for i in range(query_indptr.shape[0] - 1):
-        indices = rejection_sample(n_neighbors, indptr.shape[0] - 1, rng_state)
+        if heap[0, i, 0] == -1:
 
-        to_inds = query_inds[query_indptr[i] : query_indptr[i + 1]]
-        to_data = query_data[query_indptr[i] : query_indptr[i + 1]]
+            to_inds = query_inds[query_indptr[i] : query_indptr[i + 1]]
+            to_data = query_data[query_indptr[i] : query_indptr[i + 1]]
 
-        for j in range(indices.shape[0]):
-            if indices[j] < 0:
-                continue
+            for j in range(np.sum(heap[0, i] == -1)):
+                idx = np.abs(tau_rand_int(rng_state)) % (indptr.shape[0] - 1)
 
-            from_inds = inds[indptr[indices[j]] : indptr[indices[j] + 1]]
-            from_data = data[indptr[indices[j]] : indptr[indices[j] + 1]]
+                from_inds = inds[indptr[idx] : indptr[idx + 1]]
+                from_data = data[indptr[idx] : indptr[idx + 1]]
 
-            d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
-            heap_push(heap, i, d, indices[j], 1)
+                d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                heap_push(heap, i, d, idx, 1)
     return
 
 
@@ -366,20 +366,19 @@ def sparse_init_from_tree(
         )
 
         for j in range(indices.shape[0]):
-            if indices[j] < 0:
-                continue
-            from_inds = inds[indptr[indices[j]] : indptr[indices[j] + 1]]
-            from_data = data[indptr[indices[j]] : indptr[indices[j] + 1]]
+            if indices[j] >= 0:
+                from_inds = inds[indptr[indices[j]] : indptr[indices[j] + 1]]
+                from_data = data[indptr[indices[j]] : indptr[indices[j] + 1]]
 
-            d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
-            heap_push(heap, i, d, indices[j], 1)
+                d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                heap_push(heap, i, d, indices[j], 1)
 
     return
 
 
-@numba.njit()
 def sparse_initialise_search(
     forest,
+    n_search_trees,
     inds,
     indptr,
     data,
@@ -392,21 +391,9 @@ def sparse_initialise_search(
     dist_args,
 ):
     results = make_heap(query_indptr.shape[0] - 1, n_neighbors)
-    sparse_init_from_random(
-        n_neighbors,
-        inds,
-        indptr,
-        data,
-        query_inds,
-        query_indptr,
-        query_data,
-        results,
-        rng_state,
-        sparse_dist,
-        dist_args,
-    )
     if forest is not None:
-        for tree in forest:
+        for i in range(n_search_trees):
+            tree = forest[i]
             sparse_init_from_tree(
                 tree,
                 inds,
@@ -420,56 +407,21 @@ def sparse_initialise_search(
                 sparse_dist,
                 dist_args,
             )
+    sparse_init_from_random(
+        n_neighbors,
+        inds,
+        indptr,
+        data,
+        query_inds,
+        query_indptr,
+        query_data,
+        results,
+        rng_state,
+        sparse_dist,
+        dist_args,
+    )
 
     return results
-
-
-@numba.njit(parallel=True)
-def sparse_initialized_nnd_search(
-    inds,
-    indptr,
-    data,
-    search_indptr,
-    search_inds,
-    initialization,
-    query_inds,
-    query_indptr,
-    query_data,
-    sparse_dist,
-    dist_args,
-):
-    for i in numba.prange(query_indptr.shape[0] - 1):
-
-        tried = set(initialization[0, i])
-
-        to_inds = query_inds[query_indptr[i] : query_indptr[i + 1]]
-        to_data = query_data[query_indptr[i] : query_indptr[i + 1]]
-
-        while True:
-
-            # Find smallest flagged vertex
-            vertex = smallest_flagged(initialization, i)
-
-            if vertex == -1:
-                break
-            candidates = search_inds[search_indptr[vertex] : search_indptr[vertex + 1]]
-
-            for j in range(candidates.shape[0]):
-                if (
-                    candidates[j] == vertex
-                    or candidates[j] == -1
-                    or candidates[j] in tried
-                ):
-                    continue
-
-                from_inds = inds[indptr[candidates[j]] : indptr[candidates[j] + 1]]
-                from_data = data[indptr[candidates[j]] : indptr[candidates[j] + 1]]
-
-                d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
-                unchecked_heap_push(initialization, i, d, candidates[j], 1)
-                tried.add(candidates[j])
-
-    return initialization
 
 
 @numba.njit(fastmath=True, locals={"candidate": numba.types.int64})

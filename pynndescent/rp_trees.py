@@ -23,7 +23,7 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 RandomProjectionTreeNode = namedtuple(
     "RandomProjectionTreeNode",
-    ["indices", "is_leaf", "hyperplane", "offset", "left_child", "right_child"],
+    ["graph_indices", "is_leaf", "hyperplane", "offset", "left_child", "right_child"],
 )
 
 FlatTree = namedtuple(
@@ -39,28 +39,28 @@ point_indices_type = numba.int64[::1]
 
 @numba.njit(fastmath=True, nogil=True, cache=True)
 def angular_random_projection_split(data, indices, rng_state):
-    """Given a set of ``indices`` for data points from ``data``, create
-    a random hyperplane to split the data, returning two arrays indices
+    """Given a set of ``graph_indices`` for graph_data points from ``graph_data``, create
+    a random hyperplane to split the graph_data, returning two arrays graph_indices
     that fall on either side of the hyperplane. This is the basis for a
     random projection tree, which simply uses this splitting recursively.
     This particular split uses cosine distance to determine the hyperplane
-    and which side each data sample falls on.
+    and which side each graph_data sample falls on.
     Parameters
     ----------
     data: array of shape (n_samples, n_features)
-        The original data to be split
+        The original graph_data to be split
     indices: array of shape (tree_node_size,)
-        The indices of the elements in the ``data`` array that are to
+        The graph_indices of the elements in the ``graph_data`` array that are to
         be split in the current operation.
     rng_state: array of int64, shape (3,)
         The internal state of the rng
     Returns
     -------
     indices_left: array
-        The elements of ``indices`` that fall on the "left" side of the
+        The elements of ``graph_indices`` that fall on the "left" side of the
         random hyperplane.
     indices_right: array
-        The elements of ``indices`` that fall on the "left" side of the
+        The elements of ``graph_indices`` that fall on the "left" side of the
         random hyperplane.
     """
     dim = data.shape[1]
@@ -126,7 +126,7 @@ def angular_random_projection_split(data, indices, rng_state):
     indices_left = np.empty(n_left, dtype=np.int64)
     indices_right = np.empty(n_right, dtype=np.int64)
 
-    # Populate the arrays with indices according to which side they fell on
+    # Populate the arrays with graph_indices according to which side they fell on
     n_left = 0
     n_right = 0
     for i in range(side.shape[0]):
@@ -142,28 +142,28 @@ def angular_random_projection_split(data, indices, rng_state):
 
 @numba.njit(fastmath=True, nogil=True, cache=True)
 def euclidean_random_projection_split(data, indices, rng_state):
-    """Given a set of ``indices`` for data points from ``data``, create
-    a random hyperplane to split the data, returning two arrays indices
+    """Given a set of ``graph_indices`` for graph_data points from ``graph_data``, create
+    a random hyperplane to split the graph_data, returning two arrays graph_indices
     that fall on either side of the hyperplane. This is the basis for a
     random projection tree, which simply uses this splitting recursively.
     This particular split uses euclidean distance to determine the hyperplane
-    and which side each data sample falls on.
+    and which side each graph_data sample falls on.
     Parameters
     ----------
     data: array of shape (n_samples, n_features)
-        The original data to be split
+        The original graph_data to be split
     indices: array of shape (tree_node_size,)
-        The indices of the elements in the ``data`` array that are to
+        The graph_indices of the elements in the ``graph_data`` array that are to
         be split in the current operation.
     rng_state: array of int64, shape (3,)
         The internal state of the rng
     Returns
     -------
     indices_left: array
-        The elements of ``indices`` that fall on the "left" side of the
+        The elements of ``graph_indices`` that fall on the "left" side of the
         random hyperplane.
     indices_right: array
-        The elements of ``indices`` that fall on the "left" side of the
+        The elements of ``graph_indices`` that fall on the "left" side of the
         random hyperplane.
     """
     dim = data.shape[1]
@@ -215,7 +215,7 @@ def euclidean_random_projection_split(data, indices, rng_state):
     indices_left = np.empty(n_left, dtype=np.int64)
     indices_right = np.empty(n_right, dtype=np.int64)
 
-    # Populate the arrays with indices according to which side they fell on
+    # Populate the arrays with graph_indices according to which side they fell on
     n_left = 0
     n_right = 0
     for i in range(side.shape[0]):
@@ -231,13 +231,13 @@ def euclidean_random_projection_split(data, indices, rng_state):
 
 @numba.njit(fastmath=True, nogil=True, cache=True)
 def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_state):
-    """Given a set of ``indices`` for data points from a sparse data set
-    presented in csr sparse format as inds, indptr and data, create
-    a random hyperplane to split the data, returning two arrays indices
+    """Given a set of ``graph_indices`` for graph_data points from a sparse graph_data set
+    presented in csr sparse format as inds, graph_indptr and graph_data, create
+    a random hyperplane to split the graph_data, returning two arrays graph_indices
     that fall on either side of the hyperplane. This is the basis for a
     random projection tree, which simply uses this splitting recursively.
     This particular split uses cosine distance to determine the hyperplane
-    and which side each data sample falls on.
+    and which side each graph_data sample falls on.
     Parameters
     ----------
     inds: array
@@ -245,19 +245,19 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
     indptr: array
         CSR format index pointer array of the matrix
     data: array
-        CSR format data array of the matrix
+        CSR format graph_data array of the matrix
     indices: array of shape (tree_node_size,)
-        The indices of the elements in the ``data`` array that are to
+        The graph_indices of the elements in the ``graph_data`` array that are to
         be split in the current operation.
     rng_state: array of int64, shape (3,)
         The internal state of the rng
     Returns
     -------
     indices_left: array
-        The elements of ``indices`` that fall on the "left" side of the
+        The elements of ``graph_indices`` that fall on the "left" side of the
         random hyperplane.
     indices_right: array
-        The elements of ``indices`` that fall on the "left" side of the
+        The elements of ``graph_indices`` that fall on the "left" side of the
         random hyperplane.
     """
     # Select two random points, set the hyperplane between them
@@ -329,7 +329,7 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
     indices_left = np.empty(n_left, dtype=np.int64)
     indices_right = np.empty(n_right, dtype=np.int64)
 
-    # Populate the arrays with indices according to which side they fell on
+    # Populate the arrays with graph_indices according to which side they fell on
     n_left = 0
     n_right = 0
     for i in range(side.shape[0]):
@@ -347,13 +347,13 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
 
 @numba.njit(fastmath=True, nogil=True, cache=True)
 def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_state):
-    """Given a set of ``indices`` for data points from a sparse data set
-    presented in csr sparse format as inds, indptr and data, create
-    a random hyperplane to split the data, returning two arrays indices
+    """Given a set of ``graph_indices`` for graph_data points from a sparse graph_data set
+    presented in csr sparse format as inds, graph_indptr and graph_data, create
+    a random hyperplane to split the graph_data, returning two arrays graph_indices
     that fall on either side of the hyperplane. This is the basis for a
     random projection tree, which simply uses this splitting recursively.
     This particular split uses cosine distance to determine the hyperplane
-    and which side each data sample falls on.
+    and which side each graph_data sample falls on.
     Parameters
     ----------
     inds: array
@@ -361,19 +361,19 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     indptr: array
         CSR format index pointer array of the matrix
     data: array
-        CSR format data array of the matrix
+        CSR format graph_data array of the matrix
     indices: array of shape (tree_node_size,)
-        The indices of the elements in the ``data`` array that are to
+        The graph_indices of the elements in the ``graph_data`` array that are to
         be split in the current operation.
     rng_state: array of int64, shape (3,)
         The internal state of the rng
     Returns
     -------
     indices_left: array
-        The elements of ``indices`` that fall on the "left" side of the
+        The elements of ``graph_indices`` that fall on the "left" side of the
         random hyperplane.
     indices_right: array
-        The elements of ``indices`` that fall on the "left" side of the
+        The elements of ``graph_indices`` that fall on the "left" side of the
         random hyperplane.
     """
     # Select two random points, set the hyperplane between them
@@ -436,7 +436,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     indices_left = np.empty(n_left, dtype=np.int64)
     indices_right = np.empty(n_right, dtype=np.int64)
 
-    # Populate the arrays with indices according to which side they fell on
+    # Populate the arrays with graph_indices according to which side they fell on
     n_left = 0
     n_right = 0
     for i in range(side.shape[0]):
@@ -825,16 +825,16 @@ def search_sparse_flat_tree(
     point_inds, point_data, hyperplanes, offsets, children, indices, rng_state
 ):
     node = 0
-    while children[node][0] > 0:
+    while children[node, 0] > 0:
         side = sparse_select_side(
             hyperplanes[node], offsets[node], point_inds, point_data, rng_state
         )
         if side == 0:
-            node = children[node][0]
+            node = children[node, 0]
         else:
-            node = children[node][1]
+            node = children[node, 1]
 
-    return indices[node]
+    return indices[-children[node, 0]]
 
 
 def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
@@ -888,13 +888,13 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
         warn(
             "Random Projection forest initialisation failed due to recursion"
             "limit being reached. Something is a little strange with your "
-            "data, and this may take longer than normal to compute."
+            "graph_data, and this may take longer than normal to compute."
         )
 
     return tuple(result)
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(nogil=True)
 def get_leaves_from_tree(tree):
     n_leaves = 0
     for i in range(len(tree.children)):
@@ -936,8 +936,8 @@ def rptree_leaf_array(rp_forest):
 #     useful means of seeding other nearest neighbor algorithms.
 #     Parameters
 #     ----------
-#     data: array of shape (n_samples, n_features)
-#         The data for which to generate nearest neighbor approximations.
+#     graph_data: array of shape (n_samples, n_features)
+#         The graph_data for which to generate nearest neighbor approximations.
 #     n_neighbors: int
 #         The number of nearest neighbors to attempt to approximate.
 #     rng_state: array of int64, shape (3,)
@@ -950,12 +950,12 @@ def rptree_leaf_array(rp_forest):
 #     Returns
 #     -------
 #     leaf_array: array of shape (n_leaves, max(10, n_neighbors))
-#         Each row of leaf array is a list of indices found in a given leaf.
+#         Each row of leaf array is a list of graph_indices found in a given leaf.
 #         Since not all leaves are the same size the arrays are padded out with -1
 #         to ensure we can return a single ndarray.
 #     """
 #     if rp_forest:
-#         # leaf_array = np.vstack([tree.indices for tree in rp_forest])
+#         # leaf_array = np.vstack([tree.graph_indices for tree in rp_forest])
 #         leaf_array = np.vstack([get_leaves_from_tree(tree) for tree in rp_forest])
 #     else:
 #         leaf_array = np.array([[-1]])
@@ -967,7 +967,6 @@ def rptree_leaf_array(rp_forest):
 def recursive_convert(tree, hyperplanes, offsets, children, indices, node_num,
                       leaf_num, tree_node):
 
-    # print(node_num, leaf_num, tree_node)
     if tree.children[tree_node][0] < 0:
         children[node_num, 0] = -leaf_num
         indices[leaf_num, : len(tree.indices[tree_node])] = tree.indices[tree_node]
@@ -1002,6 +1001,44 @@ def recursive_convert(tree, hyperplanes, offsets, children, indices, node_num,
         return node_num, leaf_num
 
 @numba.njit()
+def recursive_convert_sparse(tree, hyperplanes, offsets, children, indices, node_num,
+                      leaf_num, tree_node):
+
+    if tree.children[tree_node][0] < 0:
+        children[node_num, 0] = -leaf_num
+        indices[leaf_num, : len(tree.indices[tree_node])] = tree.indices[tree_node]
+        leaf_num += 1
+        return node_num, leaf_num
+    else:
+        hyperplanes[node_num, :, :tree.hyperplanes[tree_node].shape[1]] = tree.hyperplanes[
+            tree_node]
+        offsets[node_num] = tree.offsets[tree_node]
+        children[node_num, 0] = node_num + 1
+        old_node_num = node_num
+        node_num, leaf_num = recursive_convert_sparse(
+            tree,
+            hyperplanes,
+            offsets,
+            children,
+            indices,
+            node_num + 1,
+            leaf_num,
+            tree.children[tree_node][0]
+        )
+        children[old_node_num, 1] = node_num + 1
+        node_num, leaf_num = recursive_convert_sparse(
+            tree,
+            hyperplanes,
+            offsets,
+            children,
+            indices,
+            node_num + 1,
+            leaf_num,
+            tree.children[tree_node][1]
+        )
+        return node_num, leaf_num
+
+@numba.njit()
 def num_nodes_and_leaves(tree):
     n_nodes = 0
     n_leaves = 0
@@ -1024,10 +1061,10 @@ def num_nodes_and_leaves(tree):
 #     hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
 #     offsets = np.zeros(n_nodes, dtype=np.float32)
 #     children = -1 * np.ones((n_nodes, 2), dtype=np.int64)
-#     indices = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
-#     recursive_convert(tree, hyperplanes, offsets, children, indices, 0, 0,
+#     graph_indices = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
+#     recursive_convert(tree, hyperplanes, offsets, children, graph_indices, 0, 0,
 #                       len(tree.children) - 1)
-#     return FlatTree(hyperplanes, offsets, children, indices, tree.leaf_size)
+#     return FlatTree(hyperplanes, offsets, children, graph_indices, tree.leaf_size)
 
 
 @numba.njit()
@@ -1052,12 +1089,14 @@ def sparse_hyperplane_dim(hyperplanes):
 def convert_tree_format(tree):
 
     n_nodes, n_leaves = num_nodes_and_leaves(tree)
+    is_sparse = False
     if tree.hyperplanes[0].ndim == 1:
         # dense hyperplanes
         hyperplane_dim = dense_hyperplane_dim(tree.hyperplanes)
         hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
     else:
         # sparse hyperplanes
+        is_sparse = True
         hyperplane_dim = sparse_hyperplane_dim(tree.hyperplanes)
         hyperplanes = np.zeros((n_nodes, 2, hyperplane_dim), dtype=np.float32)
         hyperplanes[:, 0, :] = -1
@@ -1065,6 +1104,10 @@ def convert_tree_format(tree):
     offsets = np.zeros(n_nodes, dtype=np.float32)
     children = -1 * np.ones((n_nodes, 2), dtype=np.int64)
     indices = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
-    recursive_convert(tree, hyperplanes, offsets, children, indices, 0, 0,
-                      len(tree.children) - 1)
+    if is_sparse:
+        recursive_convert_sparse(tree, hyperplanes, offsets, children, indices, 0, 0,
+                          len(tree.children) - 1)
+    else:
+        recursive_convert(tree, hyperplanes, offsets, children, indices, 0, 0,
+                          len(tree.children) - 1)
     return FlatTree(hyperplanes, offsets, children, indices, tree.leaf_size)

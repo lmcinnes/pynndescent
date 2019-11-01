@@ -126,8 +126,10 @@ def initialized_nnd_search(
                         unchecked_heap_push(initialization, i, d, candidate, 1)
                         heapq.heappush(seed_set, (d, candidate))
 
-            # Update bound, find new smallest seed point
+            # Update bound
             distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
+
+            # Update bound, find new smallest seed point
             d_vertex, vertex = heapq.heappop(seed_set)
 
     return initialization
@@ -509,6 +511,36 @@ def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
 
     return indices, distances
 
+@numba.njit(parallel=True)
+def diversify_csr(graph_indptr, graph_indices, graph_data, source_data, dist, dist_args, epsilon=0.01):
+
+    n_nodes = graph_indptr.shape[0] - 1
+
+    for i in numba.prange(n_nodes):
+
+        current_indices = graph_indices[graph_indptr[i]: graph_indptr[i + 1]]
+        current_data = graph_data[graph_indptr[i]: graph_indptr[i + 1]]
+
+        order = np.argsort(current_data)
+        retained = np.ones(order.shape[0], dtype=np.int8)
+
+        for idx in range(order.shape[0]):
+
+            j = order[idx]
+
+            for k in range(idx):
+                if retained[k] == 1:
+                    d = dist(source_data[current_indices[j]], source_data[current_indices[k]], *dist_args)
+                    if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
+                        retained[j] = 0
+                        break
+
+        for idx in range(order.shape[0]):
+            if retained[idx] == 0:
+                graph_data[graph_indptr[i] + order[idx]] = 0
+
+    return
+
 
 @numba.njit(parallel=True)
 def degree_prune_internal(indptr, data, max_degree=20):
@@ -550,13 +582,13 @@ class NNDescent(object):
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
     very flexible and supports a wide variety of distances, including
     non-metric distances. NNDescent also scales well against high dimensional
-    data in many cases. This implementation provides a straightfoward
+    graph_data in many cases. This implementation provides a straightfoward
     interface, with access to some tuning parameters.
 
     Parameters
     ----------
     data: array os shape (n_samples, n_features)
-        The training data set to find nearest neighbors in.
+        The training graph_data set to find nearest neighbors in.
 
     metric: string or callable (optional, default='euclidean')
         The metric to use for computing nearest neighbors. If a callable is
@@ -593,7 +625,7 @@ class NNDescent(object):
         Minkowski distance.
 
     n_neighbors: int (optional, default=15)
-        The number of neighbors to use in k-neighbor graph data structure
+        The number of neighbors to use in k-neighbor graph graph_data structure
         used for fast approximate nearest neighbor search. Larger values
         will result in more accurate search results at the cost of
         computation time.
@@ -603,7 +635,7 @@ class NNDescent(object):
         of searches. This parameter controls the number of trees in that
         forest. A larger number will result in more accurate neighbor
         computation at the cost of performance. The default of None means
-        a value will be chosen based on the size of the data.
+        a value will be chosen based on the size of the graph_data.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
@@ -658,7 +690,7 @@ class NNDescent(object):
         NN-descent algorithm can abort early if limited progress is being
         made, so this only controls the worst case. Don't tweak
         this value unless you know what you're doing. The default of None means
-        a value will be chosen based on the size of the data.
+        a value will be chosen based on the size of the graph_data.
 
     delta: float (optional, default=0.001)
         Controls the early abort due to limited progress. Larger values
@@ -678,7 +710,7 @@ class NNDescent(object):
         ``-1`` means using all processors.
 
     verbose: bool (optional, default=False)
-        Whether to print status data during the computation.
+        Whether to print status graph_data during the computation.
     """
 
     def __init__(
@@ -805,7 +837,7 @@ class NNDescent(object):
                     self._dist_args = tuple(metric_kwds.values())
                 else:
                     raise ValueError(
-                        "Metric {} not supported for sparse data".format(metric)
+                        "Metric {} not supported for sparse graph_data".format(metric)
                     )
                 self._neighbor_graph = sparse_threaded.sparse_nn_descent(
                     self._raw_data.indices,
@@ -859,7 +891,7 @@ class NNDescent(object):
                         self._distance_correction = None
                 else:
                     raise ValueError(
-                        "Metric {} not supported for sparse data".format(metric)
+                        "Metric {} not supported for sparse graph_data".format(metric)
                     )
 
                 if verbose:
@@ -959,8 +991,32 @@ class NNDescent(object):
         self._search_graph.data[self._search_graph.indices == -1] = 0.0
         self._search_graph.eliminate_zeros()
 
+        # Reverse graph
+        reverse_graph = lil_matrix(
+            (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
+        )
+        reverse_data = self._neighbor_graph[1].copy()
+        reverse_data[reverse_data == 0.0] = FLOAT32_EPS
+        reverse_graph.rows = self._neighbor_graph[0]
+        reverse_graph.data = reverse_data
+        reverse_graph = reverse_graph.tocsr()
+        reverse_graph.data[reverse_graph.indices == -1] = 0.0
+        reverse_graph.eliminate_zeros()
+        reverse_graph = reverse_graph.transpose()
+        diversify_csr(
+            reverse_graph.indptr,
+            reverse_graph.indices,
+            reverse_graph.data,
+            self._raw_data,
+            self._distance_func,
+            self._dist_args,
+            self.diversify_epsilon,
+        )
+        reverse_graph.eliminate_zeros()
+
         self._search_graph = self._search_graph.maximum(
-            self._search_graph.transpose()
+            reverse_graph
+            # self._search_graph.transpose()
         ).tocsr()
         self._search_graph.eliminate_zeros()
 
@@ -971,7 +1027,7 @@ class NNDescent(object):
         self._search_graph.eliminate_zeros()
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
-        # # re-order graph and data according to a spectral embedding
+        # # re-order graph and graph_data according to a spectral embedding
         # random_state = check_random_state(self.random_state)
         # self._vertex_order = spectral_order(self._search_graph, random_state)
         #
@@ -998,7 +1054,7 @@ class NNDescent(object):
 
 
     def query(self, query_data, k=10, epsilon=0.1, n_search_trees=1, queue_size=1.0):
-        """Query the training data for the k nearest neighbors
+        """Query the training graph_data for the k nearest neighbors
 
         Parameters
         ----------
@@ -1029,16 +1085,16 @@ class NNDescent(object):
 
         Returns
         -------
-        indices, distances: array (n_query_points, k), array (n_query_points, k)
-            The first array, ``indices``, provides the indices of the data
+        graph_indices, distances: array (n_query_points, k), array (n_query_points, k)
+            The first array, ``graph_indices``, provides the graph_indices of the graph_data
             points in the training set that are the nearest neighbors of
-            each query point. Thus ``indices[i, j]`` is the index into the
-            training data of the jth nearest neighbor of the ith query points.
+            each query point. Thus ``graph_indices[i, j]`` is the index into the
+            training graph_data of the jth nearest neighbor of the ith query points.
 
             Similarly ``distances`` provides the distances to the neighbors
             of the query points such that ``distances[i, j]`` is the distance
             from the ith query point to its jth nearest neighbor in the
-            training data.
+            training graph_data.
         """
         if not self._is_sparse:
             # Standard case
@@ -1073,6 +1129,7 @@ class NNDescent(object):
             self._init_search_graph()
             init = sparse_nnd.sparse_initialise_search(
                 self._rp_forest,
+                n_search_trees,
                 self._raw_data.indices,
                 self._raw_data.indptr,
                 self._raw_data.data,
@@ -1101,8 +1158,8 @@ class NNDescent(object):
 
         indices, dists = deheap_sort(result)
         indices, dists = indices[:, :k], dists[:, :k]
-        # # Sort to input data order
-        # indices = self._vertex_order[indices]
+        # # Sort to input graph_data order
+        # graph_indices = self._vertex_order[graph_indices]
 
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)
@@ -1114,16 +1171,16 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
     It uses the NNDescent algorithm, and is thus
     very flexible and supports a wide variety of distances, including
     non-metric distances. NNDescent also scales well against high dimensional
-    data in many cases.
+    graph_data in many cases.
 
     Transform X into a (weighted) graph of k nearest neighbors
 
-    The transformed data is a sparse graph as returned by kneighbors_graph.
+    The transformed graph_data is a sparse graph as returned by kneighbors_graph.
 
     Parameters
     ----------
     n_neighbors: int (optional, default=5)
-        The number of neighbors to use in k-neighbor graph data structure
+        The number of neighbors to use in k-neighbor graph graph_data structure
         used for fast approximate nearest neighbor search. Larger values
         will result in more accurate search results at the cost of
         computation time.
@@ -1167,7 +1224,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         of searches. This parameter controls the number of trees in that
         forest. A larger number will result in more accurate neighbor
         computation at the cost of performance. The default of None means
-        a value will be chosen based on the size of the data.
+        a value will be chosen based on the size of the graph_data.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
@@ -1229,7 +1286,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         NN-descent algorithm can abort early if limited progress is being
         made, so this only controls the worst case. Don't tweak
         this value unless you know what you're doing. The default of None means
-        a value will be chosen based on the size of the data.
+        a value will be chosen based on the size of the graph_data.
 
     early_termination_value: float (optional, default=0.001)
         Controls the early abort due to limited progress. Larger values
@@ -1244,7 +1301,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         you know what you're doing.
 
     verbose: bool (optional, default=False)
-        Whether to print status data during the computation.
+        Whether to print status graph_data during the computation.
 
     Examples
     --------
@@ -1304,7 +1361,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         Parameters
         ----------
         X : array-like, shape (n_samples, n_features)
-            Sample data
+            Sample graph_data
 
         Returns
         -------
@@ -1346,7 +1403,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         Parameters
         ----------
         X : array-like, shape (n_samples_transform, n_features)
-            Sample data
+            Sample graph_data
 
         Returns
         -------
@@ -1377,7 +1434,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         return result.tocsr()
 
     def fit_transform(self, X, y=None, **fit_params):
-        """Fit to data, then transform it.
+        """Fit to graph_data, then transform it.
 
         Fits transformer to X and y with optional parameters fit_params
         and returns a transformed version of X.

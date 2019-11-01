@@ -91,7 +91,7 @@ def test_init_current_graph():
 
 def test_init_rp_tree():
 
-    # Use more data than the other tests since otherwise init_rp_tree has nothing to do
+    # Use more graph_data than the other tests since otherwise init_rp_tree has nothing to do
     np.random.seed(42)
     N = 100
     D = 128
@@ -175,7 +175,7 @@ def test_nn_descent():
         assert_equal(
             len(nn_indices[i]),
             len(np.unique(nn_indices[i])),
-            "Duplicate indices in unthreaded knn graph",
+            "Duplicate graph_indices in unthreaded knn graph",
         )
 
     nn_indices_threaded, nn_distances_threaded = NNDescent(
@@ -193,7 +193,7 @@ def test_nn_descent():
         assert_equal(
             len(nn_indices_threaded[i]),
             len(np.unique(nn_indices_threaded[i])),
-            "Duplicate indices in threaded knn graph",
+            "Duplicate graph_indices in threaded knn graph",
         )
 
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)
@@ -250,7 +250,7 @@ def test_nn_decent_with_n_jobs_minus_one():
         assert_equal(
             len(nn_indices[i]),
             len(np.unique(nn_indices[i])),
-            "Duplicate indices in unthreaded knn graph",
+            "Duplicate graph_indices in unthreaded knn graph",
         )
 
     nn_indices_threaded, nn_distances_threaded = NNDescent(
@@ -268,7 +268,7 @@ def test_nn_decent_with_n_jobs_minus_one():
         assert_equal(
             len(nn_indices_threaded[i]),
             len(np.unique(nn_indices_threaded[i])),
-            "Duplicate indices in threaded knn graph",
+            "Duplicate graph_indices in threaded knn graph",
         )
 
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)

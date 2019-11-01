@@ -16,17 +16,17 @@ np.random.seed(42)
 spatial_data = np.random.randn(10, 20)
 spatial_data = np.vstack(
     [spatial_data, np.zeros((2, 20))]
-)  # Add some all zero data for corner case test
+)  # Add some all zero graph_data for corner case test
 
 nn_data = np.random.uniform(0, 1, size=(1000, 5))
 nn_data = np.vstack(
     [nn_data, np.zeros((2, 5))]
-)  # Add some all zero data for corner case test
+)  # Add some all zero graph_data for corner case test
 # for_sparse_nn_data = np.random.uniform(0, 1, size=(1002, 500))
 # binary_nn_data = np.random.choice(a=[False, True], size=(1000, 500), p=[0.1, 1 - 0.1])
 # binary_nn_data = np.vstack(
 #     [binary_nn_data, np.zeros((2, 500))]
-# )  # Add some all zero data for corner case test
+# )  # Add some all zero graph_data for corner case test
 # sparse_nn_data = sparse.csr_matrix(for_sparse_nn_data * binary_nn_data)
 sparse_nn_data = sparse.random(1000, 50, density=0.5, format="csr")
 # sparse_nn_data = sparse.csr_matrix(nn_data)
@@ -215,7 +215,7 @@ def test_deterministic():
 
 # This tests a recursion error on cosine metric reported at:
 # https://github.com/lmcinnes/umap/issues/99
-# data used is a cut-down version of that provided by @scharron
+# graph_data used is a cut-down version of that provided by @scharron
 # It contains lots of all-zero vectors and some other duplicates
 def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
     this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -231,7 +231,7 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
         assert_equal(
             len(knn_indices[i]),
             len(np.unique(knn_indices[i])),
-            "Duplicate indices in knn graph",
+            "Duplicate graph_indices in knn graph",
         )
 
 
@@ -251,7 +251,7 @@ def test_deduplicated_data_behaves_normally():
         assert_equal(
             len(knn_indices[i]),
             len(np.unique(knn_indices[i])),
-            "Duplicate indices in knn graph",
+            "Duplicate graph_indices in knn graph",
         )
 
     angular_data = normalize(data, norm="l2")

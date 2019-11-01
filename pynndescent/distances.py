@@ -103,7 +103,7 @@ def weighted_minkowski(x, y, w=_mock_ones, p=2):
     .. math::
         D(x, y) = \left(\sum_i w_i |x_i - y_i|^p\right)^{\frac{1}{p}}
 
-    If weights w_i are inverse standard deviations of data in each dimension
+    If weights w_i are inverse standard deviations of graph_data in each dimension
     then this represented a standardised Minkowski distance (and is
     equivalent to standardised Euclidean distance for p=1).
     """
@@ -283,7 +283,7 @@ def sokal_sneath(x, y):
 @numba.njit(fastmath=True, cache=True)
 def haversine(x, y):
     if x.shape[0] != 2:
-        raise ValueError("haversine is only defined for 2 dimensional data")
+        raise ValueError("haversine is only defined for 2 dimensional graph_data")
     sin_lat = np.sin(0.5 * (x[0] - y[0]))
     sin_long = np.sin(0.5 * (x[1] - y[1]))
     result = np.sqrt(sin_lat ** 2 + np.cos(x[0]) * np.cos(y[0]) * sin_long ** 2)
