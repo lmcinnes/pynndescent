@@ -21,7 +21,13 @@ def euclidean(x, y):
     return np.sqrt(result)
 
 
-@numba.njit(fastmath=True, cache=True)
+@numba.njit(
+    'f4(f4[::1],f4[::1])',
+    fastmath=True,
+    locals={"result": numba.types.float32,
+            "diff": numba.types.float32,
+            "dim": numba.types.int32},
+)
 def squared_euclidean(x, y):
     r"""Squared euclidean distance.
 
@@ -29,8 +35,11 @@ def squared_euclidean(x, y):
         D(x, y) = \sum_i (x_i - y_i)^2
     """
     result = 0.0
-    for i in range(x.shape[0]):
-        result += (x[i] - y[i]) ** 2
+    dim = x.shape[0]
+    for i in range(dim):
+        diff = x[i] - y[i]
+        result += diff * diff
+
     return result
 
 

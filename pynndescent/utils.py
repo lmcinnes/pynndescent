@@ -112,7 +112,7 @@ def rejection_sample(n_samples, pool_size, rng_state):
     return result
 
 
-@numba.njit("f8[:, :, :](i8,i8)")
+@numba.njit()
 def make_heap(n_points, size):
     """Constructor for the numba enabled heap objects. The heaps are used
     for approximate nearest neighbor search, maintaining a list of potential
@@ -135,7 +135,7 @@ def make_heap(n_points, size):
     -------
     heap: An ndarray suitable for passing to other numba enabled heap functions.
     """
-    result = np.zeros((3, int(n_points), int(size)), dtype=np.float64)
+    result = np.zeros((3, int(n_points), int(size)), dtype=np.float32)
     result[0] = -1
     result[1] = np.infty
     result[2] = 0
@@ -143,7 +143,7 @@ def make_heap(n_points, size):
     return result
 
 
-@numba.jit("i8(f8[:,:,:],i8,f8,i8,i8)")
+@numba.jit()
 def heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
     for each graph_data point. The ``row`` parameter determines which graph_data point we
@@ -227,7 +227,7 @@ def heap_push(heap, row, weight, index, flag):
     return 1
 
 
-@numba.jit("i8(f8[:,:,:],i8,f8,i8,i8)")
+@numba.jit()
 def unchecked_heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
     for each graph_data point. The ``row`` parameter determines which graph_data point we
@@ -373,7 +373,7 @@ def deheap_sort(heap):
     return indices.astype(np.int64), weights
 
 
-@numba.njit("i8(f8[:, :, :],i8)")
+@numba.njit()
 def smallest_flagged(heap, row):
     """Search the heap for the smallest element that is
     still flagged.

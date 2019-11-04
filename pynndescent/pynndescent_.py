@@ -87,7 +87,10 @@ def initialise_search(
     return results
 
 
-@numba.njit(fastmath=True, locals={"candidate": numba.types.int64})
+# "seed_set": numba.types.List((numba.types.float32, numba.types.int64))
+@numba.njit(fastmath=True,
+            locals={"candidate": numba.types.int64,
+                    "d": numba.types.float32})
 def initialized_nnd_search(
     data, indptr, indices, initialization, query_points, epsilon, dist,
         dist_args
@@ -97,7 +100,7 @@ def initialized_nnd_search(
     for i in range(query_points.shape[0]):
 
         tried[:] = 0
-        seed_set = [(np.inf, -1)]
+        seed_set = [(np.float32(np.infty), -1)]
         distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
         current_query = query_points[i]
 
@@ -259,7 +262,7 @@ def apply_graph_updates_low_memory(current_graph, updates):
     return n_changes
 
 
-@numba.njit()
+@numba.njit(locals={"p": numba.types.int64, "q": numba.types.int64})
 def apply_graph_updates_high_memory(current_graph, updates, in_graph):
 
     n_changes = 0
@@ -314,7 +317,6 @@ def nn_descent_internal_low_memory_parallel(
     n_blocks = n_vertices // block_size
 
     for n in range(n_iters):
-        print("Starting iter", n)
         if verbose:
             print("\t", n, " / ", n_iters)
 
@@ -351,7 +353,6 @@ def nn_descent_internal_low_memory_parallel(
                 updates,
             )
 
-        print("Finished iter", n, ":", c, delta * n_neighbors * data.shape[0])
         if c <= delta * n_neighbors * data.shape[0]:
             return
 
@@ -375,7 +376,8 @@ def nn_descent_internal_high_memory_parallel(
     block_size = 16384
     n_blocks = n_vertices // block_size
 
-    in_graph = [set(current_graph[0, i]) for i in range(current_graph.shape[1])]
+    in_graph = [set(current_graph[0, i].astype(np.int64)) for i in range(
+        current_graph.shape[1])]
 
     for n in range(n_iters):
         if verbose:
@@ -524,7 +526,7 @@ def diversify_csr(graph_indptr, graph_indices, graph_data, source_data, dist, di
         order = np.argsort(current_data)
         retained = np.ones(order.shape[0], dtype=np.int8)
 
-        for idx in range(order.shape[0]):
+        for idx in range(1, order.shape[0]):
 
             j = order[idx]
 
@@ -536,8 +538,9 @@ def diversify_csr(graph_indptr, graph_indices, graph_data, source_data, dist, di
                         break
 
         for idx in range(order.shape[0]):
-            if retained[idx] == 0:
-                graph_data[graph_indptr[i] + order[idx]] = 0
+            j = order[idx]
+            if retained[j] == 0:
+                graph_data[graph_indptr[i] + j] = 0
 
     return
 
@@ -815,7 +818,7 @@ class NNDescent(object):
             leaf_array = np.array([[-1]])
 
         if self.max_candidates is None:
-            effective_max_candidates = self.n_neighbors
+            effective_max_candidates = min(60, self.n_neighbors)
         else:
             effective_max_candidates = self.max_candidates
 
@@ -1085,10 +1088,10 @@ class NNDescent(object):
 
         Returns
         -------
-        graph_indices, distances: array (n_query_points, k), array (n_query_points, k)
-            The first array, ``graph_indices``, provides the graph_indices of the graph_data
+        indices, distances: array (n_query_points, k), array (n_query_points, k)
+            The first array, ``indices``, provides the indices of the graph_data
             points in the training set that are the nearest neighbors of
-            each query point. Thus ``graph_indices[i, j]`` is the index into the
+            each query point. Thus ``indices[i, j]`` is the index into the
             training graph_data of the jth nearest neighbor of the ith query points.
 
             Similarly ``distances`` provides the distances to the neighbors
@@ -1097,6 +1100,8 @@ class NNDescent(object):
             training graph_data.
         """
         if not self._is_sparse:
+            n_dist_computations = np.zeros(1, dtype=np.int32)
+            self._dist_args = (n_dist_computations,)
             # Standard case
             # query_data = check_array(query_data, dtype=np.float64, order='C')
             query_data = np.asarray(query_data).astype(np.float32, order='C')
@@ -1159,10 +1164,11 @@ class NNDescent(object):
         indices, dists = deheap_sort(result)
         indices, dists = indices[:, :k], dists[:, :k]
         # # Sort to input graph_data order
-        # graph_indices = self._vertex_order[graph_indices]
+        # indices = self._vertex_order[indices]
 
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)
+
         return indices, dists
 
 

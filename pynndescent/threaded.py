@@ -41,12 +41,12 @@ def effective_n_jobs_with_context(n_jobs=None):
     return joblib.effective_n_jobs(n_jobs)
 
 
-@numba.njit("i8[:](i8, i8, i8)", nogil=True)
+@numba.njit(nogil=True)
 def chunk_rows(chunk_size, index, n_vertices):
     return np.arange(chunk_size * index, min(chunk_size * (index + 1), n_vertices))
 
 
-@numba.njit("f4[:, :](f4[:, :], i8)", nogil=True)
+@numba.njit(nogil=True)
 def sort_heap_updates(heap_updates, num_heap_updates):
     """Take an array of unsorted heap updates and sort by row number."""
     row_numbers = heap_updates[:num_heap_updates, 0]
@@ -57,7 +57,7 @@ def sort_heap_updates(heap_updates, num_heap_updates):
     return heap_updates
 
 
-@numba.njit("i8[:](f4[:, :], i8, i8, i8)", nogil=True)
+@numba.njit(nogil=True)
 def chunk_heap_updates(heap_updates, num_heap_updates, n_vertices, chunk_size):
     """Return the offsets for each chunk of sorted heap updates."""
     chunk_boundaries = (
@@ -69,7 +69,7 @@ def chunk_heap_updates(heap_updates, num_heap_updates, n_vertices, chunk_size):
     return offsets
 
 
-@numba.njit("void(f4[:, :, :], i8[:], i8[:, :], i8, i8, i8)", nogil=True)
+@numba.njit(nogil=True)
 def shuffle_jit(
     heap_updates, heap_update_counts, offsets, chunk_size, n_vertices, index
 ):
@@ -120,7 +120,7 @@ def current_graph_map_jit(
     return count
 
 
-@numba.njit("void(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
+@numba.njit(nogil=True)
 def current_graph_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     for update_i in range(n_tasks):
         o = offsets[update_i]
@@ -235,7 +235,7 @@ def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates, dist, dist_args):
     return count
 
 
-@numba.njit("void(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
+@numba.njit(nogil=True)
 def init_rp_tree_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     for update_i in range(n_tasks):
         o = offsets[update_i]
@@ -294,7 +294,7 @@ def init_rp_tree(
     parallel(parallel_calls(init_rp_tree_reduce, n_tasks))
 
 
-@numba.njit("i8(i8[:], i8, f8[:, :, :], f4[:, :], i8, f8, i8[:], b1)", nogil=True)
+@numba.njit(nogil=True)
 def candidates_map_jit(
     rows, n_neighbors, current_graph, heap_updates, offset, rho, rng_state, seed_per_row
 ):
@@ -328,10 +328,7 @@ def candidates_map_jit(
     return count
 
 
-@numba.njit(
-    "void(i8, f8[:, :, :], f8[:, :, :], f8[:, :, :], f4[:, :, :], i8[:, :], i8)",
-    nogil=True,
-)
+@numba.njit(nogil=True)
 def candidates_reduce_jit(
     n_tasks,
     current_graph,
@@ -501,7 +498,7 @@ def nn_descent_map_jit(
     return count
 
 
-@numba.njit("i8(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
+@numba.njit(nogil=True)
 def nn_decent_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     c = 0
     for update_i in range(n_tasks):
@@ -518,7 +515,7 @@ def nn_decent_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     return c
 
 
-@numba.njit("void(i8[:], f8[:, :, :])", nogil=True)
+@numba.njit(nogil=True)
 def deheap_sort_map_jit(rows, heap):
     indices = heap[0]
     weights = heap[1]
