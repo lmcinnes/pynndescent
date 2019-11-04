@@ -90,7 +90,10 @@ def initialise_search(
 # "seed_set": numba.types.List((numba.types.float32, numba.types.int64))
 @numba.njit(fastmath=True,
             locals={"candidate": numba.types.int64,
-                    "d": numba.types.float32})
+                    "d": numba.types.float32,
+                    "tried": numba.types.uint8[::1],
+                    "indices": numba.types.int32[::1],
+                    "data": numba.types.float32[:,::1]})
 def initialized_nnd_search(
     data, indptr, indices, initialization, query_points, epsilon, dist,
         dist_args
@@ -1100,8 +1103,6 @@ class NNDescent(object):
             training graph_data.
         """
         if not self._is_sparse:
-            n_dist_computations = np.zeros(1, dtype=np.int32)
-            self._dist_args = (n_dist_computations,)
             # Standard case
             # query_data = check_array(query_data, dtype=np.float64, order='C')
             query_data = np.asarray(query_data).astype(np.float32, order='C')

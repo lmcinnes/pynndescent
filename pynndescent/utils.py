@@ -112,7 +112,7 @@ def rejection_sample(n_samples, pool_size, rng_state):
     return result
 
 
-@numba.njit()
+@numba.njit(locals={"result": numba.types.float32[:, :, ::1]})
 def make_heap(n_points, size):
     """Constructor for the numba enabled heap objects. The heaps are used
     for approximate nearest neighbor search, maintaining a list of potential
@@ -143,7 +143,11 @@ def make_heap(n_points, size):
     return result
 
 
-@numba.jit()
+@numba.jit(locals={
+    "indices": numba.types.float32[::1],
+    "weights": numba.types.float32[::1],
+    "is_new": numba.types.float32[::1],
+})
 def heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
     for each graph_data point. The ``row`` parameter determines which graph_data point we
@@ -227,7 +231,11 @@ def heap_push(heap, row, weight, index, flag):
     return 1
 
 
-@numba.jit()
+@numba.jit(locals={
+    "indices": numba.types.float32[::1],
+    "weights": numba.types.float32[::1],
+    "is_new": numba.types.float32[::1],
+})
 def unchecked_heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
     for each graph_data point. The ``row`` parameter determines which graph_data point we
