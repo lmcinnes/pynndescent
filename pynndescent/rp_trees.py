@@ -761,10 +761,18 @@ def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=Fals
     return FlatTree(hyperplanes, offsets, children, point_indices, leaf_size)
 
 
-@numba.njit(fastmath=True)
+@numba.njit('b1(f4[::1],f4,f4[::1],i8[::1])',
+    fastmath=True,
+    locals={
+        "margin": numba.types.float32,
+        "dim": numba.types.uint16,
+        "d": numba.types.uint16,
+    }
+)
 def select_side(hyperplane, offset, point, rng_state):
     margin = offset
-    for d in range(point.shape[0]):
+    dim = point.shape[0]
+    for d in range(dim):
         margin += hyperplane[d] * point[d]
 
     if abs(margin) < EPS:
@@ -779,21 +787,17 @@ def select_side(hyperplane, offset, point, rng_state):
         return 1
 
 
-@numba.njit()
+@numba.njit('i4[::1](f4[::1],f4[:,::1],f4[::1],i8[:,::1],i8[:,::1],i8[::1])')
 def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
-    # node = len(children) - 1
     node = 0
-    # while children[node][0] > 0:
     while children[node, 0] > 0:
         side = select_side(hyperplanes[node], offsets[node], point, rng_state)
         if side == 0:
-            # node = children[node][0]
             node = children[node, 0]
         else:
-            # node = children[node][1]
             node = children[node, 1]
 
-    return indices[-children[node, 0]]
+    return indices[-children[node, 0]].astype(np.int32)
 
 
 @numba.njit(fastmath=True)

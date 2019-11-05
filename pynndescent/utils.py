@@ -569,3 +569,60 @@ def new_build_candidates(
 # Generates a timestamp for use in logging messages when verbose=True
 def ts():
     return time.ctime(time.time())
+
+
+
+@numba.njit(
+    'i4(f4[::1],i4[::1],f4,i4)',
+    fastmath=True,
+    locals={
+        "size": numba.types.uint16,
+        "i": numba.types.uint16,
+        "ic1": numba.types.uint16,
+        "ic2": numba.types.uint16,
+        "i_swap": numba.types.uint16,
+    }
+)
+def simple_heap_push(priorities, indices, p, n):
+    if p >= priorities[0]:
+        return 0
+
+    size = priorities.shape[0]
+
+    # insert val at position zero
+    priorities[0] = p
+    indices[0] = n
+
+    # descend the heap, swapping values until the max heap criterion is met
+    i = 0
+    while True:
+        ic1 = 2 * i + 1
+        ic2 = ic1 + 1
+
+        if ic1 >= size:
+            break
+        elif ic2 >= size:
+            if priorities[ic1] > p:
+                i_swap = ic1
+            else:
+                break
+        elif priorities[ic1] >= priorities[ic2]:
+            if p < priorities[ic1]:
+                i_swap = ic1
+            else:
+                break
+        else:
+            if p < priorities[ic2]:
+                i_swap = ic2
+            else:
+                break
+
+        priorities[i] = priorities[i_swap]
+        indices[i] = indices[i_swap]
+
+        i = i_swap
+
+    priorities[i] = p
+    indices[i] = n
+
+    return 1
