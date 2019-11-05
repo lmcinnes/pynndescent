@@ -216,7 +216,7 @@ def search_from_init(
     }
 )
 def search_init(
-    current_query, k, data, forest, tried, dist, dist_args, rng_state
+    current_query, k, data, forest, n_neighbors, tried, dist, dist_args, rng_state
 ):
 
     heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
@@ -232,7 +232,7 @@ def search_init(
             rng_state,
         )
 
-        n_initial_points = min(k//4, indices.shape[0])
+        n_initial_points = min(n_neighbors, indices.shape[0])
 
         for j in range(n_initial_points):
             candidate = indices[j]
@@ -244,18 +244,19 @@ def search_init(
             else:
                 break
 
-    last_index = heap_indices.shape[0] - 1
-    while heap_indices[last_index] == -1:
-        candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-        if tried[candidate] == 0:
-            d = dist(data[candidate], current_query, *dist_args)
-            simple_heap_push(heap_priorities, heap_indices, d, candidate)
-            tried[candidate] = 1
+    # last_index = heap_indices.shape[0] - 1
+    # while heap_indices[last_index] == -1:
+    #     candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+    #     if tried[candidate] == 0:
+    #         d = dist(data[candidate], current_query, *dist_args)
+    #         simple_heap_push(heap_priorities, heap_indices, d, candidate)
+    #         tried[candidate] = 1
 
     return heap_priorities, heap_indices
 
 @numba.njit()
-def search(query_points, k, data, forest, indptr, indices, epsilon, tried, dist,
+def search(query_points, k, data, forest, indptr, indices, epsilon, n_neighbors, tried,
+           dist,
            dist_args, rng_state):
 
     result = make_heap(query_points.shape[0], k)
@@ -263,7 +264,8 @@ def search(query_points, k, data, forest, indptr, indices, epsilon, tried, dist,
         tried[:] = 0
         current_query = query_points[i]
         heap_priorities, heap_indices = search_init(current_query, k, data, forest,
-                                                    tried, dist, dist_args, rng_state)
+                                                    n_neighbors, tried, dist,
+                                                    dist_args, rng_state)
         heap_priorities, heap_indices = search_from_init(current_query, data, indptr,\
                                         indices, heap_priorities, heap_indices,
                                                          epsilon, tried, dist, dist_args)
@@ -1277,7 +1279,9 @@ class NNDescent(object):
             #            dist_args, rng_state):
             result = search(query_data, k, self._raw_data, self._search_forest,
                             self._search_graph.indptr, self._search_graph.indices,
-                            epsilon, self._tried, self._distance_func, self._dist_args,
+                            epsilon, self.n_neighbors, self._tried,
+                            self._distance_func,
+                            self._dist_args,
                             self.rng_state)
         else:
             # Sparse case

@@ -26,7 +26,8 @@ def euclidean(x, y):
     fastmath=True,
     locals={"result": numba.types.float32,
             "diff": numba.types.float32,
-            "dim": numba.types.int32},
+            "dim": numba.types.uint32,
+            "i": numba.types.uint16},
 )
 def squared_euclidean(x, y):
     r"""Squared euclidean distance.
@@ -339,15 +340,24 @@ def cosine(x, y):
         return 1.0 - (result / np.sqrt(norm_x * norm_y))
 
 
-@numba.njit(fastmath=True, cache=True)
+@numba.njit(
+    'f4(f4[::1],f4[::1])',
+    fastmath=True,
+    locals={"result": numba.types.float32,
+            "norm_x": numba.types.float32,
+            "norm_y": numba.types.float32,
+            "dim": numba.types.uint32,
+            "i": numba.types.uint16},
+)
 def alternative_cosine(x, y):
     result = 0.0
     norm_x = 0.0
     norm_y = 0.0
-    for i in range(x.shape[0]):
+    dim = x.shape[0]
+    for i in range(dim):
         result += x[i] * y[i]
-        norm_x += x[i] ** 2
-        norm_y += y[i] ** 2
+        norm_x += x[i] * x[i]
+        norm_y += y[i] * y[i]
 
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
