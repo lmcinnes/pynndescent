@@ -404,13 +404,22 @@ def correlation(x, y):
         return 1.0 - (dot_product / np.sqrt(norm_x * norm_y))
 
 
-@numba.njit(fastmath=True, cache=True)
+@numba.njit(
+    'f4(f4[::1],f4[::1])',
+    fastmath=True,
+    locals={"result": numba.types.float32,
+            "l1_norm_x": numba.types.float32,
+            "l1_norm_y": numba.types.float32,
+            "dim": numba.types.uint32,
+            "i": numba.types.uint16},
+)
 def hellinger(x, y):
     result = 0.0
     l1_norm_x = 0.0
     l1_norm_y = 0.0
+    dim = x.shape[0]
 
-    for i in range(x.shape[0]):
+    for i in range(dim):
         result += np.sqrt(x[i] * y[i])
         l1_norm_x += x[i]
         l1_norm_y += y[i]
@@ -423,13 +432,23 @@ def hellinger(x, y):
         return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
 
 
-@numba.njit(fastmath=True, cache=True)
+
+@numba.njit(
+    'f4(f4[::1],f4[::1])',
+    fastmath=True,
+    locals={"result": numba.types.float32,
+            "l1_norm_x": numba.types.float32,
+            "l1_norm_y": numba.types.float32,
+            "dim": numba.types.uint32,
+            "i": numba.types.uint16},
+)
 def alternative_hellinger(x, y):
     result = 0.0
     l1_norm_x = 0.0
     l1_norm_y = 0.0
+    dim = x.shape[0]
 
-    for i in range(x.shape[0]):
+    for i in range(dim):
         result += np.sqrt(x[i] * y[i])
         l1_norm_x += x[i]
         l1_norm_y += y[i]

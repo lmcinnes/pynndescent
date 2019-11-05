@@ -33,8 +33,8 @@ FlatTree = namedtuple(
 dense_hyperplane_type = numba.float32[::1]
 sparse_hyperplane_type = numba.float64[:, ::1]
 offset_type = numba.float64
-children_type = numba.typeof((-1, -1))
-point_indices_type = numba.int64[::1]
+children_type = numba.typeof((np.int32(-1), np.int32(-1)))
+point_indices_type = numba.int32[::1]
 
 
 @numba.njit(fastmath=True, nogil=True, cache=True)
@@ -123,8 +123,8 @@ def angular_random_projection_split(data, indices, rng_state):
             n_right += 1
 
     # Now that we have the counts allocate arrays
-    indices_left = np.empty(n_left, dtype=np.int64)
-    indices_right = np.empty(n_right, dtype=np.int64)
+    indices_left = np.empty(n_left, dtype=np.int32)
+    indices_right = np.empty(n_right, dtype=np.int32)
 
     # Populate the arrays with graph_indices according to which side they fell on
     n_left = 0
@@ -212,8 +212,8 @@ def euclidean_random_projection_split(data, indices, rng_state):
             n_right += 1
 
     # Now that we have the counts allocate arrays
-    indices_left = np.empty(n_left, dtype=np.int64)
-    indices_right = np.empty(n_right, dtype=np.int64)
+    indices_left = np.empty(n_left, dtype=np.int32)
+    indices_right = np.empty(n_right, dtype=np.int32)
 
     # Populate the arrays with graph_indices according to which side they fell on
     n_left = 0
@@ -326,8 +326,8 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
             n_right += 1
 
     # Now that we have the counts allocate arrays
-    indices_left = np.empty(n_left, dtype=np.int64)
-    indices_right = np.empty(n_right, dtype=np.int64)
+    indices_left = np.empty(n_left, dtype=np.int32)
+    indices_right = np.empty(n_right, dtype=np.int32)
 
     # Populate the arrays with graph_indices according to which side they fell on
     n_left = 0
@@ -433,8 +433,8 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
             n_right += 1
 
     # Now that we have the counts allocate arrays
-    indices_left = np.empty(n_left, dtype=np.int64)
-    indices_right = np.empty(n_right, dtype=np.int64)
+    indices_left = np.empty(n_left, dtype=np.int32)
+    indices_right = np.empty(n_right, dtype=np.int32)
 
     # Populate the arrays with graph_indices according to which side they fell on
     n_left = 0
@@ -452,7 +452,14 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     return indices_left, indices_right, hyperplane, hyperplane_offset
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(
+    nogil=True,
+    cache=True,
+    locals={
+        "left_node_num": numba.types.int32,
+        "right_node_num": numba.types.int32,
+    }
+)
 def make_euclidean_tree(
     data,
     indices,
@@ -497,19 +504,26 @@ def make_euclidean_tree(
         hyperplanes.append(hyperplane)
         offsets.append(offset)
         children.append((left_node_num, right_node_num))
-        point_indices.append(np.array([-1], dtype=np.int64))
+        point_indices.append(np.array([-1], dtype=np.int32))
         # print("Made a node in tree with", len(point_indices), "nodes")
     else:
         hyperplanes.append(np.array([-1.0], dtype=np.float32))
         offsets.append(-np.inf)
-        children.append((-1, -1))
+        children.append((np.int32(-1), np.int32(-1)))
         point_indices.append(indices)
         # print("Made a leaf in tree with", len(point_indices), "nodes")
 
     return
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(
+    nogil=True,
+    cache=True,
+    locals={
+        "left_node_num": numba.types.int32,
+        "right_node_num": numba.types.int32,
+    }
+)
 def make_angular_tree(
     data,
     indices,
@@ -554,17 +568,24 @@ def make_angular_tree(
         hyperplanes.append(hyperplane)
         offsets.append(offset)
         children.append((left_node_num, right_node_num))
-        point_indices.append(np.array([-1], dtype=np.int64))
+        point_indices.append(np.array([-1], dtype=np.int32))
     else:
         hyperplanes.append(np.array([-1.0], dtype=np.float32))
         offsets.append(-np.inf)
-        children.append((-1, -1))
+        children.append((np.int32(-1), np.int32(-1)))
         point_indices.append(indices)
 
     return
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(
+    nogil=True,
+    cache=True,
+    locals={
+        "left_node_num": numba.types.int32,
+        "right_node_num": numba.types.int32,
+    }
+)
 def make_sparse_euclidean_tree(
     inds,
     indptr,
@@ -615,17 +636,24 @@ def make_sparse_euclidean_tree(
         hyperplanes.append(hyperplane)
         offsets.append(offset)
         children.append((left_node_num, right_node_num))
-        point_indices.append(np.array([-1], dtype=np.int64))
+        point_indices.append(np.array([-1], dtype=np.int32))
     else:
         hyperplanes.append(np.array([[-1.0], [-1.0]], dtype=np.float64))
         offsets.append(-np.inf)
-        children.append((-1, -1))
+        children.append((np.int32(-1), np.int32(-1)))
         point_indices.append(indices)
 
     return
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(
+    nogil=True,
+    cache=True,
+    locals={
+        "left_node_num": numba.types.int32,
+        "right_node_num": numba.types.int32,
+    }
+)
 def make_sparse_angular_tree(
     inds,
     indptr,
@@ -676,17 +704,17 @@ def make_sparse_angular_tree(
         hyperplanes.append(hyperplane)
         offsets.append(offset)
         children.append((left_node_num, right_node_num))
-        point_indices.append(np.array([-1], dtype=np.int64))
+        point_indices.append(np.array([-1], dtype=np.int32))
     else:
         hyperplanes.append(np.array([[-1.0], [-1.0]], dtype=np.float64))
         offsets.append(-np.inf)
-        children.append((-1, -1))
+        children.append((np.int32(-1), np.int32(-1)))
         point_indices.append(indices)
 
 
 @numba.njit(nogil=True, cache=True)
 def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
-    indices = np.arange(data.shape[0])
+    indices = np.arange(data.shape[0]).astype(np.int32)
 
     hyperplanes = numba.typed.List.empty_list(dense_hyperplane_type)
     offsets = numba.typed.List.empty_list(offset_type)
@@ -724,7 +752,7 @@ def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
 
 @numba.njit(nogil=True, cache=True)
 def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=False):
-    indices = np.arange(indptr.shape[0] - 1)
+    indices = np.arange(indptr.shape[0] - 1).astype(np.int32)
 
     hyperplanes = numba.typed.List.empty_list(sparse_hyperplane_type)
     offsets = numba.typed.List.empty_list(offset_type)
@@ -787,7 +815,7 @@ def select_side(hyperplane, offset, point, rng_state):
         return 1
 
 
-@numba.njit('i4[::1](f4[::1],f4[:,::1],f4[::1],i8[:,::1],i8[:,::1],i8[::1])')
+@numba.njit('i4[::1](f4[::1],f4[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])')
 def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
     node = 0
     while children[node, 0] > 0:
@@ -797,7 +825,7 @@ def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
         else:
             node = children[node, 1]
 
-    return indices[-children[node, 0]].astype(np.int32)
+    return indices[-children[node, 0]:-children[node, 1]]
 
 
 @numba.njit(fastmath=True)
@@ -838,7 +866,7 @@ def search_sparse_flat_tree(
         else:
             node = children[node, 1]
 
-    return indices[-children[node, 0]]
+    return indices[-children[node, 0]:-children[node, 1]]
 
 
 def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
@@ -969,78 +997,80 @@ def rptree_leaf_array(rp_forest):
 
 @numba.njit()
 def recursive_convert(tree, hyperplanes, offsets, children, indices, node_num,
-                      leaf_num, tree_node):
+                      leaf_start, tree_node):
 
     if tree.children[tree_node][0] < 0:
-        children[node_num, 0] = -leaf_num
-        indices[leaf_num, : len(tree.indices[tree_node])] = tree.indices[tree_node]
-        leaf_num += 1
-        return node_num, leaf_num
+        leaf_end = leaf_start + len(tree.indices[tree_node])
+        children[node_num, 0] = -leaf_start
+        children[node_num, 1] = -leaf_end
+        indices[leaf_start : leaf_end] = tree.indices[tree_node]
+        return node_num, leaf_end
     else:
         hyperplanes[node_num] = tree.hyperplanes[tree_node]
         offsets[node_num] = tree.offsets[tree_node]
         children[node_num, 0] = node_num + 1
         old_node_num = node_num
-        node_num, leaf_num = recursive_convert(
+        node_num, leaf_start = recursive_convert(
             tree,
             hyperplanes,
             offsets,
             children,
             indices,
             node_num + 1,
-            leaf_num,
+            leaf_start,
             tree.children[tree_node][0]
         )
         children[old_node_num, 1] = node_num + 1
-        node_num, leaf_num = recursive_convert(
+        node_num, leaf_start = recursive_convert(
             tree,
             hyperplanes,
             offsets,
             children,
             indices,
             node_num + 1,
-            leaf_num,
+            leaf_start,
             tree.children[tree_node][1]
         )
-        return node_num, leaf_num
+        return node_num, leaf_start
 
 @numba.njit()
 def recursive_convert_sparse(tree, hyperplanes, offsets, children, indices, node_num,
-                      leaf_num, tree_node):
+                      leaf_start, tree_node):
 
     if tree.children[tree_node][0] < 0:
-        children[node_num, 0] = -leaf_num
-        indices[leaf_num, : len(tree.indices[tree_node])] = tree.indices[tree_node]
-        leaf_num += 1
-        return node_num, leaf_num
+        leaf_end = leaf_start + len(tree.indices[tree_node])
+        children[node_num, 0] = -leaf_start
+        children[node_num, 1] = -leaf_end
+        indices[leaf_start : leaf_end] = tree.indices[tree_node]
+        return node_num, leaf_end
     else:
         hyperplanes[node_num, :, :tree.hyperplanes[tree_node].shape[1]] = tree.hyperplanes[
             tree_node]
         offsets[node_num] = tree.offsets[tree_node]
         children[node_num, 0] = node_num + 1
         old_node_num = node_num
-        node_num, leaf_num = recursive_convert_sparse(
+        node_num, leaf_start = recursive_convert_sparse(
             tree,
             hyperplanes,
             offsets,
             children,
             indices,
             node_num + 1,
-            leaf_num,
+            leaf_start,
             tree.children[tree_node][0]
         )
         children[old_node_num, 1] = node_num + 1
-        node_num, leaf_num = recursive_convert_sparse(
+        node_num, leaf_start = recursive_convert_sparse(
             tree,
             hyperplanes,
             offsets,
             children,
             indices,
             node_num + 1,
-            leaf_num,
+            leaf_start,
             tree.children[tree_node][1]
         )
-        return node_num, leaf_num
+        return node_num, leaf_start
 
 @numba.njit()
 def num_nodes_and_leaves(tree):
@@ -1090,7 +1120,7 @@ def sparse_hyperplane_dim(hyperplanes):
     return max_dim
 
 
-def convert_tree_format(tree):
+def convert_tree_format(tree, data_size):
 
     n_nodes, n_leaves = num_nodes_and_leaves(tree)
     is_sparse = False
@@ -1106,8 +1136,8 @@ def convert_tree_format(tree):
         hyperplanes[:, 0, :] = -1
 
     offsets = np.zeros(n_nodes, dtype=np.float32)
-    children = -1 * np.ones((n_nodes, 2), dtype=np.int64)
-    indices = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
+    children = np.int32(-1) * np.ones((n_nodes, 2), dtype=np.int32)
+    indices = np.int32(-1) * np.ones(data_size, dtype=np.int32)
     if is_sparse:
         recursive_convert_sparse(tree, hyperplanes, offsets, children, indices, 0, 0,
                           len(tree.children) - 1)

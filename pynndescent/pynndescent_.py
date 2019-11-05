@@ -244,13 +244,13 @@ def search_init(
             else:
                 break
 
-    # last_index = heap_indices.shape[0] - 1
-    # while heap_indices[last_index] == -1:
-    #     candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-    #     if tried[candidate] == 0:
-    #         d = dist(data[candidate], current_query, *dist_args)
-    #         simple_heap_push(heap_priorities, heap_indices, d, candidate)
-    #         tried[candidate] = 1
+    last_index = heap_indices.shape[0] - 1
+    while heap_indices[last_index] == -1:
+        candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+        if tried[candidate] == 0:
+            d = dist(data[candidate], current_query, *dist_args)
+            simple_heap_push(heap_priorities, heap_indices, d, candidate)
+            tried[candidate] = 1
 
     return heap_priorities, heap_indices
 
@@ -1096,7 +1096,8 @@ class NNDescent(object):
         if hasattr(self, "_search_graph"):
             return
 
-        self._rp_forest = [convert_tree_format(tree) for tree in self._rp_forest]
+        self._rp_forest = [convert_tree_format(tree, self._raw_data.shape[0]) for tree in
+                           self._rp_forest]
 
         if self._is_sparse:
             diversified_rows, diversified_data = sparse.sparse_diversify(
