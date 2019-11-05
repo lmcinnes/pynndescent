@@ -815,7 +815,13 @@ def select_side(hyperplane, offset, point, rng_state):
         return 1
 
 
-@numba.njit('i4[::1](f4[::1],f4[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])')
+@numba.njit(
+    'i4[::1](f4[::1],f4[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])',
+    locals={
+        "node": numba.types.uint32,
+        "side": numba.types.boolean
+    }
+)
 def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
     node = 0
     while children[node, 0] > 0:
@@ -852,7 +858,7 @@ def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
         return 1
 
 
-@numba.njit()
+@numba.njit(locals={"node": numba.types.uint32})
 def search_sparse_flat_tree(
     point_inds, point_data, hyperplanes, offsets, children, indices, rng_state
 ):

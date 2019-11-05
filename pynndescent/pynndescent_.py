@@ -213,6 +213,7 @@ def search_from_init(
         "candidate": numba.types.int32,
         "current_query": numba.types.float32[::1],
         "d": numba.types.float32,
+        "n_random_samples": numba.types.int32,
     }
 )
 def search_init(
@@ -221,6 +222,8 @@ def search_init(
 
     heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
     heap_indices = np.int32(-1) + np.zeros(k, dtype=np.int32)
+
+    n_random_samples = min(k//2, n_neighbors)
 
     for tree in forest:
         indices = search_flat_tree(
@@ -236,21 +239,22 @@ def search_init(
 
         for j in range(n_initial_points):
             candidate = indices[j]
-            if candidate >= 0 and heap_indices[0] == -1:
+            if candidate >= 0:  # and heap_indices[0] == -1:
                 d = dist(data[candidate], current_query, *dist_args)
                 # indices are guaranteed different
-                simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                c = simple_heap_push(heap_priorities, heap_indices, d, candidate)
                 tried[candidate] = 1
+                n_random_samples -= 1
             else:
                 break
 
-    last_index = heap_indices.shape[0] - 1
-    while heap_indices[last_index] == -1:
-        candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-        if tried[candidate] == 0:
-            d = dist(data[candidate], current_query, *dist_args)
-            simple_heap_push(heap_priorities, heap_indices, d, candidate)
-            tried[candidate] = 1
+    if n_random_samples > 0:
+        for i in range(n_random_samples):
+            candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+            if tried[candidate] == 0:
+                d = dist(data[candidate], current_query, *dist_args)
+                simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                tried[candidate] = 1
 
     return heap_priorities, heap_indices
 
@@ -276,7 +280,7 @@ def search(query_points, k, data, forest, indptr, indices, epsilon, n_neighbors,
     return result
 
 
-    ###############################################################################
+###############################################################################
 
 @numba.njit(parallel=True)
 def generate_leaf_updates(leaf_block, dist_thresholds, data, dist, dist_args):
