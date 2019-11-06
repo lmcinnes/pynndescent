@@ -29,7 +29,8 @@ from pynndescent.utils import (
     simple_heap_push,
 )
 
-from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree, convert_tree_format
+from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree, \
+    convert_tree_format, FlatTree
 
 update_type = numba.types.List(numba.types.List((numba.types.int64,
                                                  numba.types.int64,
@@ -150,6 +151,22 @@ def initialized_nnd_search(
 
 ###############################################################################
 
+masks = np.array([1,2,4,8,16,32,64,128], dtype=np.uint8)
+
+@numba.njit('b1(u1[::1],i4)')
+def has_been_tried(table, candidate):
+    loc = candidate >> 3
+    mask = masks[candidate & 7]
+    return (table[loc] & mask) == 0
+
+@numba.njit('void(u1[::1],i4)')
+def set_tried(table, candidate):
+    loc = candidate >> 3
+    mask = masks[candidate & 7]
+    table[loc] |= mask
+    return
+
+
 @numba.njit(fastmath=True,
             locals={"candidate": numba.types.int32,
                     "d": numba.types.float32,
@@ -157,7 +174,10 @@ def initialized_nnd_search(
                     "indices": numba.types.int32[::1],
                     "indptr": numba.types.int32[::1],
                     "data": numba.types.float32[:,::1],
-                    "heap_size": numba.types.int16})
+                    "heap_size": numba.types.int16,
+                    "distance_scale": numba.types.float32,
+                    "seed_scale": numba.types.float32,
+                    })
 def search_from_init(
         current_query,
         data,
@@ -168,14 +188,17 @@ def search_from_init(
         dist,
         dist_args
 ):
-    seed_set = [(np.float32(np.infty), np.int32(-1))]
-    distance_bound = (1.0 + epsilon) * heap_priorities[0]
+    distance_scale = (1.0 + epsilon)
+    # seed_set = [(np.float32(np.infty), np.int32(-1))]
+    distance_bound = distance_scale * heap_priorities[0]
     heap_size = heap_priorities.shape[0]
 
-    for j in range(heap_size):
-        heapq.heappush(
-            seed_set, (heap_priorities[j], heap_indices[j])
-        )
+    # for j in range(heap_size):
+    #     heapq.heappush(
+    #         seed_set, (heap_priorities[j], heap_indices[j])
+    #     )
+    seed_set = [(heap_priorities[j], heap_indices[j]) for j in range(heap_size)]
+    heapq.heapify(seed_set)
 
     # Find smallest seed point
     d_vertex, vertex = heapq.heappop(seed_set)
@@ -187,8 +210,9 @@ def search_from_init(
             candidate = indices[j]
 
             if tried[candidate] == 0:
-
                 tried[candidate] = 1
+            # if has_been_tried(tried, candidate):
+            #     set_tried(tried, candidate)
 
                 d = dist(data[candidate], current_query, *dist_args)
 
@@ -196,10 +220,13 @@ def search_from_init(
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
                     # Update bound
-                    distance_bound = (1.0 + epsilon) * heap_priorities[0]
+                    distance_bound = distance_scale * heap_priorities[0]
 
         # find new smallest seed point
-        d_vertex, vertex = heapq.heappop(seed_set)
+        if len(seed_set) == 0:
+            break
+        else:
+            d_vertex, vertex = heapq.heappop(seed_set)
 
     return heap_priorities, heap_indices
 
@@ -223,7 +250,7 @@ def search_init(
     heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
     heap_indices = np.int32(-1) + np.zeros(k, dtype=np.int32)
 
-    n_random_samples = min(k//2, n_neighbors)
+    n_random_samples = 0
 
     for tree in forest:
         indices = search_flat_tree(
@@ -235,25 +262,26 @@ def search_init(
             rng_state,
         )
 
-        n_initial_points = min(n_neighbors, indices.shape[0])
+        # n_initial_points = min(n_neighbors, indices.shape[0])
+        n_initial_points = indices.shape[0]
+        n_random_samples = k - n_initial_points
 
         for j in range(n_initial_points):
             candidate = indices[j]
-            if candidate >= 0:  # and heap_indices[0] == -1:
-                d = dist(data[candidate], current_query, *dist_args)
-                # indices are guaranteed different
-                c = simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                tried[candidate] = 1
-                n_random_samples -= 1
-            else:
-                break
+            d = dist(data[candidate], current_query, *dist_args)
+            # indices are guaranteed different
+            simple_heap_push(heap_priorities, heap_indices, d, candidate)
+            tried[candidate] = 1
+            # set_tried(tried, candidate)
 
     if n_random_samples > 0:
         for i in range(n_random_samples):
             candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
             if tried[candidate] == 0:
+            # if has_been_tried(tried, candidate):
                 d = dist(data[candidate], current_query, *dist_args)
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                # set_tried(tried, candidate)
                 tried[candidate] = 1
 
     return heap_priorities, heap_indices
@@ -1175,8 +1203,27 @@ class NNDescent(object):
         self._search_graph.eliminate_zeros()
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
+        # self._tried = np.zeros(
+        #     (self._raw_data.shape[0]//8)+1, dtype=np.uint8, order='C')
         self._tried = np.zeros(self._raw_data.shape[0], dtype=np.uint8, order='C')
         self._search_forest = tuple(self._rp_forest[:1])
+
+        # reorder according to the search tree leaf order
+        self._vertex_order = self._search_forest[0].indices
+        row_ordered_graph = self._search_graph[self._vertex_order, :]
+        self._search_graph = row_ordered_graph[:, self._vertex_order]
+        self._search_graph = self._search_graph.tocsr()
+        self._search_graph.sort_indices()
+
+        self._raw_data = self._raw_data[self._vertex_order, :]
+
+        old_tree = self._search_forest[0]
+        new_tree = FlatTree(old_tree.hyperplanes,
+                            old_tree.offsets,
+                            old_tree.children,
+                            np.arange(self._raw_data.shape[0]).astype(np.int32, order='C'),
+                            old_tree.leaf_size)
+        self._search_forest = (new_tree,)
 
         # # re-order graph and graph_data according to a spectral embedding
         # random_state = check_random_state(self.random_state)
@@ -1327,7 +1374,7 @@ class NNDescent(object):
         indices, dists = deheap_sort(result)
         indices, dists = indices[:, :k], dists[:, :k]
         # # Sort to input graph_data order
-        # indices = self._vertex_order[indices]
+        indices = self._vertex_order[indices]
 
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)

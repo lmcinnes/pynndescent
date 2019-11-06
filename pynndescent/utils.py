@@ -147,6 +147,11 @@ def make_heap(n_points, size):
     "indices": numba.types.float32[::1],
     "weights": numba.types.float32[::1],
     "is_new": numba.types.float32[::1],
+    "i": numba.types.uint16,
+    "ic1": numba.types.uint16,
+    "ic2": numba.types.uint16,
+    "i_swap": numba.types.uint16,
+    "heap_size": numba.types.uint16,
 })
 def heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
@@ -235,6 +240,11 @@ def heap_push(heap, row, weight, index, flag):
     "indices": numba.types.float32[::1],
     "weights": numba.types.float32[::1],
     "is_new": numba.types.float32[::1],
+    "i": numba.types.uint16,
+    "ic1": numba.types.uint16,
+    "ic2": numba.types.uint16,
+    "i_swap": numba.types.uint16,
+    "heap_size": numba.types.uint16,
 })
 def unchecked_heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
@@ -276,15 +286,17 @@ def unchecked_heap_push(heap, row, weight, index, flag):
     indices[0] = index
     is_new[0] = flag
 
+    heap_size = heap.shape[2]
+
     # descend the heap, swapping values until the max heap criterion is met
     i = 0
     while True:
         ic1 = 2 * i + 1
         ic2 = ic1 + 1
 
-        if ic1 >= heap.shape[2]:
+        if ic1 >= heap_size:
             break
-        elif ic2 >= heap.shape[2]:
+        elif ic2 >= heap_size:
             if weights[ic1] > weight:
                 i_swap = ic1
             else:

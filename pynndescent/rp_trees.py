@@ -939,7 +939,7 @@ def get_leaves_from_tree(tree):
         if tree.children[i][0] == -1 and tree.children[i][1] == -1:
             n_leaves += 1
 
-    result = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
+    result = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int32)
     leaf_index = 0
     for i in range(len(tree.indices)):
         if tree.children[i][0] == -1 or tree.children[i][1] == -1:
