@@ -151,26 +151,24 @@ def initialized_nnd_search(
 
 ###############################################################################
 
-masks = np.array([1,2,4,8,16,32,64,128], dtype=np.uint8)
-
 @numba.njit('b1(u1[::1],i4)')
 def has_been_tried(table, candidate):
     loc = candidate >> 3
-    mask = masks[candidate & 7]
-    return (table[loc] & mask) == 0
+    mask = 1 << (candidate & 7)
+    return (table[loc] & mask)
 
 @numba.njit('void(u1[::1],i4)')
 def set_tried(table, candidate):
     loc = candidate >> 3
-    mask = masks[candidate & 7]
+    mask = 1 << (candidate & 7)
     table[loc] |= mask
     return
-
 
 @numba.njit(fastmath=True,
             locals={"candidate": numba.types.int32,
                     "d": numba.types.float32,
                     "tried": numba.types.uint8[::1],
+#                     "tried": numba.types.Set(numba.types.int32),
                     "indices": numba.types.int32[::1],
                     "indptr": numba.types.int32[::1],
                     "data": numba.types.float32[:,::1],
@@ -189,14 +187,9 @@ def search_from_init(
         dist_args
 ):
     distance_scale = (1.0 + epsilon)
-    # seed_set = [(np.float32(np.infty), np.int32(-1))]
     distance_bound = distance_scale * heap_priorities[0]
     heap_size = heap_priorities.shape[0]
 
-    # for j in range(heap_size):
-    #     heapq.heappush(
-    #         seed_set, (heap_priorities[j], heap_indices[j])
-    #     )
     seed_set = [(heap_priorities[j], heap_indices[j]) for j in range(heap_size)]
     heapq.heapify(seed_set)
 
@@ -209,10 +202,8 @@ def search_from_init(
 
             candidate = indices[j]
 
-            if tried[candidate] == 0:
-                tried[candidate] = 1
-            # if has_been_tried(tried, candidate):
-            #     set_tried(tried, candidate)
+            if has_been_tried(tried, candidate) == 0:
+                set_tried(tried, candidate)
 
                 d = dist(data[candidate], current_query, *dist_args)
 
@@ -241,6 +232,7 @@ def search_from_init(
         "current_query": numba.types.float32[::1],
         "d": numba.types.float32,
         "n_random_samples": numba.types.int32,
+        "tried": numba.types.uint8[::1],
     }
 )
 def search_init(
@@ -262,27 +254,23 @@ def search_init(
             rng_state,
         )
 
-        # n_initial_points = min(n_neighbors, indices.shape[0])
         n_initial_points = indices.shape[0]
-        n_random_samples = k - n_initial_points
+        n_random_samples = min(k, n_neighbors) - n_initial_points
 
         for j in range(n_initial_points):
             candidate = indices[j]
             d = dist(data[candidate], current_query, *dist_args)
             # indices are guaranteed different
             simple_heap_push(heap_priorities, heap_indices, d, candidate)
-            tried[candidate] = 1
-            # set_tried(tried, candidate)
+            set_tried(tried, candidate)
 
     if n_random_samples > 0:
         for i in range(n_random_samples):
             candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-            if tried[candidate] == 0:
-            # if has_been_tried(tried, candidate):
+            if has_been_tried(tried, candidate) == 0:
                 d = dist(data[candidate], current_query, *dist_args)
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                # set_tried(tried, candidate)
-                tried[candidate] = 1
+                set_tried(tried, candidate)
 
     return heap_priorities, heap_indices
 
@@ -753,6 +741,15 @@ def degree_prune(graph, max_degree=20):
     return graph
 
 
+def resort_tree_indices(tree, tree_order):
+    new_tree = FlatTree(tree.hyperplanes,
+                        tree.offsets,
+                        tree.children,
+                        tree.indices[tree_order].astype(np.int32, order='C'),
+                        tree.leaf_size)
+    return new_tree
+
+
 class NNDescent(object):
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
     very flexible and supports a wide variety of distances, including
@@ -897,7 +894,8 @@ class NNDescent(object):
         n_trees=None,
         leaf_size=None,
         pruning_degree_multiplier=2.0,
-        diversify_epsilon=0.5,
+        diversify_epsilon=1.0,
+        n_search_trees=1,
         tree_init=True,
         random_state=None,
         algorithm="standard",
@@ -923,6 +921,7 @@ class NNDescent(object):
         self.leaf_size = leaf_size
         self.prune_degree_multiplier = pruning_degree_multiplier
         self.diversify_epsilon = diversify_epsilon
+        self.n_search_trees = n_search_trees
         self.max_candidates = max_candidates
         self.low_memory = low_memory
         self.n_iters = n_iters
@@ -1192,7 +1191,6 @@ class NNDescent(object):
 
         self._search_graph = self._search_graph.maximum(
             reverse_graph
-            # self._search_graph.transpose()
         ).tocsr()
         self._search_graph.eliminate_zeros()
 
@@ -1203,13 +1201,11 @@ class NNDescent(object):
         self._search_graph.eliminate_zeros()
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
-        # self._tried = np.zeros(
-        #     (self._raw_data.shape[0]//8)+1, dtype=np.uint8, order='C')
-        self._tried = np.zeros(self._raw_data.shape[0], dtype=np.uint8, order='C')
-        self._search_forest = tuple(self._rp_forest[:1])
+        self._tried = np.zeros(
+            (self._raw_data.shape[0]//8)+1, dtype=np.uint8, order='C')
 
         # reorder according to the search tree leaf order
-        self._vertex_order = self._search_forest[0].indices
+        self._vertex_order = self._rp_forest[0].indices
         row_ordered_graph = self._search_graph[self._vertex_order, :]
         self._search_graph = row_ordered_graph[:, self._vertex_order]
         self._search_graph = self._search_graph.tocsr()
@@ -1217,13 +1213,9 @@ class NNDescent(object):
 
         self._raw_data = self._raw_data[self._vertex_order, :]
 
-        old_tree = self._search_forest[0]
-        new_tree = FlatTree(old_tree.hyperplanes,
-                            old_tree.offsets,
-                            old_tree.children,
-                            np.arange(self._raw_data.shape[0]).astype(np.int32, order='C'),
-                            old_tree.leaf_size)
-        self._search_forest = (new_tree,)
+        tree_order = np.argsort(self._vertex_order)
+        self._search_forest = tuple(resort_tree_indices(tree, tree_order)
+                                    for tree in self._rp_forest[:self.n_search_trees])
 
         # # re-order graph and graph_data according to a spectral embedding
         # random_state = check_random_state(self.random_state)
@@ -1299,42 +1291,20 @@ class NNDescent(object):
             # query_data = check_array(query_data, dtype=np.float64, order='C')
             query_data = np.asarray(query_data).astype(np.float32, order='C')
             self._init_search_graph()
-            # search_forest = numba.typed.List.empty_list(numba.typeof(self._rp_forest[0]))
-            # for i in range(n_search_trees):
-            #     search_forest.append(self._rp_forest[i])
-            # heap = make_heap(query_data.shape[0], k)
-            # init = initialise_search(
-            #     heap,
-            #     self._search_forest,
-            #     n_search_trees,
-            #     self._raw_data,
-            #     query_data,
-            #     int(k * queue_size),
-            #     self._distance_func,
-            #     self._dist_args,
-            #     self.rng_state,
-            # )
-            # result = initialized_nnd_search(
-            #     self._raw_data,
-            #     self._search_graph.indptr,
-            #     self._search_graph.indices,
-            #     init,
-            #     query_data,
-            #     epsilon,
-            #     self._tried,
-            #     self._distance_func,
-            #     self._dist_args,
-            # )
-
-            # def search(query_points, k, data, forest, indptr, indices, epsilon, tried,
-            #            dist,
-            #            dist_args, rng_state):
-            result = search(query_data, k, self._raw_data, self._search_forest,
-                            self._search_graph.indptr, self._search_graph.indices,
-                            epsilon, self.n_neighbors, self._tried,
-                            self._distance_func,
-                            self._dist_args,
-                            self.rng_state)
+            result = search(
+                query_data,
+                k,
+                self._raw_data,
+                self._search_forest,
+                self._search_graph.indptr,
+                self._search_graph.indices,
+                epsilon,
+                self.n_neighbors,
+                self._tried,
+                self._distance_func,
+                self._dist_args,
+                self.rng_state
+            )
         else:
             # Sparse case
             query_data = check_array(query_data, accept_sparse="csr")
@@ -1373,7 +1343,7 @@ class NNDescent(object):
 
         indices, dists = deheap_sort(result)
         indices, dists = indices[:, :k], dists[:, :k]
-        # # Sort to input graph_data order
+        # Sort to input graph_data order
         indices = self._vertex_order[indices]
 
         if self._distance_correction is not None:
