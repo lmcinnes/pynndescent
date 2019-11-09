@@ -107,14 +107,23 @@ def sparse_diff(ind1, data1, ind2, data2):
     return sparse_sum(ind1, data1, ind2, -data2)
 
 
-@numba.njit()
+@numba.njit(fastmath=True, locals={
+    "ind1": numba.types.int32[::1],
+    "data1": numba.types.float32[::1],
+    "ind2": numba.types.int32[::1],
+    "data2": numba.types.float32[::1],
+    "val": numba.types.float32,
+    "i1": numba.types.uint32,
+    "i2": numba.types.uint32,
+    "j1": numba.types.uint32,
+    "j2": numba.types.uint32,
+})
 def sparse_mul(ind1, data1, ind2, data2):
-    result_ind = arr_intersect(ind1, ind2)
-    result_data = np.zeros(result_ind.shape[0], dtype=np.float32)
+    result_ind = numba.typed.List.empty_list(numba.types.int32)
+    result_data = numba.typed.List.empty_list(numba.types.float32)
 
     i1 = 0
     i2 = 0
-    nnz = 0
 
     # pass through both index lists
     while i1 < ind1.shape[0] and i2 < ind2.shape[0]:
@@ -124,9 +133,8 @@ def sparse_mul(ind1, data1, ind2, data2):
         if j1 == j2:
             val = data1[i1] * data2[i2]
             if val != 0:
-                result_ind[nnz] = j1
-                result_data[nnz] = val
-                nnz += 1
+                result_ind.append(j1)
+                result_data.append(val)
             i1 += 1
             i2 += 1
         elif j1 < j2:
@@ -134,11 +142,40 @@ def sparse_mul(ind1, data1, ind2, data2):
         else:
             i2 += 1
 
-    # truncate to the correct length in case there were zeros created
-    result_ind = result_ind[:nnz]
-    result_data = result_data[:nnz]
-
     return result_ind, result_data
+
+# @numba.njit()
+# def sparse_mul(ind1, data1, ind2, data2):
+#     result_ind = arr_intersect(ind1, ind2)
+#     result_data = np.zeros(result_ind.shape[0], dtype=np.float32)
+#
+#     i1 = 0
+#     i2 = 0
+#     nnz = 0
+#
+#     # pass through both index lists
+#     while i1 < ind1.shape[0] and i2 < ind2.shape[0]:
+#         j1 = ind1[i1]
+#         j2 = ind2[i2]
+#
+#         if j1 == j2:
+#             val = data1[i1] * data2[i2]
+#             if val != 0:
+#                 result_ind[nnz] = j1
+#                 result_data[nnz] = val
+#                 nnz += 1
+#             i1 += 1
+#             i2 += 1
+#         elif j1 < j2:
+#             i1 += 1
+#         else:
+#             i2 += 1
+#
+#     # truncate to the correct length in case there were zeros created
+#     result_ind = result_ind[:nnz]
+#     result_data = result_data[:nnz]
+#
+#     return result_ind, result_data
 
 
 @numba.njit()
@@ -193,8 +230,11 @@ def sparse_canberra(ind1, data1, ind2, data2):
     numer_data = np.abs(numer_data)
 
     _, val_data = sparse_mul(numer_inds, numer_data, denom_inds, denom_data)
+    result = 0.0
+    for val in val_data:
+        result += val
 
-    return np.sum(val_data)
+    return result
 
 
 @numba.njit()
@@ -312,8 +352,8 @@ def sparse_cosine(ind1, data1, ind2, data2):
     norm1 = norm(data1)
     norm2 = norm(data2)
 
-    for i in range(aux_data.shape[0]):
-        result += aux_data[i]
+    for val in aux_data:
+        result += val
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0
@@ -362,8 +402,8 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
 
     common_indices = set(dot_prod_inds)
 
-    for i in range(dot_prod_data.shape[0]):
-        dot_product += dot_prod_data[i]
+    for val in dot_prod_data:
+        dot_product += val
 
     for i in range(ind1.shape[0]):
         if ind1[i] not in common_indices:
@@ -392,8 +432,8 @@ def sparse_hellinger(ind1, data1, ind2, data2):
     norm2 = np.sum(data2)
     sqrt_norm_prod = np.sqrt(norm1 * norm2)
 
-    for i in range(aux_data.shape[0]):
-        result += np.sqrt(aux_data[i])
+    for val in aux_data:
+        result += np.sqrt(val)
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0

@@ -242,7 +242,7 @@ def search_init(
     heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
     heap_indices = np.int32(-1) + np.zeros(k, dtype=np.int32)
 
-    n_random_samples = 0
+    n_random_samples = min(k, n_neighbors)
 
     for tree in forest:
         indices = search_flat_tree(

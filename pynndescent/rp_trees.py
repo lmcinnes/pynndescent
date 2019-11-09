@@ -309,8 +309,8 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
         _, mul_data = sparse_mul(hyperplane_inds, hyperplane_data, i_inds, i_data)
-        for d in range(mul_data.shape[0]):
-            margin += mul_data[d]
+        for val in mul_data:
+            margin += val
 
         if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
@@ -401,8 +401,8 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
         hyperplane_inds, hyperplane_data, offset_inds, offset_data
     )
 
-    for d in range(offset_data.shape[0]):
-        hyperplane_offset -= offset_data[d]
+    for val in offset_data:
+        hyperplane_offset -= val
 
     # For each point compute the margin (project into normal vector, add offset)
     # If we are on lower side of the hyperplane put in one pile, otherwise
@@ -416,8 +416,8 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
         _, mul_data = sparse_mul(hyperplane_inds, hyperplane_data, i_inds, i_data)
-        for d in range(mul_data.shape[0]):
-            margin += mul_data[d]
+        for val in mul_data:
+            margin += val
 
         if abs(margin) < EPS:
             side[i] = abs(tau_rand_int(rng_state)) % 2
@@ -843,8 +843,8 @@ def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
 
     _, aux_data = sparse_mul(hyperplane_inds, hyperplane_data, point_inds, point_data)
 
-    for d in range(aux_data.shape[0]):
-        margin += aux_data[d]
+    for val in aux_data:
+        margin += val
 
     if abs(margin) < EPS:
         side = tau_rand_int(rng_state) % 2
