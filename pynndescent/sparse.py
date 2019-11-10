@@ -41,10 +41,26 @@ def arr_intersect(ar1, ar2):
     return aux[:-1][aux[1:] == aux[:-1]]
 
 
-@numba.njit()
+@numba.njit(
+    fastmath=True,
+    locals={
+        "ind1": numba.types.int32[::1],
+        "data1": numba.types.float32[::1],
+        "ind2": numba.types.int32[::1],
+        "data2": numba.types.float32[::1],
+        "result_ind": numba.types.int32[::1],
+        "result_data": numba.types.float32[::1],
+        "val": numba.types.float32,
+        "i1": numba.types.uint32,
+        "i2": numba.types.uint32,
+        "j1": numba.types.uint32,
+        "j2": numba.types.uint32,
+    }
+)
 def sparse_sum(ind1, data1, ind2, data2):
-    result_ind = arr_union(ind1, ind2)
-    result_data = np.zeros(result_ind.shape[0], dtype=np.float32)
+    result_size = len(set(np.concatenate((ind1, ind2))))
+    result_ind = np.zeros(result_size, dtype=np.int32)
+    result_data = np.zeros(result_size, dtype=np.float32)
 
     i1 = 0
     i2 = 0
@@ -80,17 +96,19 @@ def sparse_sum(ind1, data1, ind2, data2):
 
     # pass over the tails
     while i1 < ind1.shape[0]:
+        j1 = ind1[i1]
         val = data1[i1]
         if val != 0:
-            result_ind[nnz] = i1
+            result_ind[nnz] = j1
             result_data[nnz] = val
             nnz += 1
         i1 += 1
 
     while i2 < ind2.shape[0]:
+        j2 = ind1[i2]
         val = data2[i2]
         if val != 0:
-            result_ind[nnz] = i2
+            result_ind[nnz] = j2
             result_data[nnz] = val
             nnz += 1
         i2 += 1
@@ -100,7 +118,6 @@ def sparse_sum(ind1, data1, ind2, data2):
     result_data = result_data[:nnz]
 
     return result_ind, result_data
-
 
 @numba.njit()
 def sparse_diff(ind1, data1, ind2, data2):
