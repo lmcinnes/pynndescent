@@ -578,10 +578,19 @@ def new_build_candidates(
     return new_candidate_neighbors, old_candidate_neighbors
 
 
-# Generates a timestamp for use in logging messages when verbose=True
-def ts():
-    return time.ctime(time.time())
+@numba.njit('b1(u1[::1],i4)')
+def has_been_visited(table, candidate):
+    loc = candidate >> 3
+    mask = 1 << (candidate & 7)
+    return (table[loc] & mask)
 
+
+@numba.njit('void(u1[::1],i4)')
+def mark_visited(table, candidate):
+    loc = candidate >> 3
+    mask = 1 << (candidate & 7)
+    table[loc] |= mask
+    return
 
 
 @numba.njit(
@@ -639,22 +648,6 @@ def simple_heap_push(priorities, indices, p, n):
 
     return 1
 
-
-@numba.njit("b1(u1[::1],i4)")
-def has_been_tried(table, candidate):
-    loc = candidate >> 3
-    mask = 1 << (candidate & 7)
-    return table[loc] & mask
-
-
-@numba.njit("void(u1[::1],i4)")
-def set_tried(table, candidate):
-    loc = candidate >> 3
-    mask = 1 << (candidate & 7)
-    table[loc] |= mask
-    return
-
-
 @numba.njit()
 def apply_graph_updates_low_memory(current_graph, updates):
 
@@ -709,3 +702,8 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
                     n_changes += added
 
     return n_changes
+
+# Generates a timestamp for use in logging messages when verbose=True
+def ts():
+    return time.ctime(time.time())
+

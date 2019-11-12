@@ -20,8 +20,8 @@ from pynndescent.utils import (
     new_build_candidates,
     deheap_sort,
     simple_heap_push,
-    has_been_tried,
-    set_tried,
+    has_been_visited,
+    mark_visited,
     apply_graph_updates_high_memory,
     apply_graph_updates_low_memory,
 )
@@ -78,8 +78,8 @@ def search_from_init(
 
             candidate = search_inds[j]
 
-            if has_been_tried(tried, candidate) == 0:
-                set_tried(tried, candidate)
+            if has_been_visited(tried, candidate) == 0:
+                mark_visited(tried, candidate)
 
                 from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
                 from_data = data[indptr[candidate] : indptr[candidate + 1]]
@@ -160,12 +160,12 @@ def search_init(
 
             # indices are guaranteed different
             simple_heap_push(heap_priorities, heap_indices, d, candidate)
-            set_tried(tried, candidate)
+            mark_visited(tried, candidate)
 
     if n_random_samples > 0:
         for i in range(n_random_samples):
             candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-            if has_been_tried(tried, candidate) == 0:
+            if has_been_visited(tried, candidate) == 0:
                 from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
                 from_data = data[indptr[candidate] : indptr[candidate + 1]]
 
@@ -174,7 +174,7 @@ def search_init(
                 )
 
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                set_tried(tried, candidate)
+                mark_visited(tried, candidate)
 
     return heap_priorities, heap_indices
 
