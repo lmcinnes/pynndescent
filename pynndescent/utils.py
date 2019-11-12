@@ -638,3 +638,74 @@ def simple_heap_push(priorities, indices, p, n):
     indices[i] = n
 
     return 1
+
+
+@numba.njit("b1(u1[::1],i4)")
+def has_been_tried(table, candidate):
+    loc = candidate >> 3
+    mask = 1 << (candidate & 7)
+    return table[loc] & mask
+
+
+@numba.njit("void(u1[::1],i4)")
+def set_tried(table, candidate):
+    loc = candidate >> 3
+    mask = 1 << (candidate & 7)
+    table[loc] |= mask
+    return
+
+
+@numba.njit()
+def apply_graph_updates_low_memory(current_graph, updates):
+
+    n_changes = 0
+
+    for i in range(len(updates)):
+        for j in range(len(updates[i])):
+            p, q, d = updates[i][j]
+
+            if p == -1 or q == -1:
+                continue
+
+            added = heap_push(current_graph, p, d, q, 1)
+            n_changes += added
+
+            added = heap_push(current_graph, q, d, p, 1)
+            n_changes += added
+
+    return n_changes
+
+
+@numba.njit(locals={"p": numba.types.int64, "q": numba.types.int64})
+def apply_graph_updates_high_memory(current_graph, updates, in_graph):
+
+    n_changes = 0
+
+    for i in range(len(updates)):
+        for j in range(len(updates[i])):
+            p, q, d = updates[i][j]
+
+            if p == -1 or q == -1:
+                continue
+
+            if q in in_graph[p] and p in in_graph[q]:
+                continue
+            elif q in in_graph[p]:
+                pass
+            else:
+                added = unchecked_heap_push(current_graph, p, d, q, 1)
+
+                if added > 0:
+                    in_graph[p].add(q)
+                    n_changes += added
+
+            if p == q or p in in_graph[q]:
+                pass
+            else:
+                added = unchecked_heap_push(current_graph, q, d, p, 1)
+
+                if added > 0:
+                    in_graph[q].add(p)
+                    n_changes += added
+
+    return n_changes

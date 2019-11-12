@@ -19,6 +19,11 @@ from pynndescent.utils import (
     rejection_sample,
     new_build_candidates,
     deheap_sort,
+    simple_heap_push,
+    has_been_tried,
+    set_tried,
+    apply_graph_updates_high_memory,
+    apply_graph_updates_low_memory,
 )
 
 from pynndescent.sparse import sparse_euclidean
@@ -26,15 +31,221 @@ from pynndescent.rp_trees import search_sparse_flat_tree
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 
-@numba.njit(parallel=True)
-def generate_leaf_updates(
-    leaf_block,
-    dist_thresholds,
+
+@numba.njit(
+    fastmath=True,
+    locals={
+        "candidate": numba.types.int32,
+        "d": numba.types.float32,
+        "tried": numba.types.uint8[::1],
+        #                     "tried": numba.types.Set(numba.types.int32),
+        "indices": numba.types.int32[::1],
+        "indptr": numba.types.int32[::1],
+        "data": numba.types.float32[:, ::1],
+        "heap_size": numba.types.int16,
+        "distance_scale": numba.types.float32,
+        "seed_scale": numba.types.float32,
+    },
+)
+def search_from_init(
+    query_inds,
+    query_data,
     inds,
     indptr,
     data,
-    dist,
+    search_indptr,
+    search_inds,
+    heap_priorities,
+    heap_indices,
+    epsilon,
+    tried,
+    sparse_dist,
     dist_args,
+):
+    distance_scale = 1.0 + epsilon
+    distance_bound = distance_scale * heap_priorities[0]
+    heap_size = heap_priorities.shape[0]
+
+    seed_set = [(heap_priorities[j], heap_indices[j]) for j in range(heap_size)]
+    heapq.heapify(seed_set)
+
+    # Find smallest seed point
+    d_vertex, vertex = heapq.heappop(seed_set)
+
+    while d_vertex < distance_bound:
+
+        for j in range(search_indptr[vertex], search_indptr[vertex + 1]):
+
+            candidate = search_inds[j]
+
+            if has_been_tried(tried, candidate) == 0:
+                set_tried(tried, candidate)
+
+                from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
+                from_data = data[indptr[candidate] : indptr[candidate + 1]]
+
+                d = sparse_dist(
+                    from_inds, from_data, query_inds, query_data, *dist_args
+                )
+
+                if d < distance_bound:
+                    simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                    heapq.heappush(seed_set, (d, candidate))
+                    # Update bound
+                    distance_bound = distance_scale * heap_priorities[0]
+
+        # find new smallest seed point
+        if len(seed_set) == 0:
+            break
+        else:
+            d_vertex, vertex = heapq.heappop(seed_set)
+
+    return heap_priorities, heap_indices
+
+
+@numba.njit(
+    fastmath=True,
+    locals={
+        "heap_priorities": numba.types.float32[::1],
+        "heap_indices": numba.types.int32[::1],
+        "indices": numba.types.int32[::1],
+        "candidate": numba.types.int32,
+        "current_query": numba.types.float32[::1],
+        "d": numba.types.float32,
+        "n_random_samples": numba.types.int32,
+        "tried": numba.types.uint8[::1],
+    },
+)
+def search_init(
+    query_inds,
+    query_data,
+    k,
+    inds,
+    indptr,
+    data,
+    forest,
+    n_neighbors,
+    tried,
+    sparse_dist,
+    dist_args,
+    rng_state,
+):
+
+    heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
+    heap_indices = np.int32(-1) + np.zeros(k, dtype=np.int32)
+
+    n_random_samples = min(k, n_neighbors)
+
+    for tree in forest:
+        indices = search_sparse_flat_tree(
+            query_inds,
+            query_data,
+            tree.hyperplanes,
+            tree.offsets,
+            tree.children,
+            tree.indices,
+            rng_state,
+        )
+
+        n_initial_points = indices.shape[0]
+        n_random_samples = min(k, n_neighbors) - n_initial_points
+
+        for j in range(n_initial_points):
+            candidate = indices[j]
+
+            from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
+            from_data = data[indptr[candidate] : indptr[candidate + 1]]
+
+            d = sparse_dist(from_inds, from_data, query_inds, query_data, *dist_args)
+
+            # indices are guaranteed different
+            simple_heap_push(heap_priorities, heap_indices, d, candidate)
+            set_tried(tried, candidate)
+
+    if n_random_samples > 0:
+        for i in range(n_random_samples):
+            candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+            if has_been_tried(tried, candidate) == 0:
+                from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
+                from_data = data[indptr[candidate] : indptr[candidate + 1]]
+
+                d = sparse_dist(
+                    from_inds, from_data, query_inds, query_data, *dist_args
+                )
+
+                simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                set_tried(tried, candidate)
+
+    return heap_priorities, heap_indices
+
+
+@numba.njit()
+def search(
+    query_inds,
+    query_indptr,
+    query_data,
+    k,
+    inds,
+    indptr,
+    data,
+    forest,
+    search_indptr,
+    search_indices,
+    epsilon,
+    n_neighbors,
+    tried,
+    sparse_dist,
+    dist_args,
+    rng_state,
+):
+
+    n_query_points = query_indptr.shape[0] - 2
+
+    result = make_heap(n_query_points, k)
+    for i in range(n_query_points):
+        tried[:] = 0
+        current_query_inds = query_inds[query_indptr[i] : query_indptr[i + 1]]
+        current_query_data = query_data[query_indptr[i] : query_indptr[i + 1]]
+
+        heap_priorities, heap_indices = search_init(
+            current_query_inds,
+            current_query_data,
+            k,
+            inds,
+            indptr,
+            data,
+            forest,
+            n_neighbors,
+            tried,
+            sparse_dist,
+            dist_args,
+            rng_state,
+        )
+        heap_priorities, heap_indices = search_from_init(
+            current_query_inds,
+            current_query_data,
+            inds,
+            indptr,
+            data,
+            search_indptr,
+            search_indices,
+            heap_priorities,
+            heap_indices,
+            epsilon,
+            tried,
+            sparse_dist,
+            dist_args,
+        )
+
+        result[0, i] = heap_indices
+        result[1, i] = heap_priorities
+
+    return result
+
+
+@numba.njit(parallel=True)
+def generate_leaf_updates(
+    leaf_block, dist_thresholds, inds, indptr, data, dist, dist_args
 ):
 
     updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
@@ -64,15 +275,7 @@ def generate_leaf_updates(
 
 
 @numba.njit()
-def init_rp_tree(
-    inds,
-    indptr,
-    data,
-    dist,
-    dist_args,
-    current_graph,
-    leaf_array
-):
+def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
     block_size = 65536
@@ -85,13 +288,9 @@ def init_rp_tree(
         leaf_block = leaf_array[block_start:block_end]
         dist_thresholds = current_graph[1, :, 0]
 
-        updates = generate_leaf_updates(leaf_block,
-                                        dist_thresholds,
-                                        inds,
-                                        indptr,
-                                        data,
-                                        dist,
-                                        dist_args)
+        updates = generate_leaf_updates(
+            leaf_block, dist_thresholds, inds, indptr, data, dist, dist_args
+        )
 
         for j in range(len(updates)):
             for k in range(len(updates[j])):
@@ -105,16 +304,7 @@ def init_rp_tree(
 
 
 @numba.njit(fastmath=True)
-def init_random(
-    n_neighbors,
-    inds,
-    indptr,
-    data,
-    heap,
-    dist,
-    dist_args,
-    rng_state
-):
+def init_random(n_neighbors, inds, indptr, data, heap, dist, dist_args, rng_state):
     for i in range(data.shape[0]):
         if heap[0, i, 0] == -1:
             for j in range(n_neighbors - np.sum(heap[0, i] == -1)):
@@ -187,62 +377,6 @@ def generate_graph_updates(
 
 
 @numba.njit()
-def apply_graph_updates_low_memory(current_graph, updates):
-
-    n_changes = 0
-
-    for i in range(len(updates)):
-        for j in range(len(updates[i])):
-            p, q, d = updates[i][j]
-
-            if p == -1 or q == -1:
-                continue
-
-            added = heap_push(current_graph, p, d, q, 1)
-            n_changes += added
-
-            added = heap_push(current_graph, q, d, p, 1)
-            n_changes += added
-
-    return n_changes
-
-
-@numba.njit(locals={"p": numba.types.int64, "q": numba.types.int64})
-def apply_graph_updates_high_memory(current_graph, updates, in_graph):
-
-    n_changes = 0
-
-    for i in range(len(updates)):
-        for j in range(len(updates[i])):
-            p, q, d = updates[i][j]
-
-            if p == -1 or q == -1:
-                continue
-
-            if q in in_graph[p] and p in in_graph[q]:
-                continue
-            elif q in in_graph[p]:
-                pass
-            else:
-                added = unchecked_heap_push(current_graph, p, d, q, 1)
-
-                if added > 0:
-                    in_graph[p].add(q)
-                    n_changes += added
-
-            if p == q or p in in_graph[q]:
-                pass
-            else:
-                added = unchecked_heap_push(current_graph, q, d, p, 1)
-
-                if added > 0:
-                    in_graph[q].add(p)
-                    n_changes += added
-
-    return n_changes
-
-
-@numba.njit()
 def nn_descent_internal_low_memory_parallel(
     current_graph,
     inds,
@@ -297,10 +431,7 @@ def nn_descent_internal_low_memory_parallel(
                 dist_args,
             )
 
-            c += apply_graph_updates_low_memory(
-                current_graph,
-                updates,
-            )
+            c += apply_graph_updates_low_memory(current_graph, updates)
 
         if c <= delta * n_neighbors * data.shape[0]:
             return
@@ -327,8 +458,9 @@ def nn_descent_internal_high_memory_parallel(
     block_size = 16384
     n_blocks = n_vertices // block_size
 
-    in_graph = [set(current_graph[0, i].astype(np.int64)) for i in range(
-        current_graph.shape[1])]
+    in_graph = [
+        set(current_graph[0, i].astype(np.int64)) for i in range(current_graph.shape[1])
+    ]
 
     for n in range(n_iters):
         if verbose:
@@ -364,14 +496,11 @@ def nn_descent_internal_high_memory_parallel(
                 dist_args,
             )
 
-            c += apply_graph_updates_high_memory(
-                current_graph,
-                updates,
-                in_graph,
-            )
+            c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
 
         if c <= delta * n_neighbors * data.shape[0]:
             return
+
 
 @numba.njit()
 def nn_descent(
@@ -602,15 +731,14 @@ def sparse_initialized_nnd_search(
 
                     tried[candidate] = 1
 
-                    from_inds = inds[indptr[candidate]: indptr[candidate + 1]]
-                    from_data = data[indptr[candidate]: indptr[candidate + 1]]
+                    from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
+                    from_data = data[indptr[candidate] : indptr[candidate + 1]]
 
                     d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
 
                     if d < distance_bound:
                         unchecked_heap_push(initialization, i, d, candidate, 1)
                         heapq.heappush(seed_set, (d, candidate))
-
 
             distance_bound = (1.0 + epsilon) * initialization[1, i, 0]
             d_vertex, vertex = heapq.heappop(seed_set)
