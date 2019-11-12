@@ -462,11 +462,11 @@ def sparse_hellinger(ind1, data1, ind2, data2):
         return np.sqrt(1.0 - (result / sqrt_norm_prod))
 
 
-@numba.njit()
-def sparse_diversify(indices, distances, data_indices, data_indptr, data_data, dist, dist_args,
+@numba.njit(parallel=True)
+def diversify(indices, distances, data_indices, data_indptr, data_data, dist, dist_args,
               epsilon=0.01):
 
-    for i in range(indices.shape[0]):
+    for i in numba.prange(indices.shape[0]):
 
         new_indices = [indices[i, 0]]
         new_distances = [distances[i, 0]]
@@ -505,6 +505,55 @@ def sparse_diversify(indices, distances, data_indices, data_indptr, data_data, d
     return indices, distances
 
 
+@numba.njit(parallel=True)
+def diversify_csr(
+        graph_indptr,
+        graph_indices,
+        graph_data,
+        data_indptr,
+        data_indices,
+        data_data,
+        dist,
+        dist_args,
+        epsilon=0.01
+):
+
+    n_nodes = graph_indptr.shape[0] - 1
+
+    for i in numba.prange(n_nodes):
+
+        current_indices = graph_indices[graph_indptr[i]: graph_indptr[i + 1]]
+        current_data = graph_data[graph_indptr[i]: graph_indptr[i + 1]]
+
+        order = np.argsort(current_data)
+        retained = np.ones(order.shape[0], dtype=np.int8)
+
+        for idx in range(1, order.shape[0]):
+
+            j = order[idx]
+
+            for k in range(idx):
+                if retained[k] == 1:
+                    p = current_indices[j]
+                    q = current_indices[k]
+
+                    from_inds = data_indices[data_indptr[p]: data_indptr[p + 1]]
+                    from_data = data_data[data_indptr[p]: data_indptr[p + 1]]
+
+                    to_inds = data_indices[data_indptr[q]: data_indptr[q + 1]]
+                    to_data = data_data[data_indptr[q]: data_indptr[q + 1]]
+                    d = dist(from_inds, from_data, to_inds, to_data, *dist_args)
+
+                    if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
+                        retained[j] = 0
+                        break
+
+        for idx in range(order.shape[0]):
+            j = order[idx]
+            if retained[j] == 0:
+                graph_data[graph_indptr[i] + j] = 0
+
+    return
 
 sparse_named_distances = {
     # general minkowski distances

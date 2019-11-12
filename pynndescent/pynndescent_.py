@@ -887,6 +887,9 @@ class NNDescent(object):
 
                 self._is_sparse = True
 
+                if not self._raw_data.has_sorted_indices:
+                    self._raw_data.sort_indices()
+
                 if metric in sparse.sparse_named_distances:
                     self._distance_func = sparse.sparse_named_distances[metric]
                     if metric in sparse.sparse_need_n_features:
@@ -902,7 +905,7 @@ class NNDescent(object):
                 if verbose:
                     print(ts(), "metric NN descent for", str(n_iters), "iterations")
 
-                self._neighbor_graph = sparse_nnd.sparse_nn_descent(
+                self._neighbor_graph = sparse_nnd.nn_descent(
                     self._raw_data.indices,
                     self._raw_data.indptr,
                     self._raw_data.data,
@@ -962,7 +965,7 @@ class NNDescent(object):
                            self._rp_forest]
 
         if self._is_sparse:
-            diversified_rows, diversified_data = sparse.sparse_diversify(
+            diversified_rows, diversified_data = sparse.diversify(
                 self._neighbor_graph[0],
                 self._neighbor_graph[1],
                 self._raw_data.indices,
@@ -1010,17 +1013,17 @@ class NNDescent(object):
         reverse_graph.eliminate_zeros()
         reverse_graph = reverse_graph.transpose()
         if self._is_sparse:
-            # sparse.diversify_csr(
-            #     reverse_graph.indptr,
-            #     reverse_graph.indices,
-            #     reverse_graph.data,
-            #     self._raw_data.indices,
-            #     self._raw_data.indptr,
-            #     self._raw_data.data,
-            #     self._distance_func,
-            #     self._dist_args,
-            #     self.diversify_epsilon,
-            # )
+            sparse.diversify_csr(
+                reverse_graph.indptr,
+                reverse_graph.indices,
+                reverse_graph.data,
+                self._raw_data.indptr,
+                self._raw_data.indices,
+                self._raw_data.data,
+                self._distance_func,
+                self._dist_args,
+                self.diversify_epsilon,
+            )
             pass
         else:
             diversify_csr(
@@ -1136,42 +1139,34 @@ class NNDescent(object):
                 self._visited,
                 self._distance_func,
                 self._dist_args,
-                self.rng_state
+                self.rng_state,
             )
         else:
             # Sparse case
             query_data = check_array(query_data, accept_sparse="csr")
             if not isspmatrix_csr(query_data):
                 query_data = csr_matrix(query_data)
+            if not query_data.has_sorted_indices:
+                query_data.sort_indices()
             self._init_search_graph()
 
-            init = sparse_nnd.sparse_initialise_search(
-                self._rp_forest,
-                n_search_trees,
-                self._raw_data.indices,
-                self._raw_data.indptr,
-                self._raw_data.data,
+            result = sparse_nnd.search(
                 query_data.indices,
                 query_data.indptr,
                 query_data.data,
-                int(k * queue_size),
-                self.rng_state,
-                self._distance_func,
-                self._dist_args,
-            )
-            result = sparse_nnd.sparse_initialized_nnd_search(
+                k,
                 self._raw_data.indices,
                 self._raw_data.indptr,
                 self._raw_data.data,
+                self._search_forest,
                 self._search_graph.indptr,
                 self._search_graph.indices,
-                init,
-                query_data.indices,
-                query_data.indptr,
-                query_data.data,
                 epsilon,
+                self.n_neighbors,
+                self._visited,
                 self._distance_func,
                 self._dist_args,
+                self.rng_state,
             )
 
         indices, dists = deheap_sort(result)
