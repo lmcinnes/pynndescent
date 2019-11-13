@@ -229,7 +229,17 @@ def euclidean_random_projection_split(data, indices, rng_state):
     return indices_left, indices_right, hyperplane_vector, hyperplane_offset
 
 
-@numba.njit(fastmath=True, nogil=True, cache=True)
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=True,
+    locals={
+        "normalized_left_data": numba.types.float32[::1],
+        "normalized_right_data": numba.types.float32[::1],
+        "hyperplane_norm": numba.types.float32,
+        "i": numba.types.uint16,
+    }
+)
 def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_state):
     """Given a set of ``graph_indices`` for graph_data points from a sparse graph_data set
     presented in csr sparse format as inds, graph_indptr and graph_data, create
@@ -284,8 +294,8 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
 
     # Compute the normal vector to the hyperplane (the vector between
     # the two points)
-    normalized_left_data = left_data / left_norm
-    normalized_right_data = right_data / right_norm
+    normalized_left_data = (left_data / left_norm).astype(np.float32)
+    normalized_right_data = (right_data / right_norm).astype(np.float32)
     hyperplane_inds, hyperplane_data = sparse_diff(
         left_inds, normalized_left_data, right_inds, normalized_right_data
     )
@@ -398,7 +408,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     offset_inds, offset_data = sparse_sum(left_inds, left_data, right_inds, right_data)
     offset_data = offset_data / 2.0
     offset_inds, offset_data = sparse_mul(
-        hyperplane_inds, hyperplane_data, offset_inds, offset_data
+        hyperplane_inds, hyperplane_data, offset_inds, offset_data.astype(np.float32)
     )
 
     for val in offset_data:

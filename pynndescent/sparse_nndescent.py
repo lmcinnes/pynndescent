@@ -132,6 +132,7 @@ def search_init(
 
     heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
     heap_indices = np.int32(-1) + np.zeros(k, dtype=np.int32)
+    n_samples = indptr.shape[0] - 1
 
     n_random_samples = min(k, n_neighbors)
 
@@ -163,7 +164,7 @@ def search_init(
 
     if n_random_samples > 0:
         for i in range(n_random_samples):
-            candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+            candidate = np.abs(tau_rand_int(rng_state)) % n_samples
             if has_been_visited(tried, candidate) == 0:
                 from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
                 from_data = data[indptr[candidate] : indptr[candidate + 1]]
@@ -304,10 +305,11 @@ def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
 
 @numba.njit(fastmath=True)
 def init_random(n_neighbors, inds, indptr, data, heap, dist, dist_args, rng_state):
-    for i in range(data.shape[0]):
+    n_samples = indptr.shape[0] - 1
+    for i in range(n_samples):
         if heap[0, i, 0] == -1:
             for j in range(n_neighbors - np.sum(heap[0, i] == -1)):
-                idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+                idx = np.abs(tau_rand_int(rng_state)) % n_samples
 
                 from_inds = inds[indptr[idx] : indptr[idx + 1]]
                 from_data = data[indptr[idx] : indptr[idx + 1]]
@@ -392,7 +394,7 @@ def nn_descent_internal_low_memory_parallel(
     verbose=False,
     seed_per_row=False,
 ):
-    n_vertices = data.shape[0]
+    n_vertices = indptr.shape[0] - 1
     block_size = 16384
     n_blocks = n_vertices // block_size
 
@@ -432,7 +434,7 @@ def nn_descent_internal_low_memory_parallel(
 
             c += apply_graph_updates_low_memory(current_graph, updates)
 
-        if c <= delta * n_neighbors * data.shape[0]:
+        if c <= delta * n_neighbors * n_vertices:
             return
 
 
@@ -453,7 +455,7 @@ def nn_descent_internal_high_memory_parallel(
     verbose=False,
     seed_per_row=False,
 ):
-    n_vertices = data.shape[0]
+    n_vertices = indptr.shape[0] - 1
     block_size = 16384
     n_blocks = n_vertices // block_size
 
@@ -497,7 +499,7 @@ def nn_descent_internal_high_memory_parallel(
 
             c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
 
-        if c <= delta * n_neighbors * data.shape[0]:
+        if c <= delta * n_neighbors * n_vertices:
             return
 
 
@@ -521,12 +523,13 @@ def nn_descent(
     seed_per_row=False,
 ):
 
-    current_graph = make_heap(data.shape[0], n_neighbors)
+    n_samples = indptr.shape[0] - 1
+    current_graph = make_heap(n_samples, n_neighbors)
 
     if rp_tree_init:
-        init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
+        init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
 
-    init_random(n_neighbors, data, current_graph, dist, dist_args, rng_state)
+    init_random(n_neighbors, inds, indptr, data, current_graph, dist, dist_args, rng_state)
 
     if low_memory:
         nn_descent_internal_low_memory_parallel(

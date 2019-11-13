@@ -242,7 +242,7 @@ def sparse_canberra(ind1, data1, ind2, data2):
     abs_data1 = np.abs(data1)
     abs_data2 = np.abs(data2)
     denom_inds, denom_data = sparse_sum(ind1, abs_data1, ind2, abs_data2)
-    denom_data = 1.0 / denom_data
+    denom_data = (1.0 / denom_data).astype(np.float32)
     numer_inds, numer_data = sparse_diff(ind1, data1, ind2, data2)
     numer_data = np.abs(numer_data)
 

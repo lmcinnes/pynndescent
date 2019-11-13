@@ -909,17 +909,17 @@ class NNDescent(object):
                     self._raw_data.indices,
                     self._raw_data.indptr,
                     self._raw_data.data,
-                    self._raw_data.shape[0],
                     self.n_neighbors,
                     self.rng_state,
-                    effective_max_candidates,
-                    rho=self.rho,
-                    low_memory=self.low_memory,
-                    sparse_dist=self._distance_func,
+                    max_candidates=effective_max_candidates,
+                    dist=self._distance_func,
                     dist_args=self._dist_args,
                     n_iters=self.n_iters,
+                    delta=self.delta,
+                    rho=self.rho,
                     rp_tree_init=False,
                     leaf_array=leaf_array,
+                    low_memory=self.low_memory,
                     verbose=verbose,
                 )
 
@@ -1338,6 +1338,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         search_epsilon=0.1,
         pruning_degree_multiplier=2.0,
         diversify_epsilon=0.5,
+        n_search_trees=1,
         tree_init=True,
         random_state=np.random,
         algorithm="standard",
@@ -1358,6 +1359,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.search_epsilon = search_epsilon
         self.pruning_degree_multiplier = pruning_degree_multiplier
         self.diversify_epsilon = diversify_epsilon
+        self.n_search_trees = n_search_trees
         self.tree_init = tree_init
         self.random_state = random_state
         self.algorithm = algorithm
@@ -1398,6 +1400,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             self.leaf_size,
             self.pruning_degree_multiplier,
             self.diversify_epsilon,
+            self.n_search_trees,
             self.tree_init,
             self.random_state,
             self.algorithm,
