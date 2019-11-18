@@ -571,7 +571,7 @@ class NNDescent(object):
 
     rho: float (optional, default=0.5)
         Controls the random sampling of potential candidates in any given
-        iteration of NN-descent. Larger values will result in less accurate
+        iteration of NN-descent. Smaller values will result in less accurate
         indexes and less accurate searching. Don't tweak this value unless
         you know what you're doing.
 
