@@ -365,6 +365,62 @@ def hellinger(x, y):
     else:
         return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
 
+    
+@numba.njit()
+def rankdata(a, method="average"):
+    arr = np.ravel(np.asarray(a))
+    if method == "ordinal":
+        sorter = arr.argsort(kind="mergesort")
+    else:
+        sorter = arr.argsort(kind="quicksort")
+
+    inv = np.empty(sorter.size, dtype=np.intp)
+    inv[sorter] = np.arange(sorter.size)
+
+    if method == "ordinal":
+        return (inv + 1).astype(np.float64)
+
+    arr = arr[sorter]
+    obs = np.ones(arr.size, np.bool_)
+    obs[1:] = arr[1:] != arr[:-1]
+    dense = obs.cumsum()[inv]
+
+    if method == "dense":
+        return dense.astype(np.float64)
+
+    # cumulative counts of each unique value
+    nonzero = np.nonzero(obs)[0]
+    count = np.concatenate((nonzero, np.array([len(obs)], nonzero.dtype)))
+
+    if method == "max":
+        return count[dense].astype(np.float64)
+
+    if method == "min":
+        return (count[dense - 1] + 1).astype(np.float64)
+
+    # average method
+    return 0.5 * (count[dense] + count[dense - 1] + 1)
+
+
+@numba.njit(fastmath=True)
+def spearmanr(x, y):
+    a = np.column_stack((x, y))
+
+    n_vars = a.shape[1]
+    n_obs = a.shape[0]
+
+    nans = np.isnan(a)
+    variable_has_nan = np.zeros(n_vars, dtype=np.int64)
+    if nans.any():
+        variable_has_nan = nans.astype(np.int64).sum(axis=0)
+
+    for i in range(n_vars):
+        a[:, i] = rankdata(a[:, i])
+    rs = np.corrcoef(a, rowvar=0)
+
+    return rs
+
+
 
 named_distances = {
     # general minkowski distances
@@ -391,6 +447,7 @@ named_distances = {
     "hellinger": hellinger,
     "haversine": haversine,
     "braycurtis": bray_curtis,
+    "spearmanr": spearmanr,
     # Binary distances
     "hamming": hamming,
     "jaccard": jaccard,
