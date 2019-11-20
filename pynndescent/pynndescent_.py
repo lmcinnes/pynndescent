@@ -239,8 +239,8 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
 @numba.njit(fastmath=True)
 def init_random(n_neighbors, data, heap, dist, dist_args, rng_state):
     for i in range(data.shape[0]):
-        if heap[0, i, 0] == -1:
-            for j in range(n_neighbors - np.sum(heap[0, i] == -1)):
+        if heap[0, i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], data[i], *dist_args)
                 heap_push(heap, i, d, idx, 1)
@@ -917,7 +917,7 @@ class NNDescent(object):
                     n_iters=self.n_iters,
                     delta=self.delta,
                     rho=self.rho,
-                    rp_tree_init=False,
+                    rp_tree_init=True,
                     leaf_array=leaf_array,
                     low_memory=self.low_memory,
                     verbose=verbose,
@@ -1143,9 +1143,9 @@ class NNDescent(object):
             )
         else:
             # Sparse case
-            query_data = check_array(query_data, accept_sparse="csr")
+            query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
             if not isspmatrix_csr(query_data):
-                query_data = csr_matrix(query_data)
+                query_data = csr_matrix(query_data, dtype=np.float32)
             if not query_data.has_sorted_indices:
                 query_data.sort_indices()
             self._init_search_graph()

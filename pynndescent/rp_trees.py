@@ -848,8 +848,12 @@ def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
 def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
     margin = offset
 
-    hyperplane_inds = arr_unique(hyperplane[0])
-    hyperplane_data = hyperplane[1, : hyperplane_inds.shape[0]]
+    hyperplane_size = hyperplane.shape[1]
+    while hyperplane[0, hyperplane_size - 1] < 0.0:
+        hyperplane_size -= 1
+
+    hyperplane_inds = hyperplane[0, :hyperplane_size].astype(np.int32)
+    hyperplane_data = hyperplane[1, :hyperplane_size]
 
     _, aux_data = sparse_mul(hyperplane_inds, hyperplane_data, point_inds, point_data)
 

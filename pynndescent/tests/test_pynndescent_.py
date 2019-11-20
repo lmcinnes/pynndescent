@@ -128,8 +128,8 @@ def test_nn_descent_query_accuracy():
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert_greater_equal(
         percent_correct,
-        0.99,
-        "NN-descent query did not get 99% " "accuracy on nearest neighbors",
+        0.95,
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors",
     )
 
 
@@ -150,7 +150,7 @@ def test_sparse_nn_descent_query_accuracy():
     assert_greater_equal(
         percent_correct,
         0.95,
-        "Sparse NN-descent query did not get 97% " "accuracy on nearest neighbors",
+        "Sparse NN-descent query did not get 95% " "accuracy on nearest neighbors",
     )
 
 

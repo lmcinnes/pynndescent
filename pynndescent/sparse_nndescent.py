@@ -40,7 +40,7 @@ locale.setlocale(locale.LC_NUMERIC, "C")
         #                     "tried": numba.types.Set(numba.types.int32),
         "indices": numba.types.int32[::1],
         "indptr": numba.types.int32[::1],
-        "data": numba.types.float32[:, ::1],
+        "data": numba.types.float32[::1],
         "heap_size": numba.types.int16,
         "distance_scale": numba.types.float32,
         "seed_scale": numba.types.float32,
@@ -199,7 +199,7 @@ def search(
     rng_state,
 ):
 
-    n_query_points = query_indptr.shape[0] - 2
+    n_query_points = query_indptr.shape[0] - 1
 
     result = make_heap(n_query_points, k)
     for i in range(n_query_points):
@@ -307,8 +307,8 @@ def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
 def init_random(n_neighbors, inds, indptr, data, heap, dist, dist_args, rng_state):
     n_samples = indptr.shape[0] - 1
     for i in range(n_samples):
-        if heap[0, i, 0] == -1:
-            for j in range(n_neighbors - np.sum(heap[0, i] == -1)):
+        if heap[0, i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % n_samples
 
                 from_inds = inds[indptr[idx] : indptr[idx + 1]]
