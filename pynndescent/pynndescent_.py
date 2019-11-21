@@ -23,6 +23,7 @@ from pynndescent.utils import (
     make_heap,
     heap_push,
     unchecked_heap_push,
+    seed,
     deheap_sort,
     new_build_candidates,
     ts,
@@ -237,8 +238,11 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
 
 
 @numba.njit(fastmath=True)
-def init_random(n_neighbors, data, heap, dist, dist_args, rng_state):
+def init_random(n_neighbors, data, heap, dist, dist_args, rng_state,
+                seed_per_row=False):
     for i in range(data.shape[0]):
+        if seed_per_row:
+            seed(rng_state, i)
         if heap[0, i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]

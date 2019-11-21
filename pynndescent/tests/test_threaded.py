@@ -5,6 +5,7 @@ from numpy.testing import assert_allclose
 from nose.tools import assert_equal
 
 from sklearn.neighbors import NearestNeighbors
+from sklearn.utils import check_random_state
 
 from pynndescent import distances
 from pynndescent import pynndescent_
@@ -70,12 +71,21 @@ def test_effective_n_jobs_with_context():
         )
 
 
-def test_init_current_graph():
-    current_graph = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+def test_init_random():
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
+    pynndescent_.init_random(
+        n_neighbors,
+        data,
+        current_graph,
+        dist,
+        dist_args,
+        new_rng_state(),
+        seed_per_row=True,
     )
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
-    current_graph_threaded = threaded.init_current_graph(
+    current_graph_threaded = utils.make_heap(data.shape[0], n_neighbors)
+    threaded.init_random(
+        current_graph_threaded,
         data,
         dist,
         dist_args,
@@ -100,21 +110,21 @@ def test_init_rp_tree():
     data = np.random.rand(N, D).astype(np.float32)
 
     rng_state = new_rng_state()
-    current_graph = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=rng_state, seed_per_row=True
-    )
+    random_state = check_random_state(42)
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
     _rp_forest = make_forest(
-        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state
+        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state,
+        random_state=random_state,
     )
     leaf_array = rptree_leaf_array(_rp_forest)
     pynndescent_.init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
 
     rng_state = new_rng_state()
-    current_graph_threaded = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=rng_state, seed_per_row=True
-    )
+    random_state = check_random_state(42)
+    current_graph_threaded = utils.make_heap(data.shape[0], n_neighbors)
     _rp_forest = make_forest(
-        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state
+        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state,
+        random_state=random_state,
     )
     leaf_array = rptree_leaf_array(_rp_forest)
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
@@ -128,8 +138,15 @@ def test_init_rp_tree():
 def test_new_build_candidates():
     n_vertices = data.shape[0]
 
-    current_graph = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
+    pynndescent_.init_random(
+        n_neighbors,
+        data,
+        current_graph,
+        dist,
+        dist_args,
+        new_rng_state(),
+        seed_per_row=True,
     )
     new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
         current_graph,
@@ -140,8 +157,15 @@ def test_new_build_candidates():
         seed_per_row=True,
     )
 
-    current_graph = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
+    pynndescent_.init_random(
+        n_neighbors,
+        data,
+        current_graph,
+        dist,
+        dist_args,
+        new_rng_state(),
+        seed_per_row=True,
     )
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
     new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.new_build_candidates(
