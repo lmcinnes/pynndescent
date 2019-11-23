@@ -514,8 +514,8 @@ def new_build_candidates(
     new_candidate_neighbors = make_heap(n_vertices, max_candidates)
     old_candidate_neighbors = make_heap(n_vertices, max_candidates)
 
-    in_new_candidates = [set([-1]) for i in range(n_vertices)]
-    in_old_candidates = [set([-1]) for i in range(n_vertices)]
+    # in_new_candidates = [set([-1]) for i in range(n_vertices)]
+    # in_old_candidates = [set([-1]) for i in range(n_vertices)]
 
     for i in range(n_vertices):
         if seed_per_row:
@@ -526,45 +526,34 @@ def new_build_candidates(
             idx = int(current_graph[0, i, j])
             isn = current_graph[2, i, j]
 
-            # d = current_graph[1, i, j]
-
             d = tau_rand(rng_state)
-            # if tau_rand(rng_state) < rho:
-            # if d < rho:
-            # c = 0
-            if isn:
-                # c += heap_push(new_candidate_neighbors, i, d, idx, isn)
-                # c += heap_push(new_candidate_neighbors, idx, d, i, isn)
-                # heap_push(new_candidate_neighbors, i, d, idx, isn)
-                # heap_push(new_candidate_neighbors, idx, d, i, isn)
-                if idx in in_new_candidates[i]:
-                    pass
-                else:
-                    unchecked_heap_push(new_candidate_neighbors, i, d, idx, isn)
-                    in_new_candidates[i].add(idx)
-                if i in in_new_candidates[idx]:
-                    pass
-                else:
-                    unchecked_heap_push(new_candidate_neighbors, idx, d, i, isn)
-                    in_new_candidates[idx].add(i)
-            else:
-                # heap_push(old_candidate_neighbors, i, d, idx, isn)
-                # heap_push(old_candidate_neighbors, idx, d, i, isn)
-                if idx in in_old_candidates[i]:
-                    pass
-                else:
-                    unchecked_heap_push(old_candidate_neighbors, i, d, idx, isn)
-                    in_old_candidates[i].add(idx)
-                if i in in_old_candidates[idx]:
-                    pass
-                else:
-                    unchecked_heap_push(old_candidate_neighbors, idx, d, i, isn)
-                    in_old_candidates[idx].add(i)
 
-                # This is slightly questionable; being added is not enough
-                # Being retained is what is required.
-                # if c > 0:
-                #     current_graph[2, i, j] = 0
+            if isn:
+                heap_push(new_candidate_neighbors, i, d, idx, isn)
+                heap_push(new_candidate_neighbors, idx, d, i, isn)
+                # if idx in in_new_candidates[i]:
+                #     pass
+                # else:
+                #     unchecked_heap_push(new_candidate_neighbors, i, d, idx, isn)
+                #     in_new_candidates[i].add(idx)
+                # if i in in_new_candidates[idx]:
+                #     pass
+                # else:
+                #     unchecked_heap_push(new_candidate_neighbors, idx, d, i, isn)
+                #     in_new_candidates[idx].add(i)
+            else:
+                heap_push(old_candidate_neighbors, i, d, idx, isn)
+                heap_push(old_candidate_neighbors, idx, d, i, isn)
+                # if idx in in_old_candidates[i]:
+                #     pass
+                # else:
+                #     unchecked_heap_push(old_candidate_neighbors, i, d, idx, isn)
+                #     in_old_candidates[i].add(idx)
+                # if i in in_old_candidates[idx]:
+                #     pass
+                # else:
+                #     unchecked_heap_push(old_candidate_neighbors, idx, d, i, isn)
+                #     in_old_candidates[idx].add(i)
 
     for i in numba.prange(n_vertices):
         for j in range(n_neighbors):

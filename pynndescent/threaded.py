@@ -284,14 +284,13 @@ def candidates_map_jit(
             hu[1] = d
             hu[2] = idx
             hu[3] = isn
-            hu[4] = j
             count += 1
+
             hu = heap_updates[count]
             hu[0] = idx
             hu[1] = d
             hu[2] = i
             hu[3] = isn
-            hu[4] = -j - 1  # means i is at index 2
             count += 1
     return count
 
@@ -310,22 +309,14 @@ def candidates_reduce_jit(
         o = offsets[update_i]
         for j in range(o[index], o[index + 1]):
             heap_update = heap_updates[update_i, j]
-            if heap_update[3]:
-                c = heap_push(
+            if heap_update[3] == 1:
+                heap_push(
                     new_candidate_neighbors,
                     int(heap_update[0]),
                     heap_update[1],
                     int(heap_update[2]),
                     int(heap_update[3]),
                 )
-                # if c > 0:
-                #     k = int(heap_update[4])
-                #     if k >= 0:
-                #         i = int(heap_update[0])
-                #     else:
-                #         i = int(heap_update[2])
-                #         k = -k - 1
-                #     current_graph[2, i, k] = 0
             else:
                 heap_push(
                     old_candidate_neighbors,
@@ -370,7 +361,7 @@ def new_build_candidates(
 
     # store the updates in an array
     max_heap_update_count = chunk_size * n_neighbors * 2
-    heap_updates = np.zeros((n_tasks, max_heap_update_count, 5), dtype=np.float32)
+    heap_updates = np.zeros((n_tasks, max_heap_update_count, 4), dtype=np.float32)
     heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
     rng_state_threads = per_thread_rng_state(n_tasks, rng_state)
 

@@ -72,7 +72,7 @@ def binary_check(metric):
     )
 
 
-def sparse_spatial_check(metric):
+def sparse_spatial_check(metric, decimal=6):
     if metric in spdist.sparse_named_distances:
         dist_matrix = pairwise_distances(sparse_spatial_data.todense(), metric=metric)
     if metric in ("braycurtis", "dice", "sokalsneath", "yule"):
@@ -120,6 +120,7 @@ def sparse_spatial_check(metric):
         test_matrix,
         dist_matrix,
         err_msg="Sparse distances don't match " "for metric {}".format(metric),
+        decimal=decimal,
     )
 
 
@@ -267,7 +268,7 @@ def test_sparse_hamming():
 
 
 def test_sparse_canberra():
-    sparse_spatial_check("canberra")
+    sparse_spatial_check("canberra", decimal=4) # Be a little forgiving
 
 
 def test_sparse_cosine():

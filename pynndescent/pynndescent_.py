@@ -438,7 +438,7 @@ def nn_descent(
     if rp_tree_init:
         init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
 
-    init_random(n_neighbors, data, current_graph, dist, dist_args, rng_state)
+    init_random(n_neighbors, data, current_graph, dist, dist_args, rng_state, seed_per_row)
 
     if low_memory:
         nn_descent_internal_low_memory_parallel(

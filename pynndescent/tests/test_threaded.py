@@ -136,6 +136,12 @@ def test_init_rp_tree():
 
 
 def test_new_build_candidates():
+    np.random.seed(42)
+    N = 100
+    D = 128
+    chunk_size = N // 8
+    n_neighbors = 25
+    data = np.random.rand(N, D).astype(np.float32)
     n_vertices = data.shape[0]
 
     current_graph = utils.make_heap(data.shape[0], n_neighbors)
@@ -183,13 +189,78 @@ def test_new_build_candidates():
     assert_allclose(new_candidate_neighbors_threaded, new_candidate_neighbors)
     assert_allclose(old_candidate_neighbors_threaded, old_candidate_neighbors)
 
+def test_mark_candidate_results():
+
+    np.random.seed(42)
+    N = 100
+    D = 128
+    chunk_size = N // 8
+    n_neighbors = 25
+    data = np.random.rand(N, D).astype(np.float32)
+    n_vertices = data.shape[0]
+
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
+    pynndescent_.init_random(
+        n_neighbors,
+        data,
+        current_graph,
+        dist,
+        dist_args,
+        new_rng_state(),
+        seed_per_row=True,
+    )
+    pynndescent_.nn_descent_internal_low_memory_parallel(
+        current_graph,
+        data,
+        n_neighbors,
+        new_rng_state(),
+        n_iters=2,
+        seed_per_row=True,
+    )
+    current_graph_threaded = current_graph.copy()
+
+
+    new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
+        current_graph,
+        n_vertices,
+        n_neighbors,
+        max_candidates,
+        rng_state=new_rng_state(),
+        seed_per_row=True,
+    )
+
+    parallel = joblib.Parallel(n_jobs=2, prefer="threads")
+    new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.new_build_candidates(
+        current_graph_threaded,
+        n_vertices,
+        n_neighbors,
+        max_candidates,
+        chunk_size=chunk_size,
+        rng_state=new_rng_state(),
+        rho=0.5,
+        parallel=parallel,
+        seed_per_row=True,
+    )
+
+    assert_allclose(current_graph_threaded, current_graph)
+
 
 def test_nn_descent():
+
+    np.random.seed(42)
+    N = 100
+    # D = 128
+    D = 4
+    chunk_size = N // 8
+    n_neighbors = 25
+    data = np.random.rand(N, D).astype(np.float32)
+
     nn_indices, nn_distances = NNDescent(
         data,
         n_neighbors=n_neighbors,
         max_candidates=max_candidates,
-        n_iters=2,
+        n_iters=1,
+        random_state=42,
         delta=0,
         tree_init=False,
         seed_per_row=True,
@@ -206,7 +277,8 @@ def test_nn_descent():
         data,
         n_neighbors=n_neighbors,
         max_candidates=max_candidates,
-        n_iters=2,
+        n_iters=1,
+        random_state=42,
         delta=0,
         tree_init=False,
         seed_per_row=True,
@@ -222,6 +294,11 @@ def test_nn_descent():
 
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)
     _, nn_gold_indices = nbrs.kneighbors(data)
+
+    for i in range(nn_indices_threaded.shape[0]):
+        print(nn_indices_threaded[i])
+        print(nn_indices[i])
+        print(nn_gold_indices[i])
 
     assert_allclose(nn_indices_threaded, nn_indices)
     assert_allclose(nn_distances_threaded, nn_distances)
@@ -240,7 +317,9 @@ def test_nn_decent_with_parallel_backend():
         data,
         n_neighbors=n_neighbors,
         max_candidates=max_candidates,
-        n_iters=2,
+        n_iters=1,
+        random_state=42,
+        delta=0,
         tree_init=False,
         seed_per_row=True,
     )._neighbor_graph
@@ -250,7 +329,9 @@ def test_nn_decent_with_parallel_backend():
             data,
             n_neighbors=n_neighbors,
             max_candidates=max_candidates,
-            n_iters=2,
+            n_iters=1,
+            random_state=42,
+            delta=0,
             tree_init=False,
             seed_per_row=True,
         )._neighbor_graph
