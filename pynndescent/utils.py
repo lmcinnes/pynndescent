@@ -143,16 +143,18 @@ def make_heap(n_points, size):
     return result
 
 
-@numba.jit(locals={
-    "indices": numba.types.float32[::1],
-    "weights": numba.types.float32[::1],
-    "is_new": numba.types.float32[::1],
-    "i": numba.types.uint16,
-    "ic1": numba.types.uint16,
-    "ic2": numba.types.uint16,
-    "i_swap": numba.types.uint16,
-    "heap_size": numba.types.uint16,
-})
+@numba.jit(
+    locals={
+        "indices": numba.types.float32[::1],
+        "weights": numba.types.float32[::1],
+        "is_new": numba.types.float32[::1],
+        "i": numba.types.uint16,
+        "ic1": numba.types.uint16,
+        "ic2": numba.types.uint16,
+        "i_swap": numba.types.uint16,
+        "heap_size": numba.types.uint16,
+    }
+)
 def heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
     for each graph_data point. The ``row`` parameter determines which graph_data point we
@@ -236,16 +238,18 @@ def heap_push(heap, row, weight, index, flag):
     return 1
 
 
-@numba.jit(locals={
-    "indices": numba.types.float32[::1],
-    "weights": numba.types.float32[::1],
-    "is_new": numba.types.float32[::1],
-    "i": numba.types.uint16,
-    "ic1": numba.types.uint16,
-    "ic2": numba.types.uint16,
-    "i_swap": numba.types.uint16,
-    "heap_size": numba.types.uint16,
-})
+@numba.jit(
+    locals={
+        "indices": numba.types.float32[::1],
+        "weights": numba.types.float32[::1],
+        "is_new": numba.types.float32[::1],
+        "i": numba.types.uint16,
+        "ic1": numba.types.uint16,
+        "ic2": numba.types.uint16,
+        "i_swap": numba.types.uint16,
+        "heap_size": numba.types.uint16,
+    }
+)
 def unchecked_heap_push(heap, row, weight, index, flag):
     """Push a new element onto the heap. The heap stores potential neighbors
     for each graph_data point. The ``row`` parameter determines which graph_data point we
@@ -475,7 +479,7 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates, rng
     return candidate_neighbors
 
 
-@numba.njit(parallel=True, locals={'idx':numba.types.int64})
+@numba.njit(parallel=True, locals={"idx": numba.types.int64})
 def new_build_candidates(
     current_graph,
     n_vertices,
@@ -567,14 +571,14 @@ def new_build_candidates(
     return new_candidate_neighbors, old_candidate_neighbors
 
 
-@numba.njit('b1(u1[::1],i4)')
+@numba.njit("b1(u1[::1],i4)")
 def has_been_visited(table, candidate):
     loc = candidate >> 3
     mask = 1 << (candidate & 7)
-    return (table[loc] & mask)
+    return table[loc] & mask
 
 
-@numba.njit('void(u1[::1],i4)')
+@numba.njit("void(u1[::1],i4)")
 def mark_visited(table, candidate):
     loc = candidate >> 3
     mask = 1 << (candidate & 7)
@@ -583,7 +587,7 @@ def mark_visited(table, candidate):
 
 
 @numba.njit(
-    'i4(f4[::1],i4[::1],f4,i4)',
+    "i4(f4[::1],i4[::1],f4,i4)",
     fastmath=True,
     locals={
         "size": numba.types.uint16,
@@ -591,7 +595,7 @@ def mark_visited(table, candidate):
         "ic1": numba.types.uint16,
         "ic2": numba.types.uint16,
         "i_swap": numba.types.uint16,
-    }
+    },
 )
 def simple_heap_push(priorities, indices, p, n):
     if p >= priorities[0]:
@@ -636,6 +640,7 @@ def simple_heap_push(priorities, indices, p, n):
     indices[i] = n
 
     return 1
+
 
 @numba.njit()
 def apply_graph_updates_low_memory(current_graph, updates):
@@ -692,7 +697,7 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
 
     return n_changes
 
+
 # Generates a timestamp for use in logging messages when verbose=True
 def ts():
     return time.ctime(time.time())
-

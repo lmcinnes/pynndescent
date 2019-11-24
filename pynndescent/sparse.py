@@ -55,7 +55,7 @@ def arr_intersect(ar1, ar2):
         "i2": numba.types.uint32,
         "j1": numba.types.uint32,
         "j2": numba.types.uint32,
-    }
+    },
 )
 def sparse_sum(ind1, data1, ind2, data2):
     result_size = len(set(np.concatenate((ind1, ind2))))
@@ -119,22 +119,26 @@ def sparse_sum(ind1, data1, ind2, data2):
 
     return result_ind, result_data
 
+
 @numba.njit()
 def sparse_diff(ind1, data1, ind2, data2):
     return sparse_sum(ind1, data1, ind2, -data2)
 
 
-@numba.njit(fastmath=True, locals={
-    "ind1": numba.types.int32[::1],
-    "data1": numba.types.float32[::1],
-    "ind2": numba.types.int32[::1],
-    "data2": numba.types.float32[::1],
-    "val": numba.types.float32,
-    "i1": numba.types.uint32,
-    "i2": numba.types.uint32,
-    "j1": numba.types.uint32,
-    "j2": numba.types.uint32,
-})
+@numba.njit(
+    fastmath=True,
+    locals={
+        "ind1": numba.types.int32[::1],
+        "data1": numba.types.float32[::1],
+        "ind2": numba.types.int32[::1],
+        "data2": numba.types.float32[::1],
+        "val": numba.types.float32,
+        "i1": numba.types.uint32,
+        "i2": numba.types.uint32,
+        "j1": numba.types.uint32,
+        "j2": numba.types.uint32,
+    },
+)
 def sparse_mul(ind1, data1, ind2, data2):
     result_ind = numba.typed.List.empty_list(numba.types.int32)
     result_data = numba.typed.List.empty_list(numba.types.float32)
@@ -160,6 +164,7 @@ def sparse_mul(ind1, data1, ind2, data2):
             i2 += 1
 
     return result_ind, result_data
+
 
 # @numba.njit()
 # def sparse_mul(ind1, data1, ind2, data2):
@@ -463,8 +468,16 @@ def sparse_hellinger(ind1, data1, ind2, data2):
 
 
 @numba.njit(parallel=True)
-def diversify(indices, distances, data_indices, data_indptr, data_data, dist, dist_args,
-              epsilon=0.01):
+def diversify(
+    indices,
+    distances,
+    data_indices,
+    data_indptr,
+    data_data,
+    dist,
+    dist_args,
+    epsilon=0.01,
+):
 
     for i in numba.prange(indices.shape[0]):
 
@@ -478,15 +491,18 @@ def diversify(indices, distances, data_indices, data_indptr, data_data, dist, di
             for k in range(len(new_indices)):
                 c = new_indices[k]
 
-                from_ind = data_indices[data_indptr[indices[i, j]]:data_indptr[indices[i, j] + 1]]
-                from_data = data_data[data_indptr[indices[i, j]]:data_indptr[indices[i, j] + 1]]
+                from_ind = data_indices[
+                    data_indptr[indices[i, j]] : data_indptr[indices[i, j] + 1]
+                ]
+                from_data = data_data[
+                    data_indptr[indices[i, j]] : data_indptr[indices[i, j] + 1]
+                ]
 
-                to_ind = data_indices[data_indptr[c]:data_indptr[c + 1]]
-                to_data = data_data[data_indptr[c]:data_indptr[c + 1]]
+                to_ind = data_indices[data_indptr[c] : data_indptr[c + 1]]
+                to_data = data_data[data_indptr[c] : data_indptr[c + 1]]
 
                 d = dist(from_ind, from_data, to_ind, to_data, *dist_args)
-                if new_distances[k] > FLOAT32_EPS \
-                        and d < epsilon * distances[i, j]:
+                if new_distances[k] > FLOAT32_EPS and d < epsilon * distances[i, j]:
                     flag = False
                     break
 
@@ -507,23 +523,23 @@ def diversify(indices, distances, data_indices, data_indptr, data_data, dist, di
 
 @numba.njit(parallel=True)
 def diversify_csr(
-        graph_indptr,
-        graph_indices,
-        graph_data,
-        data_indptr,
-        data_indices,
-        data_data,
-        dist,
-        dist_args,
-        epsilon=0.01
+    graph_indptr,
+    graph_indices,
+    graph_data,
+    data_indptr,
+    data_indices,
+    data_data,
+    dist,
+    dist_args,
+    epsilon=0.01,
 ):
 
     n_nodes = graph_indptr.shape[0] - 1
 
     for i in numba.prange(n_nodes):
 
-        current_indices = graph_indices[graph_indptr[i]: graph_indptr[i + 1]]
-        current_data = graph_data[graph_indptr[i]: graph_indptr[i + 1]]
+        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
+        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
 
         order = np.argsort(current_data)
         retained = np.ones(order.shape[0], dtype=np.int8)
@@ -537,11 +553,11 @@ def diversify_csr(
                     p = current_indices[j]
                     q = current_indices[k]
 
-                    from_inds = data_indices[data_indptr[p]: data_indptr[p + 1]]
-                    from_data = data_data[data_indptr[p]: data_indptr[p + 1]]
+                    from_inds = data_indices[data_indptr[p] : data_indptr[p + 1]]
+                    from_data = data_data[data_indptr[p] : data_indptr[p + 1]]
 
-                    to_inds = data_indices[data_indptr[q]: data_indptr[q + 1]]
-                    to_data = data_data[data_indptr[q]: data_indptr[q + 1]]
+                    to_inds = data_indices[data_indptr[q] : data_indptr[q + 1]]
+                    to_data = data_data[data_indptr[q] : data_indptr[q + 1]]
                     d = dist(from_inds, from_data, to_inds, to_data, *dist_args)
 
                     if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
@@ -554,6 +570,7 @@ def diversify_csr(
                 graph_data[graph_indptr[i] + j] = 0
 
     return
+
 
 sparse_named_distances = {
     # general minkowski distances

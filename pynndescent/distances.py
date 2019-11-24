@@ -22,12 +22,14 @@ def euclidean(x, y):
 
 
 @numba.njit(
-    'f4(f4[::1],f4[::1])',
+    "f4(f4[::1],f4[::1])",
     fastmath=True,
-    locals={"result": numba.types.float32,
-            "diff": numba.types.float32,
-            "dim": numba.types.uint32,
-            "i": numba.types.uint16},
+    locals={
+        "result": numba.types.float32,
+        "diff": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
 )
 def squared_euclidean(x, y):
     r"""Squared euclidean distance.
@@ -341,13 +343,15 @@ def cosine(x, y):
 
 
 @numba.njit(
-    'f4(f4[::1],f4[::1])',
+    "f4(f4[::1],f4[::1])",
     fastmath=True,
-    locals={"result": numba.types.float32,
-            "norm_x": numba.types.float32,
-            "norm_y": numba.types.float32,
-            "dim": numba.types.uint32,
-            "i": numba.types.uint16},
+    locals={
+        "result": numba.types.float32,
+        "norm_x": numba.types.float32,
+        "norm_y": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
 )
 def alternative_cosine(x, y):
     result = 0.0
@@ -405,13 +409,15 @@ def correlation(x, y):
 
 
 @numba.njit(
-    'f4(f4[::1],f4[::1])',
+    "f4(f4[::1],f4[::1])",
     fastmath=True,
-    locals={"result": numba.types.float32,
-            "l1_norm_x": numba.types.float32,
-            "l1_norm_y": numba.types.float32,
-            "dim": numba.types.uint32,
-            "i": numba.types.uint16},
+    locals={
+        "result": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
 )
 def hellinger(x, y):
     result = 0.0
@@ -432,15 +438,16 @@ def hellinger(x, y):
         return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
 
 
-
 @numba.njit(
-    'f4(f4[::1],f4[::1])',
+    "f4(f4[::1],f4[::1])",
     fastmath=True,
-    locals={"result": numba.types.float32,
-            "l1_norm_x": numba.types.float32,
-            "l1_norm_y": numba.types.float32,
-            "dim": numba.types.uint32,
-            "i": numba.types.uint16},
+    locals={
+        "result": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
 )
 def alternative_hellinger(x, y):
     result = 0.0
@@ -466,7 +473,6 @@ def alternative_hellinger(x, y):
 @numba.vectorize(fastmath=True, cache=True)
 def correct_alternative_hellinger(d):
     return np.arccos(np.exp(-d))
-
 
 
 named_distances = {
@@ -517,5 +523,8 @@ fast_distance_alternatives = {
     "euclidean": {"dist": squared_euclidean, "correction": np.sqrt},
     "l2": {"dist": squared_euclidean, "correction": np.sqrt},
     "cosine": {"dist": alternative_cosine, "correction": correct_alternative_cosine},
-    "hellinger": {"dist": alternative_hellinger, "correction": correct_alternative_hellinger},
+    "hellinger": {
+        "dist": alternative_hellinger,
+        "correction": correct_alternative_hellinger,
+    },
 }

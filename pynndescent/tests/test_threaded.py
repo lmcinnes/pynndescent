@@ -113,7 +113,11 @@ def test_init_rp_tree():
     random_state = check_random_state(42)
     current_graph = utils.make_heap(data.shape[0], n_neighbors)
     _rp_forest = make_forest(
-        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state,
+        data,
+        n_neighbors,
+        n_trees=8,
+        leaf_size=None,
+        rng_state=rng_state,
         random_state=random_state,
     )
     leaf_array = rptree_leaf_array(_rp_forest)
@@ -123,7 +127,11 @@ def test_init_rp_tree():
     random_state = check_random_state(42)
     current_graph_threaded = utils.make_heap(data.shape[0], n_neighbors)
     _rp_forest = make_forest(
-        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state,
+        data,
+        n_neighbors,
+        n_trees=8,
+        leaf_size=None,
+        rng_state=rng_state,
         random_state=random_state,
     )
     leaf_array = rptree_leaf_array(_rp_forest)
@@ -189,6 +197,7 @@ def test_new_build_candidates():
     assert_allclose(new_candidate_neighbors_threaded, new_candidate_neighbors)
     assert_allclose(old_candidate_neighbors_threaded, old_candidate_neighbors)
 
+
 def test_mark_candidate_results():
 
     np.random.seed(42)
@@ -210,15 +219,9 @@ def test_mark_candidate_results():
         seed_per_row=True,
     )
     pynndescent_.nn_descent_internal_low_memory_parallel(
-        current_graph,
-        data,
-        n_neighbors,
-        new_rng_state(),
-        n_iters=2,
-        seed_per_row=True,
+        current_graph, data, n_neighbors, new_rng_state(), n_iters=2, seed_per_row=True
     )
     current_graph_threaded = current_graph.copy()
-
 
     new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
         current_graph,

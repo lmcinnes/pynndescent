@@ -31,6 +31,7 @@ from pynndescent.rp_trees import search_sparse_flat_tree
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 
+
 @numba.njit(
     fastmath=True,
     locals={
@@ -529,7 +530,9 @@ def nn_descent(
     if rp_tree_init:
         init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
 
-    init_random(n_neighbors, inds, indptr, data, current_graph, dist, dist_args, rng_state)
+    init_random(
+        n_neighbors, inds, indptr, data, current_graph, dist, dist_args, rng_state
+    )
 
     if low_memory:
         nn_descent_internal_low_memory_parallel(

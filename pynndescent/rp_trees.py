@@ -238,7 +238,7 @@ def euclidean_random_projection_split(data, indices, rng_state):
         "normalized_right_data": numba.types.float32[::1],
         "hyperplane_norm": numba.types.float32,
         "i": numba.types.uint16,
-    }
+    },
 )
 def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_state):
     """Given a set of ``graph_indices`` for graph_data points from a sparse graph_data set
@@ -465,10 +465,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
 @numba.njit(
     nogil=True,
     cache=True,
-    locals={
-        "left_node_num": numba.types.int32,
-        "right_node_num": numba.types.int32,
-    }
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_euclidean_tree(
     data,
@@ -529,10 +526,7 @@ def make_euclidean_tree(
 @numba.njit(
     nogil=True,
     cache=True,
-    locals={
-        "left_node_num": numba.types.int32,
-        "right_node_num": numba.types.int32,
-    }
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_angular_tree(
     data,
@@ -591,10 +585,7 @@ def make_angular_tree(
 @numba.njit(
     nogil=True,
     cache=True,
-    locals={
-        "left_node_num": numba.types.int32,
-        "right_node_num": numba.types.int32,
-    }
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_sparse_euclidean_tree(
     inds,
@@ -659,10 +650,7 @@ def make_sparse_euclidean_tree(
 @numba.njit(
     nogil=True,
     cache=True,
-    locals={
-        "left_node_num": numba.types.int32,
-        "right_node_num": numba.types.int32,
-    }
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_sparse_angular_tree(
     inds,
@@ -799,13 +787,14 @@ def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=Fals
     return FlatTree(hyperplanes, offsets, children, point_indices, leaf_size)
 
 
-@numba.njit('b1(f4[::1],f4,f4[::1],i8[::1])',
+@numba.njit(
+    "b1(f4[::1],f4,f4[::1],i8[::1])",
     fastmath=True,
     locals={
         "margin": numba.types.float32,
         "dim": numba.types.uint16,
         "d": numba.types.uint16,
-    }
+    },
 )
 def select_side(hyperplane, offset, point, rng_state):
     margin = offset
@@ -826,11 +815,8 @@ def select_side(hyperplane, offset, point, rng_state):
 
 
 @numba.njit(
-    'i4[::1](f4[::1],f4[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])',
-    locals={
-        "node": numba.types.uint32,
-        "side": numba.types.boolean
-    }
+    "i4[::1](f4[::1],f4[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])",
+    locals={"node": numba.types.uint32, "side": numba.types.boolean},
 )
 def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
     node = 0
@@ -841,7 +827,7 @@ def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
         else:
             node = children[node, 1]
 
-    return indices[-children[node, 0]:-children[node, 1]]
+    return indices[-children[node, 0] : -children[node, 1]]
 
 
 @numba.njit(fastmath=True)
@@ -886,11 +872,19 @@ def search_sparse_flat_tree(
         else:
             node = children[node, 1]
 
-    return indices[-children[node, 0]:-children[node, 1]]
+    return indices[-children[node, 0] : -children[node, 1]]
 
 
-def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
-                random_state, n_jobs=None, angular=False):
+def make_forest(
+    data,
+    n_neighbors,
+    n_trees,
+    leaf_size,
+    rng_state,
+    random_state,
+    n_jobs=None,
+    angular=False,
+):
     """Build a random projection forest with ``n_trees``.
 
     Parameters
@@ -914,26 +908,25 @@ def make_forest(data, n_neighbors, n_trees, leaf_size, rng_state,
     if n_jobs is None:
         n_jobs = -1
 
-    rng_states = random_state.randint(INT32_MIN, INT32_MAX, size=(n_trees,
-                                                                  3)).astype(
-        np.int64)
+    rng_states = random_state.randint(INT32_MIN, INT32_MAX, size=(n_trees, 3)).astype(
+        np.int64
+    )
     try:
         if scipy.sparse.isspmatrix_csr(data):
             result = joblib.Parallel(n_jobs=-1, prefer="threads")(
-                joblib.delayed(make_sparse_tree)(data.indices,
-                                                 data.indptr,
-                                                 data.data,
-                                                 rng_states[i],
-                                                 leaf_size,
-                                                 angular)
+                joblib.delayed(make_sparse_tree)(
+                    data.indices,
+                    data.indptr,
+                    data.data,
+                    rng_states[i],
+                    leaf_size,
+                    angular,
+                )
                 for i in range(n_trees)
             )
         else:
             result = joblib.Parallel(n_jobs=-1, prefer="threads")(
-                joblib.delayed(make_dense_tree)(data,
-                                                rng_states[i],
-                                                leaf_size,
-                                                angular)
+                joblib.delayed(make_dense_tree)(data, rng_states[i], leaf_size, angular)
                 for i in range(n_trees)
             )
     except (RuntimeError, RecursionError, SystemError):
@@ -958,7 +951,7 @@ def get_leaves_from_tree(tree):
     for i in range(len(tree.indices)):
         if tree.children[i][0] == -1 or tree.children[i][1] == -1:
             leaf_size = tree.indices[i].shape[0]
-            result[leaf_index, : leaf_size] = tree.indices[i]
+            result[leaf_index, :leaf_size] = tree.indices[i]
             leaf_index += 1
 
     return result
@@ -966,8 +959,7 @@ def get_leaves_from_tree(tree):
 
 def rptree_leaf_array_parallel(rp_forest):
     result = joblib.Parallel(n_jobs=-1, prefer="threads")(
-        joblib.delayed(get_leaves_from_tree)(rp_tree)
-        for rp_tree in rp_forest
+        joblib.delayed(get_leaves_from_tree)(rp_tree) for rp_tree in rp_forest
     )
     # result = [get_leaves_from_tree(rp_tree) for rp_tree in rp_forest]
     return result
@@ -978,6 +970,8 @@ def rptree_leaf_array(rp_forest):
         return np.vstack(rptree_leaf_array_parallel(rp_forest))
     else:
         return np.array([[-1]])
+
+
 # def rptree_leaf_array(rp_forest):
 #     """Generate an array of sets of candidate nearest neighbors by
 #     constructing a random projection forest and taking the leaves of all the
@@ -1016,14 +1010,15 @@ def rptree_leaf_array(rp_forest):
 
 
 @numba.njit()
-def recursive_convert(tree, hyperplanes, offsets, children, indices, node_num,
-                      leaf_start, tree_node):
+def recursive_convert(
+    tree, hyperplanes, offsets, children, indices, node_num, leaf_start, tree_node
+):
 
     if tree.children[tree_node][0] < 0:
         leaf_end = leaf_start + len(tree.indices[tree_node])
         children[node_num, 0] = -leaf_start
         children[node_num, 1] = -leaf_end
-        indices[leaf_start : leaf_end] = tree.indices[tree_node]
+        indices[leaf_start:leaf_end] = tree.indices[tree_node]
         return node_num, leaf_end
     else:
         hyperplanes[node_num] = tree.hyperplanes[tree_node]
@@ -1038,7 +1033,7 @@ def recursive_convert(tree, hyperplanes, offsets, children, indices, node_num,
             indices,
             node_num + 1,
             leaf_start,
-            tree.children[tree_node][0]
+            tree.children[tree_node][0],
         )
         children[old_node_num, 1] = node_num + 1
         node_num, leaf_start = recursive_convert(
@@ -1049,23 +1044,26 @@ def recursive_convert(tree, hyperplanes, offsets, children, indices, node_num,
             indices,
             node_num + 1,
             leaf_start,
-            tree.children[tree_node][1]
+            tree.children[tree_node][1],
         )
         return node_num, leaf_start
 
+
 @numba.njit()
-def recursive_convert_sparse(tree, hyperplanes, offsets, children, indices, node_num,
-                      leaf_start, tree_node):
+def recursive_convert_sparse(
+    tree, hyperplanes, offsets, children, indices, node_num, leaf_start, tree_node
+):
 
     if tree.children[tree_node][0] < 0:
         leaf_end = leaf_start + len(tree.indices[tree_node])
         children[node_num, 0] = -leaf_start
         children[node_num, 1] = -leaf_end
-        indices[leaf_start : leaf_end] = tree.indices[tree_node]
+        indices[leaf_start:leaf_end] = tree.indices[tree_node]
         return node_num, leaf_end
     else:
-        hyperplanes[node_num, :, :tree.hyperplanes[tree_node].shape[1]] = tree.hyperplanes[
-            tree_node]
+        hyperplanes[
+            node_num, :, : tree.hyperplanes[tree_node].shape[1]
+        ] = tree.hyperplanes[tree_node]
         offsets[node_num] = tree.offsets[tree_node]
         children[node_num, 0] = node_num + 1
         old_node_num = node_num
@@ -1077,7 +1075,7 @@ def recursive_convert_sparse(tree, hyperplanes, offsets, children, indices, node
             indices,
             node_num + 1,
             leaf_start,
-            tree.children[tree_node][0]
+            tree.children[tree_node][0],
         )
         children[old_node_num, 1] = node_num + 1
         node_num, leaf_start = recursive_convert_sparse(
@@ -1088,9 +1086,10 @@ def recursive_convert_sparse(tree, hyperplanes, offsets, children, indices, node
             indices,
             node_num + 1,
             leaf_start,
-            tree.children[tree_node][1]
+            tree.children[tree_node][1],
         )
         return node_num, leaf_start
+
 
 @numba.njit()
 def num_nodes_and_leaves(tree):
@@ -1104,6 +1103,7 @@ def num_nodes_and_leaves(tree):
             n_nodes += 1
 
     return n_nodes, n_leaves
+
 
 # #@numba.njit()
 # def convert_tree_format(tree):
@@ -1128,7 +1128,6 @@ def dense_hyperplane_dim(hyperplanes):
             return hyperplanes[i].shape[0]
     else:
         raise ValueError("No hyperplanes of adequate size were found!")
-
 
 
 @numba.njit()
@@ -1159,9 +1158,11 @@ def convert_tree_format(tree, data_size):
     children = np.int32(-1) * np.ones((n_nodes, 2), dtype=np.int32)
     indices = np.int32(-1) * np.ones(data_size, dtype=np.int32)
     if is_sparse:
-        recursive_convert_sparse(tree, hyperplanes, offsets, children, indices, 0, 0,
-                          len(tree.children) - 1)
+        recursive_convert_sparse(
+            tree, hyperplanes, offsets, children, indices, 0, 0, len(tree.children) - 1
+        )
     else:
-        recursive_convert(tree, hyperplanes, offsets, children, indices, 0, 0,
-                          len(tree.children) - 1)
+        recursive_convert(
+            tree, hyperplanes, offsets, children, indices, 0, 0, len(tree.children) - 1
+        )
     return FlatTree(hyperplanes, offsets, children, indices, tree.leaf_size)

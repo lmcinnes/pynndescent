@@ -88,14 +88,7 @@ def shuffle_jit(
 
 @numba.njit(nogil=True)
 def current_graph_map_jit(
-    heap,
-    rows,
-    n_neighbors,
-    data,
-    rng_state,
-    seed_per_row,
-    dist,
-    dist_args,
+    heap, rows, n_neighbors, data, rng_state, seed_per_row, dist, dist_args
 ):
     rng_state_local = rng_state.copy()
     for i in rows:
@@ -328,8 +321,9 @@ def candidates_reduce_jit(
 
 
 @numba.njit(nogil=True)
-def mark_candidate_results_map(rows, current_graph, n_neighbors, max_candidates,
-                               new_candidate_neighbors):
+def mark_candidate_results_map(
+    rows, current_graph, n_neighbors, max_candidates, new_candidate_neighbors
+):
     for i in rows:
         for j in range(n_neighbors):
             idx = current_graph[0, i, j]
@@ -413,11 +407,7 @@ def new_build_candidates(
     def mark_candidate_results(index):
         rows = chunk_rows(chunk_size, index, n_vertices)
         return mark_candidate_results_map(
-            rows,
-            current_graph,
-            n_neighbors,
-            max_candidates,
-            new_candidate_neighbors,
+            rows, current_graph, n_neighbors, max_candidates, new_candidate_neighbors
         )
 
     # Now mark whether things were used correctly
@@ -562,8 +552,17 @@ def nn_descent(
                 data, dist, dist_args, current_graph, leaf_array, chunk_size, parallel
             )
 
-        init_random(current_graph, data, dist, dist_args, n_neighbors,
-                    chunk_size, rng_state, parallel, seed_per_row=seed_per_row)
+        init_random(
+            current_graph,
+            data,
+            dist,
+            dist_args,
+            n_neighbors,
+            chunk_size,
+            rng_state,
+            parallel,
+            seed_per_row=seed_per_row,
+        )
 
         # store the updates in an array
         # note that the factor here is `n_neighbors * n_neighbors`, not `max_candidates * max_candidates`
