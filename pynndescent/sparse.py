@@ -105,7 +105,7 @@ def sparse_sum(ind1, data1, ind2, data2):
         i1 += 1
 
     while i2 < ind2.shape[0]:
-        j2 = ind1[i2]
+        j2 = ind2[i2]
         val = data2[i2]
         if val != 0:
             result_ind[nnz] = j2
