@@ -81,6 +81,7 @@ distance metrics by default:
 
 - cosine
 - correlation
+- spearmanr
 
 **Metrics for binary data**
 

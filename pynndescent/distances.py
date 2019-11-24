@@ -405,20 +405,14 @@ def rankdata(a, method="average"):
 @numba.njit(fastmath=True)
 def spearmanr(x, y):
     a = np.column_stack((x, y))
-
+        
     n_vars = a.shape[1]
-    n_obs = a.shape[0]
-
-    nans = np.isnan(a)
-    variable_has_nan = np.zeros(n_vars, dtype=np.int64)
-    if nans.any():
-        variable_has_nan = nans.astype(np.int64).sum(axis=0)
 
     for i in range(n_vars):
-        a[:, i] = rankdata(a[:, i])
+        a[:,i] = rankdata(a[:,i])
     rs = np.corrcoef(a, rowvar=0)
 
-    return rs
+    return rs[1,0]
 
 
 
