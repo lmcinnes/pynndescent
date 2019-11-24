@@ -116,7 +116,7 @@ def test_sparse_angular_nn_descent_neighbor_accuracy():
 
 def test_nn_descent_query_accuracy():
     nnd = NNDescent(nn_data[200:], "euclidean", n_neighbors=10, random_state=None)
-    knn_indices, _ = nnd.query(nn_data[:200], k=10, queue_size=2.0)
+    knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
 
     tree = KDTree(nn_data[200:])
     true_indices = tree.query(nn_data[:200], 10, return_distance=False)
@@ -156,12 +156,12 @@ def test_sparse_nn_descent_query_accuracy():
 
 def test_transformer_equivalence():
     N_NEIGHBORS = 15
-    QUEUE_SIZE = 5.0
+    EPSILON = 0.15
     train = nn_data[:400]
     test = nn_data[:200]
 
     nnd = NNDescent(data=train, n_neighbors=N_NEIGHBORS, random_state=42)
-    indices, dists = nnd.query(test, k=N_NEIGHBORS, queue_size=QUEUE_SIZE)
+    indices, dists = nnd.query(test, k=N_NEIGHBORS, epsilon=EPSILON)
     sort_idx = np.argsort(indices, axis=1)
     indices_sorted = np.vstack(
         [indices[i, sort_idx[i]] for i in range(sort_idx.shape[0])]
@@ -169,11 +169,11 @@ def test_transformer_equivalence():
     dists_sorted = np.vstack([dists[i, sort_idx[i]] for i in range(sort_idx.shape[0])])
 
     transformer = PyNNDescentTransformer(
-        n_neighbors=N_NEIGHBORS, search_queue_size=QUEUE_SIZE, random_state=42
+        n_neighbors=N_NEIGHBORS, search_epsilon=EPSILON, random_state=42
     ).fit(train)
     Xt = transformer.transform(test).sorted_indices()
 
-    assert np.all(Xt.indices == indices_sorted.flat)
+    assert np.all(Xt.indices == indices_sorted.flatten())
     assert np.allclose(Xt.data, dists_sorted.flat)
 
 

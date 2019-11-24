@@ -1083,7 +1083,7 @@ class NNDescent(object):
         return result
 
 
-    def query(self, query_data, k=10, epsilon=0.1, n_search_trees=1, queue_size=1.0):
+    def query(self, query_data, k=10, epsilon=0.1):
         """Query the training graph_data for the k nearest neighbors
 
         Parameters
@@ -1261,6 +1261,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. Values above 1.0 are not recommended.
 
+    n_search_trees: float (optional, default=1)
+        The number of random projection trees to use in initializing searching or
+        querying.
+
     search_epsilon: float (optional, default=0.1)
         When searching for nearest neighbors of a query point this values
         controls the trade-off between accuracy and search cost. Larger values
@@ -1333,21 +1337,20 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
 
     def __init__(
         self,
-        n_neighbors=5,
+        n_neighbors=15,
         metric="euclidean",
         metric_kwds=None,
         n_trees=None,
         leaf_size=None,
-        search_queue_size=1.0,
         search_epsilon=0.1,
         pruning_degree_multiplier=2.0,
-        diversify_epsilon=0.5,
+        diversify_epsilon=1.0,
         n_search_trees=1,
         tree_init=True,
-        random_state=np.random,
+        random_state=None,
         algorithm="standard",
         low_memory=False,
-        max_candidates=20,
+        max_candidates=None,
         n_iters=None,
         early_termination_value=0.001,
         sampling_rate=0.5,
@@ -1359,7 +1362,6 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.metric_kwds = metric_kwds
         self.n_trees = n_trees
         self.leaf_size = leaf_size
-        self.search_queue_size = search_queue_size
         self.search_epsilon = search_epsilon
         self.pruning_degree_multiplier = pruning_degree_multiplier
         self.diversify_epsilon = diversify_epsilon
@@ -1395,7 +1397,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         else:
             metric_kwds = self.metric_kwds
 
-        self.pynndescent_ = NNDescent(
+        self.index_ = NNDescent(
             X,
             self.metric,
             metric_kwds,
@@ -1439,12 +1441,11 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             n_samples_transform = X.shape[0]
 
         if X is None:
-            indices, distances = self.pynndescent_.neighbor_graph
+            indices, distances = self.index_.neighbor_graph
         else:
-            indices, distances = self.pynndescent_.query(
+            indices, distances = self.index_.query(
                 X,
                 k=self.n_neighbors,
-                queue_size=self.search_queue_size,
                 epsilon=self.search_epsilon,
             )
 
