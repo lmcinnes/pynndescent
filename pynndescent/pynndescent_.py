@@ -1044,6 +1044,11 @@ class NNDescent(object):
         self._search_graph = self._search_graph.maximum(
             reverse_graph
         ).tocsr()
+
+        # Eliminate the diagonal
+        n_vertices = self._search_graph.shape[0]
+        self._search_graph[np.arange(n_vertices), np.arange(n_vertices)] = 0.0
+
         self._search_graph.eliminate_zeros()
 
         self._search_graph = degree_prune(self._search_graph,
@@ -1063,7 +1068,7 @@ class NNDescent(object):
         self._search_graph = self._search_graph.tocsr()
         self._search_graph.sort_indices()
 
-        self._raw_data = self._raw_data[self._vertex_order, :]
+        self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
 
         tree_order = np.argsort(self._vertex_order)
         self._search_forest = tuple(resort_tree_indices(tree, tree_order)
