@@ -365,7 +365,7 @@ def hellinger(x, y):
     else:
         return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
 
-    
+
 @numba.njit()
 def rankdata(a, method="average"):
     arr = np.ravel(np.asarray(a))
@@ -405,15 +405,14 @@ def rankdata(a, method="average"):
 @numba.njit(fastmath=True)
 def spearmanr(x, y):
     a = np.column_stack((x, y))
-        
+
     n_vars = a.shape[1]
 
     for i in range(n_vars):
-        a[:,i] = rankdata(a[:,i])
+        a[:, i] = rankdata(a[:, i])
     rs = np.corrcoef(a, rowvar=0)
 
-    return rs[1,0]
-
+    return rs[1, 0]
 
 
 named_distances = {
