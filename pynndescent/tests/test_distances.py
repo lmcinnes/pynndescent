@@ -1,7 +1,8 @@
 import numpy as np
+from numpy.testing import assert_array_equal
 import pynndescent.distances as dist
 import pynndescent.sparse as spdist
-from scipy import sparse
+from scipy import sparse, stats
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import BallTree
 from sklearn.utils.testing import assert_array_almost_equal
@@ -385,3 +386,12 @@ def test_haversine():
         dist_matrix,
         err_msg="Distances don't match " "for metric haversine",
     )
+
+
+def test_spearmanr():
+    x = np.random.randn(100)
+    y = np.random.randn(100)
+
+    scipy_expected = stats.spearmanr(x, y)
+    r = dist.spearmanr(x, y)
+    assert_array_equal(r, scipy_expected.correlation)
