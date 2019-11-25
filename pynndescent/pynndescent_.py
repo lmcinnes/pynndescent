@@ -32,6 +32,12 @@ from pynndescent.utils import (
     mark_visited,
     apply_graph_updates_high_memory,
     apply_graph_updates_low_memory,
+    # Try custom pq
+    PriorityQueue,
+    make_priority_queue,
+    priority_queue_push,
+    priority_queue_pop,
+    priority_queue_heapify,
 )
 
 from pynndescent.rp_trees import (
@@ -82,11 +88,14 @@ def search_from_init(
     distance_bound = distance_scale * heap_priorities[0]
     heap_size = heap_priorities.shape[0]
 
-    seed_set = [(heap_priorities[j], heap_indices[j]) for j in range(heap_size)]
-    heapq.heapify(seed_set)
+    # seed_set = [(heap_priorities[j], heap_indices[j]) for j in range(heap_size)]
+    # heapq.heapify(seed_set)
+
+    seed_queue = priority_queue_heapify(heap_priorities, heap_indices, 256, distance_bound)
 
     # Find smallest seed point
-    d_vertex, vertex = heapq.heappop(seed_set)
+    # d_vertex, vertex = heapq.heappop(seed_set)
+    d_vertex, vertex = priority_queue_pop(seed_queue, distance_bound)
 
     while d_vertex < distance_bound:
 
@@ -101,15 +110,20 @@ def search_from_init(
 
                 if d < distance_bound:
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
+                    # heapq.heappush(seed_set, (d, candidate))
+                    priority_queue_push(seed_queue, d, candidate, distance_bound)
                     # Update bound
                     distance_bound = distance_scale * heap_priorities[0]
 
-        # find new smallest seed point
-        if len(seed_set) == 0:
+        # # find new smallest seed point
+        # if len(seed_set) == 0:
+        #     break
+        # else:
+        #     d_vertex, vertex = heapq.heappop(seed_set)
+        if seed_queue.size[0] == 0:
             break
         else:
-            d_vertex, vertex = heapq.heappop(seed_set)
+            d_vertex, vertex = priority_queue_pop(seed_queue, distance_bound)
 
     return heap_priorities, heap_indices
 

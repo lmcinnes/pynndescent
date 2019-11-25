@@ -7,6 +7,8 @@ import time
 import numba
 import numpy as np
 
+from collections import namedtuple
+
 
 @numba.njit("void(i8[:], i8)")
 def seed(rng_state, seed):
@@ -696,6 +698,156 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
                     n_changes += added
 
     return n_changes
+
+
+PriorityQueue = namedtuple("PriorityQueue", ["priorities", "items", "size", "max_size"])
+
+
+@numba.njit(
+    'void(f4[::1],i4[::1],u2,u2)',
+    locals={
+        "new_item": numba.types.int32,
+        "new_weight": numba.types.float32,
+        "parentpos": numba.types.uint16,
+        "parent_item": numba.types.int32,
+        "parent_weight": numba.types.float32,
+    }
+)
+def _siftdown(heap_weights, heap_items, startpos, pos):
+    new_item = heap_items[pos]
+    new_weight = heap_weights[pos]
+
+    while pos > startpos:
+        parentpos = (pos - 1) >> 1
+        parent_item = heap_items[parentpos]
+        parent_weight = heap_weights[parentpos]
+        if new_weight < parent_weight:
+            heap_items[pos] = parent_item
+            heap_weights[pos] = parent_weight
+            pos = parentpos
+            continue
+        break
+
+    heap_items[pos] = new_item
+    heap_weights[pos] = new_weight
+
+
+@numba.njit(
+    'void(f4[::1],i4[::1],u2,u2,f4)',
+    locals={
+        "new_item": numba.types.int32,
+        "new_weight": numba.types.float32,
+        "child_pos": numba.types.uint16,
+        "child_weight": numba.types.float32,
+    }
+)
+def _siftup(heap_weights, heap_items, endpos, pos, bound):
+    startpos = pos
+    new_item = heap_items[pos]
+    new_weight = heap_weights[pos]
+
+    child_pos = 2 * pos + 1
+    child_weight = heap_weights[child_pos]
+
+    while child_pos < endpos and child_weight < bound:
+
+        rightpos = child_pos + 1
+        if rightpos < endpos and not child_weight < heap_weights[rightpos]:
+            child_pos = rightpos
+            child_weight = heap_weights[rightpos]
+
+        heap_items[pos] = heap_items[child_pos]
+        heap_weights[pos] = heap_weights[child_pos]
+        pos = child_pos
+        child_pos = 2 * pos + 1
+
+    heap_items[pos] = new_item
+    heap_weights[pos] = new_weight
+    _siftdown(heap_weights, heap_items, startpos, pos)
+
+
+@numba.njit()
+def make_priority_queue(max_size):
+    priorities = np.zeros(max_size, dtype=np.float32)
+    items = np.zeros(max_size, dtype=np.int32)
+    size = np.zeros(1, dtype=np.uint16)
+    return PriorityQueue(priorities, items, size, max_size)
+
+
+@numba.njit(
+    locals={
+        "priorities": numba.types.float32[::1],
+        "items": numba.types.int32[::1],
+        "pos": numba.types.uint16,
+    }
+)
+def priority_queue_push(queue, priority, item, bound):
+
+    priorities = queue.priorities
+    items = queue.items
+
+    pos = 0
+    while priorities[pos] <= bound and pos < queue.size[0]:
+        pos += 1
+
+    items[pos] = item
+    priorities[pos] = priority
+    _siftdown(priorities, items, 0, pos)
+
+    if queue.size[0] < queue.max_size - 1:
+        queue.size[0] += 1
+
+
+@numba.njit(
+    locals={
+        "priorities": numba.types.float32[::1],
+        "items": numba.types.int32[::1],
+        "last_priority": numba.types.float32,
+        "last_item": numba.types.int32,
+        "return_priority": numba.types.float32,
+        "return_item": numba.types.int32,
+    }
+)
+def priority_queue_pop(queue, bound):
+
+    priorities = queue.priorities
+    items = queue.items
+
+    pos = 0
+    while priorities[pos] <= bound and pos < queue.size[0]:
+        pos += 1
+
+    last_item = items[pos]
+    last_priority = priorities[pos]
+
+    queue.size[0] -= 1
+
+    if queue.size[0] > 0:
+        return_item = items[0]
+        return_priority = priorities[0]
+
+        items[0] = last_item
+        priorities[0] = last_priority
+
+        _siftup(priorities, items, pos, 0, bound)
+
+        return return_priority, return_item
+
+    return last_priority, last_item
+
+
+@numba.njit()
+def priority_queue_heapify(priorities, items, max_size, bound):
+    p_s = np.zeros(max_size, dtype=np.float32)
+    p_s[:priorities.shape[0]] = priorities
+    i_s = np.zeros(max_size, dtype=np.int32)
+    i_s[:items.shape[0]] = items
+    size = np.full(1, priorities.shape[0], dtype=np.uint16)
+
+    for i in range(size[0] // 2 - 1, -1, -1):
+        _siftup(p_s, i_s, size[0], i, bound)
+
+    return PriorityQueue(p_s, i_s, size, max_size)
 
 
 # Generates a timestamp for use in logging messages when verbose=True
