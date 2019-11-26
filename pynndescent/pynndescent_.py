@@ -1109,7 +1109,10 @@ class NNDescent(object):
         self._search_graph = self._search_graph.tocsr()
         self._search_graph.sort_indices()
 
-        self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
+        if self._is_sparse:
+            self._raw_data = self._raw_data[self._vertex_order, :]
+        else:
+            self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
 
         tree_order = np.argsort(self._vertex_order)
         self._search_forest = tuple(
