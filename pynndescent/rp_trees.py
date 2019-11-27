@@ -10,8 +10,8 @@ import numpy as np
 import numba
 import scipy.sparse
 
-from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_unique
-from pynndescent.utils import tau_rand_int, norm, seed, ts
+from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum
+from pynndescent.utils import tau_rand_int, norm
 import joblib
 
 locale.setlocale(locale.LC_NUMERIC, "C")
@@ -913,7 +913,7 @@ def make_forest(
     )
     try:
         if scipy.sparse.isspmatrix_csr(data):
-            result = joblib.Parallel(n_jobs=-1, prefer="threads")(
+            result = joblib.Parallel(n_jobs=n_jobs, prefer="threads")(
                 joblib.delayed(make_sparse_tree)(
                     data.indices,
                     data.indptr,
@@ -925,7 +925,7 @@ def make_forest(
                 for i in range(n_trees)
             )
         else:
-            result = joblib.Parallel(n_jobs=-1, prefer="threads")(
+            result = joblib.Parallel(n_jobs=n_jobs, prefer="threads")(
                 joblib.delayed(make_dense_tree)(data, rng_states[i], leaf_size, angular)
                 for i in range(n_trees)
             )
@@ -970,43 +970,6 @@ def rptree_leaf_array(rp_forest):
         return np.vstack(rptree_leaf_array_parallel(rp_forest))
     else:
         return np.array([[-1]])
-
-
-# def rptree_leaf_array(rp_forest):
-#     """Generate an array of sets of candidate nearest neighbors by
-#     constructing a random projection forest and taking the leaves of all the
-#     trees. Any given tree has leaves that are a set of potential nearest
-#     neighbors. Given enough trees the set of all such leaves gives a good
-#     likelihood of getting a good set of nearest neighbors in composite. Since
-#     such a random projection forest is inexpensive to compute, this can be a
-#     useful means of seeding other nearest neighbor algorithms.
-#     Parameters
-#     ----------
-#     graph_data: array of shape (n_samples, n_features)
-#         The graph_data for which to generate nearest neighbor approximations.
-#     n_neighbors: int
-#         The number of nearest neighbors to attempt to approximate.
-#     rng_state: array of int64, shape (3,)
-#         The internal state of the rng
-#     n_trees: int (optional, default 10)
-#         The number of trees to build in the forest construction.
-#     angular: bool (optional, default False)
-#         Whether to use angular/cosine distance for random projection tree
-#         construction.
-#     Returns
-#     -------
-#     leaf_array: array of shape (n_leaves, max(10, n_neighbors))
-#         Each row of leaf array is a list of graph_indices found in a given leaf.
-#         Since not all leaves are the same size the arrays are padded out with -1
-#         to ensure we can return a single ndarray.
-#     """
-#     if rp_forest:
-#         # leaf_array = np.vstack([tree.graph_indices for tree in rp_forest])
-#         leaf_array = np.vstack([get_leaves_from_tree(tree) for tree in rp_forest])
-#     else:
-#         leaf_array = np.array([[-1]])
-#
-#     return leaf_array
 
 
 @numba.njit()

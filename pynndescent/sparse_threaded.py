@@ -8,10 +8,7 @@ import pynndescent.sparse as sparse
 from pynndescent.utils import (
     heap_push,
     make_heap,
-    rejection_sample,
     seed,
-    siftdown,
-    tau_rand,
 )
 
 from pynndescent.threaded import (
@@ -21,7 +18,6 @@ from pynndescent.threaded import (
     effective_n_jobs_with_context,
     chunk_rows,
     shuffle_jit,
-    current_graph_reduce_jit,
     init_rp_tree_reduce_jit,
     new_build_candidates,
     nn_decent_reduce_jit,

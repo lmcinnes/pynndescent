@@ -10,13 +10,9 @@ import numba
 import heapq
 
 from pynndescent.utils import (
-    tau_rand,
     tau_rand_int,
     make_heap,
     heap_push,
-    unchecked_heap_push,
-    smallest_flagged,
-    rejection_sample,
     new_build_candidates,
     deheap_sort,
     simple_heap_push,

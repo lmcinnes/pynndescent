@@ -22,7 +22,6 @@ from pynndescent.utils import (
     tau_rand_int,
     make_heap,
     heap_push,
-    unchecked_heap_push,
     seed,
     deheap_sort,
     new_build_candidates,
@@ -538,7 +537,6 @@ def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
 def diversify_csr(
     graph_indptr, graph_indices, graph_data, source_data, dist, dist_args, epsilon=0.01
 ):
-
     n_nodes = graph_indptr.shape[0] - 1
 
     for i in numba.prange(n_nodes):
@@ -574,7 +572,6 @@ def diversify_csr(
 
 @numba.njit(parallel=True)
 def degree_prune_internal(indptr, data, max_degree=20):
-
     for i in numba.prange(indptr.shape[0] - 1):
         row_data = data[indptr[i] : indptr[i + 1]]
         if row_data.shape[0] > max_degree:
@@ -609,6 +606,7 @@ def degree_prune(graph, max_degree=20):
 
 
 def resort_tree_indices(tree, tree_order):
+    """Given a new data indexing, resort the tree indices to match"""
     new_tree = FlatTree(
         tree.hyperplanes,
         tree.offsets,
@@ -656,6 +654,7 @@ class NNDescent(object):
             * sokalmichener
             * sokalsneath
             * yule
+            * hellinger
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
@@ -689,12 +688,11 @@ class NNDescent(object):
         vertex has degree greater than
         ``pruning_degree_multiplier * n_neighbors``.
 
-    diversify_epsilon: float (optional, default=0.5)
+    diversify_epsilon: float (optional, default=1.0)
         The search graph get "diversified" by removing potentially unnecessary
         edges. This controls the volume of edges removed. A value of 0.0 ensures
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. Values above 1.0 are not recommended.
-
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -709,7 +707,8 @@ class NNDescent(object):
         This implementation provides an alternative algorithm for
         construction of the k-neighbors graph used as a search index. The
         alternative algorithm can be fast for large ``n_neighbors`` values.
-        To use the alternative algorithm specify ``'alternative'``.
+        The``'alternative'`` algorithm has been deprecated and is no longer
+        available.
 
     low_memory: boolean (optional, default=False)
         Whether to use a lower memory, but more computationally expensive
