@@ -5,11 +5,7 @@ import numpy as np
 
 import pynndescent.sparse as sparse
 
-from pynndescent.utils import (
-    heap_push,
-    make_heap,
-    seed,
-)
+from pynndescent.utils import heap_push, make_heap, seed
 
 from pynndescent.threaded import (
     new_rng_state,

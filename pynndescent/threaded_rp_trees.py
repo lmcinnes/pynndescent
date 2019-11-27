@@ -8,6 +8,7 @@ from pynndescent.utils import tau_rand_int, norm
 # for a dask-distributed version of the algorithm
 ######################################################
 
+
 @numba.njit(fastmath=True, nogil=True)
 def apply_hyperplane(
     data,
