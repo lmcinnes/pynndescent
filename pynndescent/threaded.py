@@ -257,7 +257,7 @@ def init_rp_tree(
 
 @numba.njit(nogil=True)
 def candidates_map_jit(
-    rows, n_neighbors, current_graph, heap_updates, offset, rho, rng_state, seed_per_row
+    rows, n_neighbors, current_graph, heap_updates, offset, rng_state, seed_per_row
 ):
     rng_state_local = rng_state.copy()
     count = 0
@@ -343,7 +343,6 @@ def new_build_candidates(
     max_candidates,
     chunk_size,
     rng_state,
-    rho,
     parallel,
     seed_per_row=False,
 ):
@@ -369,7 +368,6 @@ def new_build_candidates(
                 current_graph,
                 heap_updates[index],
                 offset=0,
-                rho=rho,
                 rng_state=rng_state_threads[index],
                 seed_per_row=seed_per_row,
             ),
@@ -528,7 +526,6 @@ def nn_descent(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     rp_tree_init=False,
     leaf_array=None,
     verbose=False,
@@ -582,7 +579,6 @@ def nn_descent(
                 max_candidates,
                 chunk_size,
                 rng_state,
-                rho,
                 parallel,
                 seed_per_row=seed_per_row,
             )

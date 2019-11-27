@@ -304,7 +304,6 @@ def sparse_nn_descent(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     rp_tree_init=False,
     leaf_array=None,
     verbose=False,
@@ -367,7 +366,6 @@ def sparse_nn_descent(
                 max_candidates,
                 chunk_size,
                 rng_state,
-                rho,
                 parallel,
                 seed_per_row=seed_per_row,
             )

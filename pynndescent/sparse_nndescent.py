@@ -391,7 +391,6 @@ def nn_descent_internal_low_memory_parallel(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     verbose=False,
     seed_per_row=False,
 ):
@@ -409,7 +408,6 @@ def nn_descent_internal_low_memory_parallel(
             n_neighbors,
             max_candidates,
             rng_state,
-            rho,
             seed_per_row,
         )
 
@@ -452,7 +450,6 @@ def nn_descent_internal_high_memory_parallel(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     verbose=False,
     seed_per_row=False,
 ):
@@ -474,7 +471,6 @@ def nn_descent_internal_high_memory_parallel(
             n_neighbors,
             max_candidates,
             rng_state,
-            rho,
             seed_per_row,
         )
 
@@ -516,7 +512,6 @@ def nn_descent(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     rp_tree_init=True,
     leaf_array=None,
     low_memory=False,
@@ -547,7 +542,6 @@ def nn_descent(
             dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
-            rho=rho,
             verbose=verbose,
             seed_per_row=seed_per_row,
         )
@@ -564,7 +558,6 @@ def nn_descent(
             dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
-            rho=rho,
             verbose=verbose,
             seed_per_row=seed_per_row,
         )

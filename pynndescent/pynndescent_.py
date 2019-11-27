@@ -339,7 +339,6 @@ def nn_descent_internal_low_memory_parallel(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     verbose=False,
     seed_per_row=False,
 ):
@@ -357,7 +356,6 @@ def nn_descent_internal_low_memory_parallel(
             n_neighbors,
             max_candidates,
             rng_state,
-            rho,
             seed_per_row,
         )
 
@@ -396,7 +394,6 @@ def nn_descent_internal_high_memory_parallel(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     verbose=False,
     seed_per_row=False,
 ):
@@ -418,7 +415,6 @@ def nn_descent_internal_high_memory_parallel(
             n_neighbors,
             max_candidates,
             rng_state,
-            rho,
             seed_per_row,
         )
 
@@ -456,7 +452,6 @@ def nn_descent(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     rp_tree_init=True,
     leaf_array=None,
     low_memory=False,
@@ -484,7 +479,6 @@ def nn_descent(
             dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
-            rho=rho,
             verbose=verbose,
             seed_per_row=seed_per_row,
         )
@@ -499,7 +493,6 @@ def nn_descent(
             dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
-            rho=rho,
             verbose=verbose,
             seed_per_row=seed_per_row,
         )
@@ -679,11 +672,11 @@ class NNDescent(object):
         computation time.
 
     n_trees: int (optional, default=None)
-        This implementation uses random projection forests for initialization
-        of searches. This parameter controls the number of trees in that
-        forest. A larger number will result in more accurate neighbor
-        computation at the cost of performance. The default of None means
-        a value will be chosen based on the size of the graph_data.
+        This implementation uses random projection forests for initializing the index
+        build process. This parameter controls the number of trees in that forest. A
+        larger number will result in more accurate neighbor computation at the cost
+        of performance. The default of None means a value will be chosen based on the
+        size of the graph_data.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
@@ -746,12 +739,6 @@ class NNDescent(object):
         and less accurate searching. Don't tweak this value unless you know
         what you're doing.
 
-    rho: float (optional, default=0.5)
-        Controls the random sampling of potential candidates in any given
-        iteration of NN-descent. Larger values will result in less accurate
-        indexes and less accurate searching. Don't tweak this value unless
-        you know what you're doing.
-
     n_jobs: int or None, optional (default=None)
         The number of parallel jobs to run for neighbors index construction.
         ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
@@ -779,7 +766,6 @@ class NNDescent(object):
         max_candidates=None,
         n_iters=None,
         delta=0.001,
-        rho=0.5,
         n_jobs=None,
         seed_per_row=False,
         verbose=False,
@@ -802,7 +788,6 @@ class NNDescent(object):
         self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
-        self.rho = rho
         self.dim = data.shape[1]
         self.n_jobs = n_jobs
         self.verbose = verbose
@@ -901,7 +886,6 @@ class NNDescent(object):
                     self._dist_args,
                     self.n_iters,
                     self.delta,
-                    self.rho,
                     rp_tree_init=self.tree_init,
                     leaf_array=leaf_array,
                     verbose=verbose,
@@ -920,7 +904,6 @@ class NNDescent(object):
                     self._dist_args,
                     self.n_iters,
                     self.delta,
-                    self.rho,
                     rp_tree_init=self.tree_init,
                     leaf_array=leaf_array,
                     verbose=verbose,
@@ -961,7 +944,6 @@ class NNDescent(object):
                     dist_args=self._dist_args,
                     n_iters=self.n_iters,
                     delta=self.delta,
-                    rho=self.rho,
                     rp_tree_init=True,
                     leaf_array=leaf_array,
                     low_memory=self.low_memory,
@@ -984,7 +966,6 @@ class NNDescent(object):
                     self._dist_args,
                     self.n_iters,
                     self.delta,
-                    self.rho,
                     low_memory=self.low_memory,
                     rp_tree_init=True,
                     leaf_array=leaf_array,
@@ -1365,12 +1346,6 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         and less accurate searching. Don't tweak this value unless you know
         what you're doing.
 
-    sampling_rate: float (optional, default=0.5)
-        Controls the random sampling of potential candidates in any given
-        iteration of NN-descent. Larger values will result in less accurate
-        indexes and less accurate searching. Don't tweak this value unless
-        you know what you're doing.
-
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
 
@@ -1402,7 +1377,6 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         max_candidates=None,
         n_iters=None,
         early_termination_value=0.001,
-        sampling_rate=0.5,
         verbose=False,
     ):
 
@@ -1422,7 +1396,6 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.max_candidates = max_candidates
         self.n_iters = n_iters
         self.early_termination_value = early_termination_value
-        self.sampling_rate = sampling_rate
         self.verbose = verbose
 
     def fit(self, X):
@@ -1463,7 +1436,6 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             self.max_candidates,
             self.n_iters,
             self.early_termination_value,
-            self.sampling_rate,
             verbose=self.verbose,
         )
 

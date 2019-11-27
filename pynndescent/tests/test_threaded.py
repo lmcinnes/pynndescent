@@ -189,7 +189,6 @@ def test_new_build_candidates():
         max_candidates,
         chunk_size=chunk_size,
         rng_state=new_rng_state(),
-        rho=0.5,
         parallel=parallel,
         seed_per_row=True,
     )
@@ -240,7 +239,6 @@ def test_mark_candidate_results():
         max_candidates,
         chunk_size=chunk_size,
         rng_state=new_rng_state(),
-        rho=0.5,
         parallel=parallel,
         seed_per_row=True,
     )

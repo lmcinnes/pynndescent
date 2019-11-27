@@ -486,7 +486,6 @@ def new_build_candidates(
     n_neighbors,
     max_candidates,
     rng_state,
-    rho=0.5,
     seed_per_row=False,
 ):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
