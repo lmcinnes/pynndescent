@@ -6,4 +6,4 @@ if [[ "${COVERAGE}" == "true" ]]; then
     COVERAGE_ARGS="--with-coverage --cover-package=${MODULE}"
 fi
 
-nosetests -s -v ${COVERAGE_ARGS} ${MODULE} && black --check ${MODULE}
+nosetests -s -v ${COVERAGE_ARGS} ${MODULE} && black --diff ${MODULE} && black --check ${MODULE}
