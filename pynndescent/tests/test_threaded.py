@@ -182,7 +182,10 @@ def test_new_build_candidates():
         seed_per_row=True,
     )
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
-    new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.new_build_candidates(
+    (
+        new_candidate_neighbors_threaded,
+        old_candidate_neighbors_threaded,
+    ) = threaded.new_build_candidates(
         current_graph,
         n_vertices,
         n_neighbors,
@@ -232,7 +235,10 @@ def test_mark_candidate_results():
     )
 
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
-    new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.new_build_candidates(
+    (
+        new_candidate_neighbors_threaded,
+        old_candidate_neighbors_threaded,
+    ) = threaded.new_build_candidates(
         current_graph_threaded,
         n_vertices,
         n_neighbors,
