@@ -296,11 +296,6 @@ def test_nn_descent():
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)
     _, nn_gold_indices = nbrs.kneighbors(data)
 
-    for i in range(nn_indices_threaded.shape[0]):
-        print(nn_indices_threaded[i])
-        print(nn_indices[i])
-        print(nn_gold_indices[i])
-
     assert_allclose(nn_indices_threaded, nn_indices)
     assert_allclose(nn_distances_threaded, nn_distances)
 
