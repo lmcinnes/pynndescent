@@ -9,7 +9,7 @@ env:
     - MODULE=pynndescent
   matrix:
     - COVERAGE="false"
-    - COVERAGE="true"
+#    - COVERAGE="true" # turn off until numba typed list fix is complete
 matrix:
   exclude:
     - python: "3.6"
