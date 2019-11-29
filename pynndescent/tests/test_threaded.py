@@ -5,6 +5,7 @@ from numpy.testing import assert_allclose
 from nose.tools import assert_equal
 
 from sklearn.neighbors import NearestNeighbors
+from sklearn.utils import check_random_state
 
 from pynndescent import distances
 from pynndescent import pynndescent_
@@ -70,12 +71,21 @@ def test_effective_n_jobs_with_context():
         )
 
 
-def test_init_current_graph():
-    current_graph = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+def test_init_random():
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
+    pynndescent_.init_random(
+        n_neighbors,
+        data,
+        current_graph,
+        dist,
+        dist_args,
+        new_rng_state(),
+        seed_per_row=True,
     )
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
-    current_graph_threaded = threaded.init_current_graph(
+    current_graph_threaded = utils.make_heap(data.shape[0], n_neighbors)
+    threaded.init_random(
+        current_graph_threaded,
         data,
         dist,
         dist_args,
@@ -91,7 +101,7 @@ def test_init_current_graph():
 
 def test_init_rp_tree():
 
-    # Use more data than the other tests since otherwise init_rp_tree has nothing to do
+    # Use more graph_data than the other tests since otherwise init_rp_tree has nothing to do
     np.random.seed(42)
     N = 100
     D = 128
@@ -100,21 +110,29 @@ def test_init_rp_tree():
     data = np.random.rand(N, D).astype(np.float32)
 
     rng_state = new_rng_state()
-    current_graph = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=rng_state, seed_per_row=True
-    )
+    random_state = check_random_state(42)
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
     _rp_forest = make_forest(
-        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state
+        data,
+        n_neighbors,
+        n_trees=8,
+        leaf_size=None,
+        rng_state=rng_state,
+        random_state=random_state,
     )
     leaf_array = rptree_leaf_array(_rp_forest)
     pynndescent_.init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
 
     rng_state = new_rng_state()
-    current_graph_threaded = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=rng_state, seed_per_row=True
-    )
+    random_state = check_random_state(42)
+    current_graph_threaded = utils.make_heap(data.shape[0], n_neighbors)
     _rp_forest = make_forest(
-        data, n_neighbors, n_trees=8, leaf_size=None, rng_state=rng_state
+        data,
+        n_neighbors,
+        n_trees=8,
+        leaf_size=None,
+        rng_state=rng_state,
+        random_state=random_state,
     )
     leaf_array = rptree_leaf_array(_rp_forest)
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
@@ -126,10 +144,23 @@ def test_init_rp_tree():
 
 
 def test_new_build_candidates():
+    np.random.seed(42)
+    N = 100
+    D = 128
+    chunk_size = N // 8
+    n_neighbors = 25
+    data = np.random.rand(N, D).astype(np.float32)
     n_vertices = data.shape[0]
 
-    current_graph = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
+    pynndescent_.init_random(
+        n_neighbors,
+        data,
+        current_graph,
+        dist,
+        dist_args,
+        new_rng_state(),
+        seed_per_row=True,
     )
     new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
         current_graph,
@@ -140,18 +171,27 @@ def test_new_build_candidates():
         seed_per_row=True,
     )
 
-    current_graph = pynndescent_.init_current_graph(
-        data, dist, dist_args, n_neighbors, rng_state=new_rng_state(), seed_per_row=True
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
+    pynndescent_.init_random(
+        n_neighbors,
+        data,
+        current_graph,
+        dist,
+        dist_args,
+        new_rng_state(),
+        seed_per_row=True,
     )
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
-    new_candidate_neighbors_threaded, old_candidate_neighbors_threaded = threaded.new_build_candidates(
+    (
+        new_candidate_neighbors_threaded,
+        old_candidate_neighbors_threaded,
+    ) = threaded.new_build_candidates(
         current_graph,
         n_vertices,
         n_neighbors,
         max_candidates,
         chunk_size=chunk_size,
         rng_state=new_rng_state(),
-        rho=0.5,
         parallel=parallel,
         seed_per_row=True,
     )
@@ -160,12 +200,74 @@ def test_new_build_candidates():
     assert_allclose(old_candidate_neighbors_threaded, old_candidate_neighbors)
 
 
+def test_mark_candidate_results():
+
+    np.random.seed(42)
+    N = 100
+    D = 128
+    chunk_size = N // 8
+    n_neighbors = 25
+    data = np.random.rand(N, D).astype(np.float32)
+    n_vertices = data.shape[0]
+
+    current_graph = utils.make_heap(data.shape[0], n_neighbors)
+    pynndescent_.init_random(
+        n_neighbors,
+        data,
+        current_graph,
+        dist,
+        dist_args,
+        new_rng_state(),
+        seed_per_row=True,
+    )
+    pynndescent_.nn_descent_internal_low_memory_parallel(
+        current_graph, data, n_neighbors, new_rng_state(), n_iters=2, seed_per_row=True
+    )
+    current_graph_threaded = current_graph.copy()
+
+    new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
+        current_graph,
+        n_vertices,
+        n_neighbors,
+        max_candidates,
+        rng_state=new_rng_state(),
+        seed_per_row=True,
+    )
+
+    parallel = joblib.Parallel(n_jobs=2, prefer="threads")
+    (
+        new_candidate_neighbors_threaded,
+        old_candidate_neighbors_threaded,
+    ) = threaded.new_build_candidates(
+        current_graph_threaded,
+        n_vertices,
+        n_neighbors,
+        max_candidates,
+        chunk_size=chunk_size,
+        rng_state=new_rng_state(),
+        parallel=parallel,
+        seed_per_row=True,
+    )
+
+    assert_allclose(current_graph_threaded, current_graph)
+
+
 def test_nn_descent():
+
+    np.random.seed(42)
+    N = 100
+    # D = 128
+    D = 4
+    chunk_size = N // 8
+    n_neighbors = 25
+    data = np.random.rand(N, D).astype(np.float32)
+
     nn_indices, nn_distances = NNDescent(
         data,
         n_neighbors=n_neighbors,
         max_candidates=max_candidates,
-        n_iters=2,
+        n_iters=1,
+        random_state=42,
         delta=0,
         tree_init=False,
         seed_per_row=True,
@@ -175,14 +277,15 @@ def test_nn_descent():
         assert_equal(
             len(nn_indices[i]),
             len(np.unique(nn_indices[i])),
-            "Duplicate indices in unthreaded knn graph",
+            "Duplicate graph_indices in unthreaded knn graph",
         )
 
     nn_indices_threaded, nn_distances_threaded = NNDescent(
         data,
         n_neighbors=n_neighbors,
         max_candidates=max_candidates,
-        n_iters=2,
+        n_iters=1,
+        random_state=42,
         delta=0,
         tree_init=False,
         seed_per_row=True,
@@ -193,7 +296,7 @@ def test_nn_descent():
         assert_equal(
             len(nn_indices_threaded[i]),
             len(np.unique(nn_indices_threaded[i])),
-            "Duplicate indices in threaded knn graph",
+            "Duplicate graph_indices in threaded knn graph",
         )
 
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)
@@ -216,7 +319,9 @@ def test_nn_decent_with_parallel_backend():
         data,
         n_neighbors=n_neighbors,
         max_candidates=max_candidates,
-        n_iters=2,
+        n_iters=1,
+        random_state=42,
+        delta=0,
         tree_init=False,
         seed_per_row=True,
     )._neighbor_graph
@@ -226,7 +331,9 @@ def test_nn_decent_with_parallel_backend():
             data,
             n_neighbors=n_neighbors,
             max_candidates=max_candidates,
-            n_iters=2,
+            n_iters=1,
+            random_state=42,
+            delta=0,
             tree_init=False,
             seed_per_row=True,
         )._neighbor_graph
@@ -250,7 +357,7 @@ def test_nn_decent_with_n_jobs_minus_one():
         assert_equal(
             len(nn_indices[i]),
             len(np.unique(nn_indices[i])),
-            "Duplicate indices in unthreaded knn graph",
+            "Duplicate graph_indices in unthreaded knn graph",
         )
 
     nn_indices_threaded, nn_distances_threaded = NNDescent(
@@ -268,7 +375,7 @@ def test_nn_decent_with_n_jobs_minus_one():
         assert_equal(
             len(nn_indices_threaded[i]),
             len(np.unique(nn_indices_threaded[i])),
-            "Duplicate indices in threaded knn graph",
+            "Duplicate graph_indices in threaded knn graph",
         )
 
     nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm="brute").fit(data)

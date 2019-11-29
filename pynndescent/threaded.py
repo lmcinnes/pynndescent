@@ -12,6 +12,7 @@ from pynndescent.utils import (
     seed,
     siftdown,
     tau_rand,
+    tau_rand_int,
 )
 
 # NNDescent algorithm
@@ -41,12 +42,12 @@ def effective_n_jobs_with_context(n_jobs=None):
     return joblib.effective_n_jobs(n_jobs)
 
 
-@numba.njit("i8[:](i8, i8, i8)", nogil=True)
+@numba.njit(nogil=True)
 def chunk_rows(chunk_size, index, n_vertices):
     return np.arange(chunk_size * index, min(chunk_size * (index + 1), n_vertices))
 
 
-@numba.njit("f4[:, :](f4[:, :], i8)", nogil=True)
+@numba.njit(nogil=True)
 def sort_heap_updates(heap_updates, num_heap_updates):
     """Take an array of unsorted heap updates and sort by row number."""
     row_numbers = heap_updates[:num_heap_updates, 0]
@@ -57,7 +58,7 @@ def sort_heap_updates(heap_updates, num_heap_updates):
     return heap_updates
 
 
-@numba.njit("i8[:](f4[:, :], i8, i8, i8)", nogil=True)
+@numba.njit(nogil=True)
 def chunk_heap_updates(heap_updates, num_heap_updates, n_vertices, chunk_size):
     """Return the offsets for each chunk of sorted heap updates."""
     chunk_boundaries = (
@@ -69,7 +70,7 @@ def chunk_heap_updates(heap_updates, num_heap_updates, n_vertices, chunk_size):
     return offsets
 
 
-@numba.njit("void(f4[:, :, :], i8[:], i8[:, :], i8, i8, i8)", nogil=True)
+@numba.njit(nogil=True)
 def shuffle_jit(
     heap_updates, heap_update_counts, offsets, chunk_size, n_vertices, index
 ):
@@ -87,40 +88,22 @@ def shuffle_jit(
 
 @numba.njit(nogil=True)
 def current_graph_map_jit(
-    rows,
-    n_vertices,
-    n_neighbors,
-    data,
-    heap_updates,
-    rng_state,
-    seed_per_row,
-    dist,
-    dist_args,
+    heap, rows, n_neighbors, data, rng_state, seed_per_row, dist, dist_args
 ):
     rng_state_local = rng_state.copy()
-    count = 0
     for i in rows:
         if seed_per_row:
             seed(rng_state_local, i)
-        indices = rejection_sample(n_neighbors, n_vertices, rng_state_local)
-        for j in range(indices.shape[0]):
-            d = dist(data[i], data[indices[j]], *dist_args)
-            hu = heap_updates[count]
-            hu[0] = i
-            hu[1] = d
-            hu[2] = indices[j]
-            hu[3] = 1
-            count += 1
-            hu = heap_updates[count]
-            hu[0] = indices[j]
-            hu[1] = d
-            hu[2] = i
-            hu[3] = 1
-            count += 1
-    return count
+        if heap[0, i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
+                idx = np.abs(tau_rand_int(rng_state_local)) % data.shape[0]
+                d = dist(data[i], data[idx], *dist_args)
+                heap_push(heap, i, d, idx, 1)
+
+    return True
 
 
-@numba.njit("void(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
+@numba.njit(nogil=True)
 def current_graph_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     for update_i in range(n_tasks):
         o = offsets[update_i]
@@ -135,7 +118,8 @@ def current_graph_reduce_jit(n_tasks, current_graph, heap_updates, offsets, inde
             )
 
 
-def init_current_graph(
+def init_random(
+    current_graph,
     data,
     dist,
     dist_args,
@@ -149,12 +133,8 @@ def init_current_graph(
     n_vertices = data.shape[0]
     n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
 
-    current_graph = make_heap(n_vertices, n_neighbors)
-
     # store the updates in an array
     max_heap_update_count = chunk_size * n_neighbors * 2
-    heap_updates = np.zeros((n_tasks, max_heap_update_count, 4), dtype=np.float32)
-    heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
     rng_state_threads = per_thread_rng_state(n_tasks, rng_state)
 
     def current_graph_map(index):
@@ -162,11 +142,10 @@ def init_current_graph(
         return (
             index,
             current_graph_map_jit(
+                current_graph,
                 rows,
-                n_vertices,
                 n_neighbors,
                 data,
-                heap_updates[index],
                 rng_state_threads[index],
                 seed_per_row=seed_per_row,
                 dist=dist,
@@ -174,30 +153,12 @@ def init_current_graph(
             ),
         )
 
-    def current_graph_reduce(index):
-        return current_graph_reduce_jit(
-            n_tasks, current_graph, heap_updates, offsets, index
-        )
-
     # run map functions
-    for index, count in parallel(parallel_calls(current_graph_map, n_tasks)):
-        heap_update_counts[index] = count
+    for index, status in parallel(parallel_calls(current_graph_map, n_tasks)):
+        if status is False:
+            raise ValueError("Failed in random initialization")
 
-    # sort and chunk heap updates so they can be applied in the reduce
-    max_count = heap_update_counts.max()
-    offsets = np.zeros((n_tasks, max_count), dtype=np.int64)
-
-    def shuffle(index):
-        return shuffle_jit(
-            heap_updates, heap_update_counts, offsets, chunk_size, n_vertices, index
-        )
-
-    parallel(parallel_calls(shuffle, n_tasks))
-
-    # then run reduce functions
-    parallel(parallel_calls(current_graph_reduce, n_tasks))
-
-    return current_graph
+    return
 
 
 @numba.njit(nogil=True, fastmath=True)
@@ -235,7 +196,7 @@ def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates, dist, dist_args):
     return count
 
 
-@numba.njit("void(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
+@numba.njit(nogil=True)
 def init_rp_tree_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     for update_i in range(n_tasks):
         o = offsets[update_i]
@@ -294,9 +255,9 @@ def init_rp_tree(
     parallel(parallel_calls(init_rp_tree_reduce, n_tasks))
 
 
-@numba.njit("i8(i8[:], i8, f8[:, :, :], f4[:, :], i8, f8, i8[:], b1)", nogil=True)
+@numba.njit(nogil=True)
 def candidates_map_jit(
-    rows, n_neighbors, current_graph, heap_updates, offset, rho, rng_state, seed_per_row
+    rows, n_neighbors, current_graph, heap_updates, offset, rng_state, seed_per_row
 ):
     rng_state_local = rng_state.copy()
     count = 0
@@ -309,29 +270,25 @@ def candidates_map_jit(
             idx = current_graph[0, i - offset, j]
             isn = current_graph[2, i - offset, j]
             d = tau_rand(rng_state_local)
-            if tau_rand(rng_state_local) < rho:
-                # updates are common to old and new - decided by 'isn' flag
-                hu = heap_updates[count]
-                hu[0] = i
-                hu[1] = d
-                hu[2] = idx
-                hu[3] = isn
-                hu[4] = j
-                count += 1
-                hu = heap_updates[count]
-                hu[0] = idx
-                hu[1] = d
-                hu[2] = i
-                hu[3] = isn
-                hu[4] = -j - 1  # means i is at index 2
-                count += 1
+            # if tau_rand(rng_state_local) < rho:
+            # updates are common to old and new - decided by 'isn' flag
+            hu = heap_updates[count]
+            hu[0] = i
+            hu[1] = d
+            hu[2] = idx
+            hu[3] = isn
+            count += 1
+
+            hu = heap_updates[count]
+            hu[0] = idx
+            hu[1] = d
+            hu[2] = i
+            hu[3] = isn
+            count += 1
     return count
 
 
-@numba.njit(
-    "void(i8, f8[:, :, :], f8[:, :, :], f8[:, :, :], f4[:, :, :], i8[:, :], i8)",
-    nogil=True,
-)
+@numba.njit(nogil=True)
 def candidates_reduce_jit(
     n_tasks,
     current_graph,
@@ -345,22 +302,14 @@ def candidates_reduce_jit(
         o = offsets[update_i]
         for j in range(o[index], o[index + 1]):
             heap_update = heap_updates[update_i, j]
-            if heap_update[3]:
-                c = heap_push(
+            if heap_update[3] == 1:
+                heap_push(
                     new_candidate_neighbors,
                     int(heap_update[0]),
                     heap_update[1],
                     int(heap_update[2]),
                     int(heap_update[3]),
                 )
-                if c > 0:
-                    k = int(heap_update[4])
-                    if k >= 0:
-                        i = int(heap_update[0])
-                    else:
-                        i = int(heap_update[2])
-                        k = -k - 1
-                    current_graph[2, i, k] = 0
             else:
                 heap_push(
                     old_candidate_neighbors,
@@ -371,6 +320,22 @@ def candidates_reduce_jit(
                 )
 
 
+@numba.njit(nogil=True)
+def mark_candidate_results_map(
+    rows, current_graph, n_neighbors, max_candidates, new_candidate_neighbors
+):
+    for i in rows:
+        for j in range(n_neighbors):
+            idx = current_graph[0, i, j]
+
+            for k in range(max_candidates):
+                if new_candidate_neighbors[0, i, k] == idx:
+                    current_graph[2, i, j] = 0
+                    break
+
+    return
+
+
 def new_build_candidates(
     current_graph,
     n_vertices,
@@ -378,7 +343,6 @@ def new_build_candidates(
     max_candidates,
     chunk_size,
     rng_state,
-    rho,
     parallel,
     seed_per_row=False,
 ):
@@ -390,7 +354,7 @@ def new_build_candidates(
 
     # store the updates in an array
     max_heap_update_count = chunk_size * n_neighbors * 2
-    heap_updates = np.zeros((n_tasks, max_heap_update_count, 5), dtype=np.float32)
+    heap_updates = np.zeros((n_tasks, max_heap_update_count, 4), dtype=np.float32)
     heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
     rng_state_threads = per_thread_rng_state(n_tasks, rng_state)
 
@@ -404,7 +368,6 @@ def new_build_candidates(
                 current_graph,
                 heap_updates[index],
                 offset=0,
-                rho=rho,
                 rng_state=rng_state_threads[index],
                 seed_per_row=seed_per_row,
             ),
@@ -438,6 +401,15 @@ def new_build_candidates(
 
     # then run reduce functions
     parallel(parallel_calls(candidates_reduce, n_tasks))
+
+    def mark_candidate_results(index):
+        rows = chunk_rows(chunk_size, index, n_vertices)
+        return mark_candidate_results_map(
+            rows, current_graph, n_neighbors, max_candidates, new_candidate_neighbors
+        )
+
+    # Now mark whether things were used correctly
+    parallel(parallel_calls(mark_candidate_results, n_tasks))
 
     return new_candidate_neighbors, old_candidate_neighbors
 
@@ -501,7 +473,7 @@ def nn_descent_map_jit(
     return count
 
 
-@numba.njit("i8(i8, f8[:, :, :], f4[:, :, :], i8[:, :], i8)", nogil=True)
+@numba.njit(nogil=True)
 def nn_decent_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     c = 0
     for update_i in range(n_tasks):
@@ -518,7 +490,7 @@ def nn_decent_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index):
     return c
 
 
-@numba.njit("void(i8[:], f8[:, :, :])", nogil=True)
+@numba.njit(nogil=True)
 def deheap_sort_map_jit(rows, heap):
     indices = heap[0]
     weights = heap[1]
@@ -554,7 +526,6 @@ def nn_descent(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     rp_tree_init=False,
     leaf_array=None,
     verbose=False,
@@ -571,7 +542,15 @@ def nn_descent(
         n_tasks = effective_n_jobs_with_context(n_jobs)
         chunk_size = int(math.ceil(n_vertices / n_tasks))
 
-        current_graph = init_current_graph(
+        current_graph = make_heap(data.shape[0], n_neighbors)
+
+        if rp_tree_init:
+            init_rp_tree(
+                data, dist, dist_args, current_graph, leaf_array, chunk_size, parallel
+            )
+
+        init_random(
+            current_graph,
             data,
             dist,
             dist_args,
@@ -581,11 +560,6 @@ def nn_descent(
             parallel,
             seed_per_row=seed_per_row,
         )
-
-        if rp_tree_init:
-            init_rp_tree(
-                data, dist, dist_args, current_graph, leaf_array, chunk_size, parallel
-            )
 
         # store the updates in an array
         # note that the factor here is `n_neighbors * n_neighbors`, not `max_candidates * max_candidates`
@@ -605,7 +579,6 @@ def nn_descent(
                 max_candidates,
                 chunk_size,
                 rng_state,
-                rho,
                 parallel,
                 seed_per_row=seed_per_row,
             )

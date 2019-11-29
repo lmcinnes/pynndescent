@@ -9,7 +9,8 @@ import numpy as np
 from sklearn.utils import check_random_state, check_array
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr
-from scipy.sparse.csgraph import minimum_spanning_tree
+
+import heapq
 
 import pynndescent.sparse as sparse
 import pynndescent.sparse_nndescent as sparse_nnd
@@ -18,40 +19,125 @@ import pynndescent.threaded as threaded
 import pynndescent.sparse_threaded as sparse_threaded
 
 from pynndescent.utils import (
-    rejection_sample,
-    seed,
+    tau_rand_int,
     make_heap,
     heap_push,
-    unchecked_heap_push,
+    seed,
     deheap_sort,
-    smallest_flagged,
     new_build_candidates,
     ts,
+    simple_heap_push,
+    has_been_visited,
+    mark_visited,
+    apply_graph_updates_high_memory,
+    apply_graph_updates_low_memory,
 )
 
-from pynndescent.rp_trees import make_forest, rptree_leaf_array, search_flat_tree
+from pynndescent.rp_trees import (
+    make_forest,
+    rptree_leaf_array,
+    search_flat_tree,
+    convert_tree_format,
+    FlatTree,
+)
+
+update_type = numba.types.List(
+    numba.types.List((numba.types.int64, numba.types.int64, numba.types.float64))
+)
 
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
-
-@numba.njit(fastmath=True)
-def init_from_random(n_neighbors, data, query_points, heap, dist, dist_args, rng_state):
-    for i in range(query_points.shape[0]):
-        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-        for j in range(indices.shape[0]):
-            if indices[j] < 0:
-                continue
-            d = dist(data[indices[j]], query_points[i], *dist_args)
-            heap_push(heap, i, d, indices[j], 1)
-    return
+FLOAT32_EPS = np.finfo(np.float32).eps
 
 
-@numba.njit(fastmath=True)
-def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
-    for i in range(query_points.shape[0]):
+@numba.njit(
+    fastmath=True,
+    locals={
+        "candidate": numba.types.int32,
+        "d": numba.types.float32,
+        "visited": numba.types.uint8[::1],
+        "indices": numba.types.int32[::1],
+        "indptr": numba.types.int32[::1],
+        "data": numba.types.float32[:, ::1],
+        "heap_size": numba.types.int16,
+        "distance_scale": numba.types.float32,
+        "seed_scale": numba.types.float32,
+    },
+)
+def search_from_init(
+    current_query,
+    data,
+    indptr,
+    indices,
+    heap_priorities,
+    heap_indices,
+    epsilon,
+    visited,
+    dist,
+    dist_args,
+):
+    distance_scale = 1.0 + epsilon
+    distance_bound = distance_scale * heap_priorities[0]
+    heap_size = heap_priorities.shape[0]
+
+    seed_set = [(heap_priorities[j], heap_indices[j]) for j in range(heap_size)]
+    heapq.heapify(seed_set)
+
+    # Find smallest seed point
+    d_vertex, vertex = heapq.heappop(seed_set)
+
+    while d_vertex < distance_bound:
+
+        for j in range(indptr[vertex], indptr[vertex + 1]):
+
+            candidate = indices[j]
+
+            if has_been_visited(visited, candidate) == 0:
+                mark_visited(visited, candidate)
+
+                d = dist(data[candidate], current_query, *dist_args)
+
+                if d < distance_bound:
+                    simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                    heapq.heappush(seed_set, (d, candidate))
+                    # Update bound
+                    distance_bound = distance_scale * heap_priorities[0]
+
+        # find new smallest seed point
+        if len(seed_set) == 0:
+            break
+        else:
+            d_vertex, vertex = heapq.heappop(seed_set)
+
+    return heap_priorities, heap_indices
+
+
+@numba.njit(
+    fastmath=True,
+    locals={
+        "heap_priorities": numba.types.float32[::1],
+        "heap_indices": numba.types.int32[::1],
+        "indices": numba.types.int32[::1],
+        "candidate": numba.types.int32,
+        "current_query": numba.types.float32[::1],
+        "d": numba.types.float32,
+        "n_random_samples": numba.types.int32,
+        "visited": numba.types.uint8[::1],
+    },
+)
+def search_init(
+    current_query, k, data, forest, n_neighbors, visited, dist, dist_args, rng_state
+):
+
+    heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
+    heap_indices = np.int32(-1) + np.zeros(k, dtype=np.int32)
+
+    n_random_samples = min(k, n_neighbors)
+
+    for tree in forest:
         indices = search_flat_tree(
-            query_points[i],
+            current_query,
             tree.hyperplanes,
             tree.offsets,
             tree.children,
@@ -59,105 +145,245 @@ def init_from_tree(tree, data, query_points, heap, dist, dist_args, rng_state):
             rng_state,
         )
 
-        for j in range(indices.shape[0]):
-            if indices[j] < 0:
-                continue
-            d = dist(data[indices[j]], query_points[i], *dist_args)
-            heap_push(heap, i, d, indices[j], 1)
+        n_initial_points = indices.shape[0]
+        n_random_samples = min(k, n_neighbors) - n_initial_points
+
+        for j in range(n_initial_points):
+            candidate = indices[j]
+            d = dist(data[candidate], current_query, *dist_args)
+            # indices are guaranteed different
+            simple_heap_push(heap_priorities, heap_indices, d, candidate)
+            mark_visited(visited, candidate)
+
+    if n_random_samples > 0:
+        for i in range(n_random_samples):
+            candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+            if has_been_visited(visited, candidate) == 0:
+                d = dist(data[candidate], current_query, *dist_args)
+                simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                mark_visited(visited, candidate)
+
+    return heap_priorities, heap_indices
+
+
+@numba.njit(
+    locals={
+        "current_query": numba.types.float32[::1],
+        "i": numba.types.uint32,
+        "heap_priorities": numba.types.float32[::1],
+        "heap_indices": numba.types.int32[::1],
+        "result": numba.types.float32[:, :, ::1],
+    }
+)
+def search(
+    query_points,
+    k,
+    data,
+    forest,
+    indptr,
+    indices,
+    epsilon,
+    n_neighbors,
+    visited,
+    dist,
+    dist_args,
+    rng_state,
+):
+
+    result = make_heap(query_points.shape[0], k)
+    for i in range(query_points.shape[0]):
+        visited[:] = 0
+        current_query = query_points[i]
+        heap_priorities, heap_indices = search_init(
+            current_query,
+            k,
+            data,
+            forest,
+            n_neighbors,
+            visited,
+            dist,
+            dist_args,
+            rng_state,
+        )
+        heap_priorities, heap_indices = search_from_init(
+            current_query,
+            data,
+            indptr,
+            indices,
+            heap_priorities,
+            heap_indices,
+            epsilon,
+            visited,
+            dist,
+            dist_args,
+        )
+
+        result[0, i] = heap_indices
+        result[1, i] = heap_priorities
+
+    return result
+
+
+@numba.njit(parallel=True)
+def generate_leaf_updates(leaf_block, dist_thresholds, data, dist, dist_args):
+
+    updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
+
+    for n in numba.prange(leaf_block.shape[0]):
+        for i in range(leaf_block.shape[1]):
+            p = leaf_block[n, i]
+            if p < 0:
+                break
+
+            for j in range(i + 1, leaf_block.shape[1]):
+                q = leaf_block[n, j]
+                if q < 0:
+                    break
+
+                d = dist(data[p], data[q], *dist_args)
+                if d < dist_thresholds[p] or d < dist_thresholds[q]:
+                    updates[n].append((p, q, d))
+
+    return updates
+
+
+@numba.njit()
+def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
+
+    n_leaves = leaf_array.shape[0]
+    block_size = 65536
+    n_blocks = n_leaves // block_size
+
+    for i in range(n_blocks + 1):
+        block_start = i * block_size
+        block_end = min(n_leaves, (i + 1) * block_size)
+
+        leaf_block = leaf_array[block_start:block_end]
+        dist_thresholds = current_graph[1, :, 0]
+
+        updates = generate_leaf_updates(
+            leaf_block, dist_thresholds, data, dist, dist_args
+        )
+
+        for j in range(len(updates)):
+            for k in range(len(updates[j])):
+                p, q, d = updates[j][k]
+
+                if p == -1 or q == -1:
+                    continue
+
+                heap_push(current_graph, p, d, q, 1)
+                heap_push(current_graph, q, d, p, 1)
+
+
+@numba.njit(fastmath=True)
+def init_random(
+    n_neighbors, data, heap, dist, dist_args, rng_state, seed_per_row=False
+):
+    for i in range(data.shape[0]):
+        if seed_per_row:
+            seed(rng_state, i)
+        if heap[0, i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
+                idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+                d = dist(data[idx], data[i], *dist_args)
+                heap_push(heap, i, d, idx, 1)
 
     return
 
 
-@numba.njit()
-def initialise_search(
-    forest, data, query_points, n_neighbors, dist, dist_args, rng_state
+@numba.njit(parallel=True)
+def generate_graph_updates(
+    new_candidate_block, old_candidate_block, dist_thresholds, data, dist, dist_args
 ):
-    results = make_heap(query_points.shape[0], n_neighbors)
-    init_from_random(
-        n_neighbors, data, query_points, results, dist, dist_args, rng_state
-    )
-    if forest is not None:
-        for tree in forest:
-            init_from_tree(
-                tree, data, query_points, results, dist, dist_args, rng_state
+
+    block_size = new_candidate_block.shape[0]
+    updates = [[(-1, -1, np.inf)] for i in range(block_size)]
+    max_candidates = new_candidate_block.shape[1]
+
+    for i in numba.prange(block_size):
+        for j in range(max_candidates):
+            p = int(new_candidate_block[i, j])
+            if p < 0:
+                continue
+            for k in range(j, max_candidates):
+                q = int(new_candidate_block[i, k])
+                if q < 0:
+                    continue
+
+                d = dist(data[p], data[q], *dist_args)
+                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
+                    updates[i].append((p, q, d))
+
+            for k in range(max_candidates):
+                q = int(old_candidate_block[i, k])
+                if q < 0:
+                    continue
+
+                d = dist(data[p], data[q], *dist_args)
+                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
+                    updates[i].append((p, q, d))
+
+    return updates
+
+
+@numba.njit()
+def nn_descent_internal_low_memory_parallel(
+    current_graph,
+    data,
+    n_neighbors,
+    rng_state,
+    max_candidates=50,
+    dist=dist.euclidean,
+    dist_args=(),
+    n_iters=10,
+    delta=0.001,
+    verbose=False,
+    seed_per_row=False,
+):
+    n_vertices = data.shape[0]
+    block_size = 16384
+    n_blocks = n_vertices // block_size
+
+    for n in range(n_iters):
+        if verbose:
+            print("\t", n, " / ", n_iters)
+
+        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
+            current_graph,
+            n_vertices,
+            n_neighbors,
+            max_candidates,
+            rng_state,
+            seed_per_row,
+        )
+
+        c = 0
+        for i in range(n_blocks + 1):
+            block_start = i * block_size
+            block_end = min(n_vertices, (i + 1) * block_size)
+
+            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
+            dist_thresholds = current_graph[1, :, 0]
+
+            updates = generate_graph_updates(
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                dist,
+                dist_args,
             )
 
-    return results
+            c += apply_graph_updates_low_memory(current_graph, updates)
+
+        if c <= delta * n_neighbors * data.shape[0]:
+            return
 
 
-@numba.njit(parallel=True, fastmath=True)
-def initialized_nnd_search(
-    data, indptr, indices, initialization, query_points, dist, dist_args
-):
-
-    for i in numba.prange(query_points.shape[0]):
-
-        tried = set(initialization[0, i])
-
-        while True:
-
-            # Find smallest flagged vertex
-            vertex = smallest_flagged(initialization, i)
-
-            if vertex == -1:
-                break
-            candidates = indices[indptr[vertex] : indptr[vertex + 1]]
-            for j in range(candidates.shape[0]):
-                if (
-                    candidates[j] == vertex
-                    or candidates[j] == -1
-                    or candidates[j] in tried
-                ):
-                    continue
-                d = dist(data[candidates[j]], query_points[i], *dist_args)
-                unchecked_heap_push(initialization, i, d, candidates[j], 1)
-                tried.add(candidates[j])
-
-    return initialization
-
-
-@numba.njit(fastmath=True)
-def init_current_graph(
-    data, dist, dist_args, n_neighbors, rng_state, seed_per_row=False
-):
-    current_graph = make_heap(data.shape[0], n_neighbors)
-    for i in range(data.shape[0]):
-        if seed_per_row:
-            seed(rng_state, i)
-        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-        for j in range(indices.shape[0]):
-            d = dist(data[i], data[indices[j]], *dist_args)
-            heap_push(current_graph, i, d, indices[j], 1)
-            heap_push(current_graph, indices[j], d, i, 1)
-    return current_graph
-
-
-@numba.njit(fastmath=True)
-def init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=None):
-    if tried is None:
-        tried = set([(-1, -1)])
-
-    for n in range(leaf_array.shape[0]):
-        for i in range(leaf_array.shape[1]):
-            p = leaf_array[n, i]
-            if p < 0:
-                break
-            for j in range(i + 1, leaf_array.shape[1]):
-                q = leaf_array[n, j]
-                if q < 0:
-                    break
-                if (p, q) in tried:
-                    continue
-                d = dist(data[p], data[q], *dist_args)
-                heap_push(current_graph, p, d, q, 1)
-                tried.add((p, q))
-                if p != q:
-                    heap_push(current_graph, q, d, p, 1)
-                    tried.add((q, p))
-
-
-@numba.njit(fastmath=True)
-def nn_descent_internal_low_memory(
+@numba.njit()
+def nn_descent_internal_high_memory_parallel(
     current_graph,
     data,
     n_neighbors,
@@ -167,11 +393,16 @@ def nn_descent_internal_low_memory(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     verbose=False,
     seed_per_row=False,
 ):
     n_vertices = data.shape[0]
+    block_size = 16384
+    n_blocks = n_vertices // block_size
+
+    in_graph = [
+        set(current_graph[0, i].astype(np.int64)) for i in range(current_graph.shape[1])
+    ]
 
     for n in range(n_iters):
         if verbose:
@@ -183,107 +414,34 @@ def nn_descent_internal_low_memory(
             n_neighbors,
             max_candidates,
             rng_state,
-            rho,
             seed_per_row,
         )
 
         c = 0
-        for i in range(n_vertices):
-            for j in range(max_candidates):
-                p = int(new_candidate_neighbors[0, i, j])
-                if p < 0:
-                    continue
-                for k in range(j, max_candidates):
-                    q = int(new_candidate_neighbors[0, i, k])
-                    if q < 0:
-                        continue
+        for i in range(n_blocks + 1):
+            block_start = i * block_size
+            block_end = min(n_vertices, (i + 1) * block_size)
 
-                    d = dist(data[p], data[q], *dist_args)
-                    c += heap_push(current_graph, p, d, q, 1)
-                    if p != q:
-                        c += heap_push(current_graph, q, d, p, 1)
+            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
+            dist_thresholds = current_graph[1, :, 0]
 
-                for k in range(max_candidates):
-                    q = int(old_candidate_neighbors[0, i, k])
-                    if q < 0:
-                        continue
+            updates = generate_graph_updates(
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                dist,
+                dist_args,
+            )
 
-                    d = dist(data[p], data[q], *dist_args)
-                    c += heap_push(current_graph, p, d, q, 1)
-                    if p != q:
-                        c += heap_push(current_graph, q, d, p, 1)
+            c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
 
         if c <= delta * n_neighbors * data.shape[0]:
             return
 
 
-@numba.njit(fastmath=True)
-def nn_descent_internal_high_memory(
-    current_graph,
-    data,
-    n_neighbors,
-    rng_state,
-    tried,
-    max_candidates=50,
-    dist=dist.euclidean,
-    dist_args=(),
-    n_iters=10,
-    delta=0.001,
-    rho=0.5,
-    verbose=False,
-    seed_per_row=False,
-):
-    n_vertices = data.shape[0]
-
-    for n in range(n_iters):
-        if verbose:
-            print("\t", n, " / ", n_iters)
-
-        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph,
-            n_vertices,
-            n_neighbors,
-            max_candidates,
-            rng_state,
-            rho,
-            seed_per_row,
-        )
-
-        c = 0
-        for i in range(n_vertices):
-            for j in range(max_candidates):
-                p = int(new_candidate_neighbors[0, i, j])
-                if p < 0:
-                    continue
-                for k in range(j, max_candidates):
-                    q = int(new_candidate_neighbors[0, i, k])
-                    if q < 0 or (p, q) in tried:
-                        continue
-
-                    d = dist(data[p], data[q], *dist_args)
-                    c += unchecked_heap_push(current_graph, p, d, q, 1)
-                    tried.add((p, q))
-                    if p != q:
-                        c += unchecked_heap_push(current_graph, q, d, p, 1)
-                        tried.add((q, p))
-
-                for k in range(max_candidates):
-                    q = int(old_candidate_neighbors[0, i, k])
-                    if q < 0 or (p, q) in tried:
-                        continue
-
-                    d = dist(data[p], data[q], *dist_args)
-                    c += unchecked_heap_push(current_graph, p, d, q, 1)
-                    tried.add((p, q))
-                    if p != q:
-                        c += unchecked_heap_push(current_graph, q, d, p, 1)
-                        tried.add((q, p))
-
-        if c <= delta * n_neighbors * data.shape[0]:
-            return
-
-
-@numba.njit(fastmath=True)
+@numba.njit()
 def nn_descent(
     data,
     n_neighbors,
@@ -293,32 +451,24 @@ def nn_descent(
     dist_args=(),
     n_iters=10,
     delta=0.001,
-    rho=0.5,
     rp_tree_init=True,
     leaf_array=None,
     low_memory=False,
     verbose=False,
     seed_per_row=False,
 ):
-    tried = set([(-1, -1)])
 
     current_graph = make_heap(data.shape[0], n_neighbors)
-    for i in range(data.shape[0]):
-        if seed_per_row:
-            seed(rng_state, i)
-        indices = rejection_sample(n_neighbors, data.shape[0], rng_state)
-        for j in range(indices.shape[0]):
-            d = dist(data[i], data[indices[j]], *dist_args)
-            heap_push(current_graph, i, d, indices[j], 1)
-            heap_push(current_graph, indices[j], d, i, 1)
-            tried.add((i, indices[j]))
-            tried.add((indices[j], i))
 
     if rp_tree_init:
-        init_rp_tree(data, dist, dist_args, current_graph, leaf_array, tried=tried)
+        init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
+
+    init_random(
+        n_neighbors, data, current_graph, dist, dist_args, rng_state, seed_per_row
+    )
 
     if low_memory:
-        nn_descent_internal_low_memory(
+        nn_descent_internal_low_memory_parallel(
             current_graph,
             data,
             n_neighbors,
@@ -328,23 +478,20 @@ def nn_descent(
             dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
-            rho=rho,
             verbose=verbose,
             seed_per_row=seed_per_row,
         )
     else:
-        nn_descent_internal_high_memory(
+        nn_descent_internal_high_memory_parallel(
             current_graph,
             data,
             n_neighbors,
             rng_state,
-            tried,
             max_candidates=max_candidates,
             dist=dist,
             dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
-            rho=rho,
             verbose=verbose,
             seed_per_row=seed_per_row,
         )
@@ -353,37 +500,87 @@ def nn_descent(
 
 
 @numba.njit(parallel=True)
-def initialize_heaps(data, n_neighbors, leaf_array, dist=dist.euclidean, dist_args=()):
-    graph_heap = make_heap(data.shape[0], 10)
-    search_heap = make_heap(data.shape[0], n_neighbors * 2)
-    tried = set([(-1, -1)])
-    for n in range(leaf_array.shape[0]):
-        for i in range(leaf_array.shape[1]):
-            if leaf_array[n, i] < 0:
+def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
+
+    for i in numba.prange(indices.shape[0]):
+
+        new_indices = [indices[i, 0]]
+        new_distances = [distances[i, 0]]
+        for j in range(1, indices.shape[1]):
+            if indices[i, j] < 0:
                 break
-            for j in range(i + 1, leaf_array.shape[1]):
-                if leaf_array[n, j] < 0:
+
+            flag = True
+            for k in range(len(new_indices)):
+                c = new_indices[k]
+                d = dist(data[indices[i, j]], data[c], *dist_args)
+                if new_distances[k] > FLOAT32_EPS and d < epsilon * distances[i, j]:
+                    flag = False
                     break
-                if (leaf_array[n, i], leaf_array[n, j]) in tried:
-                    continue
 
-                d = dist(data[leaf_array[n, i]], data[leaf_array[n, j]], *dist_args)
-                unchecked_heap_push(
-                    graph_heap, leaf_array[n, i], d, leaf_array[n, j], 1
-                )
-                unchecked_heap_push(
-                    graph_heap, leaf_array[n, j], d, leaf_array[n, i], 1
-                )
-                unchecked_heap_push(
-                    search_heap, leaf_array[n, i], d, leaf_array[n, j], 1
-                )
-                unchecked_heap_push(
-                    search_heap, leaf_array[n, j], d, leaf_array[n, i], 1
-                )
-                tried.add((leaf_array[n, i], leaf_array[n, j]))
-                tried.add((leaf_array[n, j], leaf_array[n, i]))
+            if flag:
+                new_indices.append(indices[i, j])
+                new_distances.append(distances[i, j])
 
-    return graph_heap, search_heap
+        for j in range(indices.shape[1]):
+            if j < len(new_indices):
+                indices[i, j] = new_indices[j]
+                distances[i, j] = new_distances[j]
+            else:
+                indices[i, j] = -1
+                distances[i, j] = np.inf
+
+    return indices, distances
+
+
+@numba.njit(parallel=True)
+def diversify_csr(
+    graph_indptr, graph_indices, graph_data, source_data, dist, dist_args, epsilon=0.01
+):
+    n_nodes = graph_indptr.shape[0] - 1
+
+    for i in numba.prange(n_nodes):
+
+        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
+        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
+
+        order = np.argsort(current_data)
+        retained = np.ones(order.shape[0], dtype=np.int8)
+
+        for idx in range(1, order.shape[0]):
+
+            j = order[idx]
+
+            for k in range(idx):
+                if retained[k] == 1:
+                    d = dist(
+                        source_data[current_indices[j]],
+                        source_data[current_indices[k]],
+                        *dist_args
+                    )
+                    if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
+                        retained[j] = 0
+                        break
+
+        for idx in range(order.shape[0]):
+            j = order[idx]
+            if retained[j] == 0:
+                graph_data[graph_indptr[i] + j] = 0
+
+    return
+
+
+@numba.njit(parallel=True)
+def degree_prune_internal(indptr, data, max_degree=20):
+    for i in numba.prange(indptr.shape[0] - 1):
+        row_data = data[indptr[i] : indptr[i + 1]]
+        if row_data.shape[0] > max_degree:
+            cut_value = np.sort(row_data)[max_degree]
+            for j in range(indptr[i], indptr[i + 1]):
+                if data[j] > cut_value:
+                    data[j] = 0.0
+
+    return
 
 
 def degree_prune(graph, max_degree=20):
@@ -403,73 +600,34 @@ def degree_prune(graph, max_degree=20):
     result: sparse matrix
         The pruned graph.
     """
-
-    result = graph.tolil()
-    for i, row_data in enumerate(result.data):
-        if len(row_data) > max_degree:
-            cut_value = np.argsort(row_data)[max_degree]
-            row_data = [x if x <= cut_value else 0.0 for x in row_data]
-            result.data[i] = row_data
-    result = result.tocsr()
-    result.eliminate_zeros()
-    return result
+    degree_prune_internal(graph.indptr, graph.data, max_degree)
+    graph.eliminate_zeros()
+    return graph
 
 
-def prune(graph, prune_level=0, n_neighbors=10):
-    """Perform pruning on the graph so that there are fewer edges to
-    be followed. In practice this operates in two passes. The first pass
-    removes edges such that no node has degree more than ``3 * n_neighbors -
-    prune_level``. The second pass builds up a graph out of spanning trees;
-    each iteration constructs a minimum panning tree of a graph and then
-    removes those edges from the graph. The result is spanning trees that
-    take various paths through the graph. All these spanning trees are merged
-    into the resulting graph. In practice this prunes away a limited number
-    of edges as long as enough iterations are performed. By default we will
-    do ``n_neighbors - prune_level``iterations.
-
-    Parameters
-    ----------
-    graph: sparse matrix
-        The adjacency matrix of the graph
-
-    prune_level: int (optional default 0)
-        How aggressively to prune the graph, larger values perform more
-        aggressive pruning.
-
-    n_neighbors: int (optional 10)
-        The number of neighbors of the k-neighbor graph that was constructed.
-
-    Returns
-    -------
-    result: sparse matrix
-        The pruned graph
-    """
-
-    max_degree = max(5, 3 * n_neighbors - prune_level)
-    n_iters = max(3, n_neighbors - prune_level)
-    reduced_graph = degree_prune(graph, max_degree=max_degree)
-    result_graph = lil_matrix((graph.shape[0], graph.shape[0])).tocsr()
-
-    for _ in range(n_iters):
-        mst = minimum_spanning_tree(reduced_graph)
-        result_graph = result_graph.maximum(mst)
-        reduced_graph -= mst
-        reduced_graph.eliminate_zeros()
-
-    return result_graph
+def resort_tree_indices(tree, tree_order):
+    """Given a new data indexing, resort the tree indices to match"""
+    new_tree = FlatTree(
+        tree.hyperplanes,
+        tree.offsets,
+        tree.children,
+        tree.indices[tree_order].astype(np.int32, order="C"),
+        tree.leaf_size,
+    )
+    return new_tree
 
 
 class NNDescent(object):
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
     very flexible and supports a wide variety of distances, including
     non-metric distances. NNDescent also scales well against high dimensional
-    data in many cases. This implementation provides a straightfoward
+    graph_data in many cases. This implementation provides a straightfoward
     interface, with access to some tuning parameters.
 
     Parameters
     ----------
     data: array os shape (n_samples, n_features)
-        The training data set to find nearest neighbors in.
+        The training graph_data set to find nearest neighbors in.
 
     metric: string or callable (optional, default='euclidean')
         The metric to use for computing nearest neighbors. If a callable is
@@ -496,6 +654,7 @@ class NNDescent(object):
             * sokalmichener
             * sokalsneath
             * yule
+            * hellinger
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
@@ -506,25 +665,34 @@ class NNDescent(object):
         Minkowski distance.
 
     n_neighbors: int (optional, default=15)
-        The number of neighbors to use in k-neighbor graph data structure
+        The number of neighbors to use in k-neighbor graph graph_data structure
         used for fast approximate nearest neighbor search. Larger values
         will result in more accurate search results at the cost of
         computation time.
 
     n_trees: int (optional, default=None)
-        This implementation uses random projection forests for initialization
-        of searches. This parameter controls the number of trees in that
-        forest. A larger number will result in more accurate neighbor
-        computation at the cost of performance. The default of None means
-        a value will be chosen based on the size of the data.
+        This implementation uses random projection forests for initializing the index
+        build process. This parameter controls the number of trees in that forest. A
+        larger number will result in more accurate neighbor computation at the cost
+        of performance. The default of None means a value will be chosen based on the
+        size of the graph_data.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
         The default of None means a value will be chosen based on n_neighbors.
 
-    pruning_level: int (optional, default=0)
-        How aggressively to prune the graph. Higher values perform more
-        aggressive pruning, resulting in faster search with lower accuracy.
+    pruning_degree_multiplier: float (optional, default=2.0)
+        How aggressively to prune the graph. Since the search graph is undirected
+        (and thus includes nearest neighbors and reverse nearest neighbors) vertices
+        can have very high degree -- the graph will be pruned such that no
+        vertex has degree greater than
+        ``pruning_degree_multiplier * n_neighbors``.
+
+    diversify_epsilon: float (optional, default=1.0)
+        The search graph get "diversified" by removing potentially unnecessary
+        edges. This controls the volume of edges removed. A value of 0.0 ensures
+        that no edges get removed, and larger values result in significantly more
+        aggressive edge removal. Values above 1.0 are not recommended.
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -539,7 +707,8 @@ class NNDescent(object):
         This implementation provides an alternative algorithm for
         construction of the k-neighbors graph used as a search index. The
         alternative algorithm can be fast for large ``n_neighbors`` values.
-        To use the alternative algorithm specify ``'alternative'``.
+        The``'alternative'`` algorithm has been deprecated and is no longer
+        available.
 
     low_memory: boolean (optional, default=False)
         Whether to use a lower memory, but more computationally expensive
@@ -561,7 +730,7 @@ class NNDescent(object):
         NN-descent algorithm can abort early if limited progress is being
         made, so this only controls the worst case. Don't tweak
         this value unless you know what you're doing. The default of None means
-        a value will be chosen based on the size of the data.
+        a value will be chosen based on the size of the graph_data.
 
     delta: float (optional, default=0.001)
         Controls the early abort due to limited progress. Larger values
@@ -569,19 +738,13 @@ class NNDescent(object):
         and less accurate searching. Don't tweak this value unless you know
         what you're doing.
 
-    rho: float (optional, default=0.5)
-        Controls the random sampling of potential candidates in any given
-        iteration of NN-descent. Smaller values will result in less accurate
-        indexes and less accurate searching. Don't tweak this value unless
-        you know what you're doing.
-
     n_jobs: int or None, optional (default=None)
         The number of parallel jobs to run for neighbors index construction.
         ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
         ``-1`` means using all processors.
 
     verbose: bool (optional, default=False)
-        Whether to print status data during the computation.
+        Whether to print status graph_data during the computation.
     """
 
     def __init__(
@@ -592,15 +755,16 @@ class NNDescent(object):
         n_neighbors=15,
         n_trees=None,
         leaf_size=None,
-        pruning_level=0,
+        pruning_degree_multiplier=2.0,
+        diversify_epsilon=1.0,
+        n_search_trees=1,
         tree_init=True,
-        random_state=np.random,
+        random_state=None,
         algorithm="standard",
         low_memory=False,
-        max_candidates=20,
+        max_candidates=None,
         n_iters=None,
         delta=0.001,
-        rho=0.5,
         n_jobs=None,
         seed_per_row=False,
         verbose=False,
@@ -616,16 +780,18 @@ class NNDescent(object):
         self.metric = metric
         self.metric_kwds = metric_kwds
         self.leaf_size = leaf_size
-        self.prune_level = pruning_level
+        self.prune_degree_multiplier = pruning_degree_multiplier
+        self.diversify_epsilon = diversify_epsilon
+        self.n_search_trees = n_search_trees
         self.max_candidates = max_candidates
         self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
-        self.rho = rho
         self.dim = data.shape[1]
+        self.n_jobs = n_jobs
         self.verbose = verbose
 
-        data = check_array(data, dtype=np.float32, accept_sparse="csr")
+        data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
         self._raw_data = data
 
         if not tree_init or n_trees == 0:
@@ -636,12 +802,22 @@ class NNDescent(object):
         metric_kwds = metric_kwds or {}
         self._dist_args = tuple(metric_kwds.values())
 
-        self.random_state = check_random_state(random_state)
+        self.random_state = random_state
+
+        current_random_state = check_random_state(self.random_state)
+
+        self._distance_correction = None
 
         if callable(metric):
             self._distance_func = metric
         elif metric in dist.named_distances:
-            self._distance_func = dist.named_distances[metric]
+            if metric in dist.fast_distance_alternatives:
+                self._distance_func = dist.fast_distance_alternatives[metric]["dist"]
+                self._distance_correction = dist.fast_distance_alternatives[metric][
+                    "correction"
+                ]
+            else:
+                self._distance_func = dist.named_distances[metric]
         else:
             raise ValueError("Metric is neither callable, " + "nor a recognised string")
 
@@ -650,7 +826,7 @@ class NNDescent(object):
         else:
             self._angular_trees = False
 
-        self.rng_state = self.random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
+        self.rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
 
@@ -663,6 +839,8 @@ class NNDescent(object):
                 n_trees,
                 leaf_size,
                 self.rng_state,
+                current_random_state,
+                self.n_jobs,
                 self._angular_trees,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
@@ -670,14 +848,15 @@ class NNDescent(object):
             self._rp_forest = None
             leaf_array = np.array([[-1]])
 
+        if self.max_candidates is None:
+            effective_max_candidates = min(60, self.n_neighbors)
+        else:
+            effective_max_candidates = self.max_candidates
+
         if threaded.effective_n_jobs_with_context(n_jobs) != 1:
             if algorithm != "standard":
                 raise ValueError(
                     "Algorithm {} not supported in parallel mode".format(algorithm)
-                )
-            if isspmatrix_csr(self._raw_data):
-                raise ValueError(
-                    "Sparse input is not currently supported in parallel mode"
                 )
             if verbose:
                 print(ts(), "parallel NN descent for", str(n_iters), "iterations")
@@ -692,7 +871,7 @@ class NNDescent(object):
                     self._dist_args = tuple(metric_kwds.values())
                 else:
                     raise ValueError(
-                        "Metric {} not supported for sparse data".format(metric)
+                        "Metric {} not supported for sparse graph_data".format(metric)
                     )
                 self._neighbor_graph = sparse_threaded.sparse_nn_descent(
                     self._raw_data.indices,
@@ -701,12 +880,11 @@ class NNDescent(object):
                     self._raw_data.shape[0],
                     self.n_neighbors,
                     self.rng_state,
-                    self.max_candidates,
+                    effective_max_candidates,
                     self._distance_func,
                     self._dist_args,
                     self.n_iters,
                     self.delta,
-                    self.rho,
                     rp_tree_init=self.tree_init,
                     leaf_array=leaf_array,
                     verbose=verbose,
@@ -720,12 +898,11 @@ class NNDescent(object):
                     self._raw_data,
                     self.n_neighbors,
                     self.rng_state,
-                    self.max_candidates,
+                    effective_max_candidates,
                     self._distance_func,
                     self._dist_args,
                     self.n_iters,
                     self.delta,
-                    self.rho,
                     rp_tree_init=self.tree_init,
                     leaf_array=leaf_array,
                     verbose=verbose,
@@ -737,34 +914,38 @@ class NNDescent(object):
 
                 self._is_sparse = True
 
+                if not self._raw_data.has_sorted_indices:
+                    self._raw_data.sort_indices()
+
                 if metric in sparse.sparse_named_distances:
                     self._distance_func = sparse.sparse_named_distances[metric]
                     if metric in sparse.sparse_need_n_features:
                         metric_kwds["n_features"] = self._raw_data.shape[1]
                     self._dist_args = tuple(metric_kwds.values())
+                    if self._distance_correction is not None:
+                        self._distance_correction = None
                 else:
                     raise ValueError(
-                        "Metric {} not supported for sparse data".format(metric)
+                        "Metric {} not supported for sparse graph_data".format(metric)
                     )
 
                 if verbose:
                     print(ts(), "metric NN descent for", str(n_iters), "iterations")
 
-                self._neighbor_graph = sparse_nnd.sparse_nn_descent(
+                self._neighbor_graph = sparse_nnd.nn_descent(
                     self._raw_data.indices,
                     self._raw_data.indptr,
                     self._raw_data.data,
-                    self._raw_data.shape[0],
                     self.n_neighbors,
                     self.rng_state,
-                    self.max_candidates,
-                    rho=self.rho,
-                    low_memory=self.low_memory,
-                    sparse_dist=self._distance_func,
+                    max_candidates=effective_max_candidates,
+                    dist=self._distance_func,
                     dist_args=self._dist_args,
                     n_iters=self.n_iters,
-                    rp_tree_init=False,
+                    delta=self.delta,
+                    rp_tree_init=True,
                     leaf_array=leaf_array,
+                    low_memory=self.low_memory,
                     verbose=verbose,
                 )
 
@@ -779,46 +960,17 @@ class NNDescent(object):
                     self._raw_data,
                     self.n_neighbors,
                     self.rng_state,
-                    self.max_candidates,
+                    effective_max_candidates,
                     self._distance_func,
                     self._dist_args,
                     self.n_iters,
                     self.delta,
-                    self.rho,
                     low_memory=self.low_memory,
                     rp_tree_init=True,
                     leaf_array=leaf_array,
                     verbose=verbose,
                     seed_per_row=seed_per_row,
                 )
-        elif algorithm == "alternative":
-
-            self._is_sparse = False
-
-            if verbose:
-                print(ts(), "Using alternative algorithm")
-
-            graph_heap, search_heap = initialize_heaps(
-                self._raw_data,
-                self.n_neighbors,
-                leaf_array,
-                self._distance_func,
-                self._dist_args,
-            )
-            graph = lil_matrix((data.shape[0], data.shape[0]))
-            graph.rows, graph.data = deheap_sort(graph_heap)
-            graph = graph.maximum(graph.transpose())
-            self._neighbor_graph = deheap_sort(
-                initialized_nnd_search(
-                    self._raw_data,
-                    graph.indptr,
-                    graph.indices,
-                    search_heap,
-                    self._raw_data,
-                    self._distance_func,
-                    self._dist_args,
-                )
-            )
         else:
             raise ValueError("Unknown algorithm selected")
 
@@ -833,23 +985,135 @@ class NNDescent(object):
         if hasattr(self, "_search_graph"):
             return
 
+        self._rp_forest = [
+            convert_tree_format(tree, self._raw_data.shape[0])
+            for tree in self._rp_forest
+        ]
+
+        if self._is_sparse:
+            diversified_rows, diversified_data = sparse.diversify(
+                self._neighbor_graph[0],
+                self._neighbor_graph[1],
+                self._raw_data.indices,
+                self._raw_data.indptr,
+                self._raw_data.data,
+                self._distance_func,
+                self._dist_args,
+                self.diversify_epsilon,
+            )
+        else:
+            diversified_rows, diversified_data = diversify(
+                self._neighbor_graph[0],
+                self._neighbor_graph[1],
+                self._raw_data,
+                self._distance_func,
+                self._dist_args,
+                self.diversify_epsilon,
+            )
+
         self._search_graph = lil_matrix(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
         )
-        self._search_graph.rows = self._neighbor_graph[0]
-        self._search_graph.data = self._neighbor_graph[1]
-        self._search_graph = self._search_graph.maximum(
-            self._search_graph.transpose()
-        ).tocsr()
-        self._search_graph = prune(
-            self._search_graph,
-            prune_level=self.prune_level,
-            n_neighbors=self.n_neighbors,
+
+        # Preserve any distance 0 points
+        diversified_data[diversified_data == 0.0] = FLOAT32_EPS
+
+        self._search_graph.rows = diversified_rows
+        self._search_graph.data = diversified_data
+
+        # Get rid of any -1 index entries
+        self._search_graph = self._search_graph.tocsr()
+        self._search_graph.data[self._search_graph.indices == -1] = 0.0
+        self._search_graph.eliminate_zeros()
+
+        # Reverse graph
+        reverse_graph = lil_matrix(
+            (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
         )
+        reverse_data = self._neighbor_graph[1].copy()
+        reverse_data[reverse_data == 0.0] = FLOAT32_EPS
+        reverse_graph.rows = self._neighbor_graph[0]
+        reverse_graph.data = reverse_data
+        reverse_graph = reverse_graph.tocsr()
+        reverse_graph.data[reverse_graph.indices == -1] = 0.0
+        reverse_graph.eliminate_zeros()
+        reverse_graph = reverse_graph.transpose()
+        if self._is_sparse:
+            sparse.diversify_csr(
+                reverse_graph.indptr,
+                reverse_graph.indices,
+                reverse_graph.data,
+                self._raw_data.indptr,
+                self._raw_data.indices,
+                self._raw_data.data,
+                self._distance_func,
+                self._dist_args,
+                self.diversify_epsilon,
+            )
+            pass
+        else:
+            diversify_csr(
+                reverse_graph.indptr,
+                reverse_graph.indices,
+                reverse_graph.data,
+                self._raw_data,
+                self._distance_func,
+                self._dist_args,
+                self.diversify_epsilon,
+            )
+        reverse_graph.eliminate_zeros()
+
+        self._search_graph = self._search_graph.maximum(reverse_graph).tocsr()
+
+        # Eliminate the diagonal
+        n_vertices = self._search_graph.shape[0]
+        self._search_graph[np.arange(n_vertices), np.arange(n_vertices)] = 0.0
+
+        self._search_graph.eliminate_zeros()
+
+        self._search_graph = degree_prune(
+            self._search_graph,
+            int(np.round(self.prune_degree_multiplier * self.n_neighbors)),
+        )
+        self._search_graph.eliminate_zeros()
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
-    def query(self, query_data, k=10, queue_size=5.0):
-        """Query the training data for the k nearest neighbors
+        self._visited = np.zeros(
+            (self._raw_data.shape[0] // 8) + 1, dtype=np.uint8, order="C"
+        )
+
+        # reorder according to the search tree leaf order
+        self._vertex_order = self._rp_forest[0].indices
+        row_ordered_graph = self._search_graph[self._vertex_order, :]
+        self._search_graph = row_ordered_graph[:, self._vertex_order]
+        self._search_graph = self._search_graph.tocsr()
+        self._search_graph.sort_indices()
+
+        if self._is_sparse:
+            self._raw_data = self._raw_data[self._vertex_order, :]
+        else:
+            self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
+
+        tree_order = np.argsort(self._vertex_order)
+        self._search_forest = tuple(
+            resort_tree_indices(tree, tree_order)
+            for tree in self._rp_forest[: self.n_search_trees]
+        )
+
+    @property
+    def neighbor_graph(self):
+        if self._distance_correction is not None:
+            result = (
+                self._neighbor_graph[0].copy(),
+                self._distance_correction(self._neighbor_graph[1]),
+            )
+        else:
+            result = (self._neighbor_graph[0].copy(), self._neighbor_graph[1].copy())
+
+        return result
+
+    def query(self, query_data, k=10, epsilon=0.1):
+        """Query the training graph_data for the k nearest neighbors
 
         Parameters
         ----------
@@ -859,7 +1123,19 @@ class NNDescent(object):
         k: integer (default = 10)
             The number of nearest neighbors to return
 
-        queue_size: float (default 5.0)
+        epsilon: float (optional, default=0.1)
+            When searching for nearest neighbors of a query point this values
+            controls the trade-off between accuracy and search cost. Larger values
+            produce more accurate nearest neighbor results at larger computational
+            cost for the search. Values should be in the range 0.0 to 0.5, but
+            should probably not exceed 0.3 without good reason.
+
+        n_search_trees: int (default 1)
+            The number of random projection trees to use in initializing the
+            search. More trees will tend to produce more accurate results,
+            but cost runtime performance.
+
+        queue_size: float (default 1.0)
             The multiplier of the internal search queue. This controls the
             speed/accuracy tradeoff. Low values will search faster but with
             more approximate results. High values will search more
@@ -869,74 +1145,72 @@ class NNDescent(object):
         Returns
         -------
         indices, distances: array (n_query_points, k), array (n_query_points, k)
-            The first array, ``indices``, provides the indices of the data
+            The first array, ``indices``, provides the indices of the graph_data
             points in the training set that are the nearest neighbors of
             each query point. Thus ``indices[i, j]`` is the index into the
-            training data of the jth nearest neighbor of the ith query points.
+            training graph_data of the jth nearest neighbor of the ith query points.
 
             Similarly ``distances`` provides the distances to the neighbors
             of the query points such that ``distances[i, j]`` is the distance
             from the ith query point to its jth nearest neighbor in the
-            training data.
+            training graph_data.
         """
         if not self._is_sparse:
             # Standard case
             # query_data = check_array(query_data, dtype=np.float64, order='C')
-            query_data = np.asarray(query_data).astype(np.float32)
+            query_data = np.asarray(query_data).astype(np.float32, order="C")
             self._init_search_graph()
-            init = initialise_search(
-                self._rp_forest,
-                self._raw_data,
+            result = search(
                 query_data,
-                int(k * queue_size),
+                k,
+                self._raw_data,
+                self._search_forest,
+                self._search_graph.indptr,
+                self._search_graph.indices,
+                epsilon,
+                self.n_neighbors,
+                self._visited,
                 self._distance_func,
                 self._dist_args,
                 self.rng_state,
-            )
-            result = initialized_nnd_search(
-                self._raw_data,
-                self._search_graph.indptr,
-                self._search_graph.indices,
-                init,
-                query_data,
-                self._distance_func,
-                self._dist_args,
             )
         else:
             # Sparse case
-            query_data = check_array(query_data, accept_sparse="csr")
+            query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
             if not isspmatrix_csr(query_data):
-                query_data = csr_matrix(query_data)
+                query_data = csr_matrix(query_data, dtype=np.float32)
+            if not query_data.has_sorted_indices:
+                query_data.sort_indices()
             self._init_search_graph()
-            init = sparse_nnd.sparse_initialise_search(
-                self._rp_forest,
-                self._raw_data.indices,
-                self._raw_data.indptr,
-                self._raw_data.data,
+
+            result = sparse_nnd.search(
                 query_data.indices,
                 query_data.indptr,
                 query_data.data,
-                int(k * queue_size),
-                self.rng_state,
-                self._distance_func,
-                self._dist_args,
-            )
-            result = sparse_nnd.sparse_initialized_nnd_search(
+                k,
                 self._raw_data.indices,
                 self._raw_data.indptr,
                 self._raw_data.data,
+                self._search_forest,
                 self._search_graph.indptr,
                 self._search_graph.indices,
-                init,
-                query_data.indices,
-                query_data.indptr,
-                query_data.data,
+                epsilon,
+                self.n_neighbors,
+                self._visited,
                 self._distance_func,
                 self._dist_args,
+                self.rng_state,
             )
 
         indices, dists = deheap_sort(result)
-        return indices[:, :k], dists[:, :k]
+        indices, dists = indices[:, :k], dists[:, :k]
+        # Sort to input graph_data order
+        indices = self._vertex_order[indices]
+
+        if self._distance_correction is not None:
+            dists = self._distance_correction(dists)
+
+        return indices, dists
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
@@ -944,16 +1218,16 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
     It uses the NNDescent algorithm, and is thus
     very flexible and supports a wide variety of distances, including
     non-metric distances. NNDescent also scales well against high dimensional
-    data in many cases.
+    graph_data in many cases.
 
     Transform X into a (weighted) graph of k nearest neighbors
 
-    The transformed data is a sparse graph as returned by kneighbors_graph.
+    The transformed graph_data is a sparse graph as returned by kneighbors_graph.
 
     Parameters
     ----------
     n_neighbors: int (optional, default=5)
-        The number of neighbors to use in k-neighbor graph data structure
+        The number of neighbors to use in k-neighbor graph graph_data structure
         used for fast approximate nearest neighbor search. Larger values
         will result in more accurate search results at the cost of
         computation time.
@@ -997,15 +1271,35 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         of searches. This parameter controls the number of trees in that
         forest. A larger number will result in more accurate neighbor
         computation at the cost of performance. The default of None means
-        a value will be chosen based on the size of the data.
+        a value will be chosen based on the size of the graph_data.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
         The default of None means a value will be chosen based on n_neighbors.
 
-    pruning_level: int (optional, default=0)
-        How aggressively to prune the graph. Higher values perform more
-        aggressive pruning, resulting in faster search with lower accuracy.
+    pruning_degree_multiplier: float (optional, default=2.0)
+        How aggressively to prune the graph. Since the search graph is undirected
+        (and thus includes nearest neighbors and reverse nearest neighbors) vertices
+        can have very high degree -- the graph will be pruned such that no
+        vertex has degree greater than
+        ``pruning_degree_multiplier * n_neighbors``.
+
+    diversify_epsilon: float (optional, default=0.5)
+        The search graph get "diversified" by removing potentially unnecessary
+        edges. This controls the volume of edges removed. A value of 0.0 ensures
+        that no edges get removed, and larger values result in significantly more
+        aggressive edge removal. Values above 1.0 are not recommended.
+
+    n_search_trees: float (optional, default=1)
+        The number of random projection trees to use in initializing searching or
+        querying.
+
+    search_epsilon: float (optional, default=0.1)
+        When searching for nearest neighbors of a query point this values
+        controls the trade-off between accuracy and search cost. Larger values
+        produce more accurate nearest neighbor results at larger computational
+        cost for the search. Values should be in the range 0.0 to 0.5, but
+        should probably not exceed 0.3 without good reason.
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -1043,7 +1337,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         NN-descent algorithm can abort early if limited progress is being
         made, so this only controls the worst case. Don't tweak
         this value unless you know what you're doing. The default of None means
-        a value will be chosen based on the size of the data.
+        a value will be chosen based on the size of the graph_data.
 
     early_termination_value: float (optional, default=0.001)
         Controls the early abort due to limited progress. Larger values
@@ -1051,14 +1345,8 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         and less accurate searching. Don't tweak this value unless you know
         what you're doing.
 
-    sampling_rate: float (optional, default=0.5)
-        Controls the random sampling of potential candidates in any given
-        iteration of NN-descent. Larger values will result in less accurate
-        indexes and less accurate searching. Don't tweak this value unless
-        you know what you're doing.
-
     verbose: bool (optional, default=False)
-        Whether to print status data during the computation.
+        Whether to print status graph_data during the computation.
 
     Examples
     --------
@@ -1072,21 +1360,22 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
 
     def __init__(
         self,
-        n_neighbors=5,
+        n_neighbors=15,
         metric="euclidean",
         metric_kwds=None,
         n_trees=None,
         leaf_size=None,
-        search_queue_size=4.0,
-        pruning_level=0,
+        search_epsilon=0.1,
+        pruning_degree_multiplier=2.0,
+        diversify_epsilon=1.0,
+        n_search_trees=1,
         tree_init=True,
-        random_state=np.random,
+        random_state=None,
         algorithm="standard",
         low_memory=False,
-        max_candidates=20,
+        max_candidates=None,
         n_iters=None,
         early_termination_value=0.001,
-        sampling_rate=0.5,
         verbose=False,
     ):
 
@@ -1095,8 +1384,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.metric_kwds = metric_kwds
         self.n_trees = n_trees
         self.leaf_size = leaf_size
-        self.search_queue_size = search_queue_size
-        self.pruning_level = pruning_level
+        self.search_epsilon = search_epsilon
+        self.pruning_degree_multiplier = pruning_degree_multiplier
+        self.diversify_epsilon = diversify_epsilon
+        self.n_search_trees = n_search_trees
         self.tree_init = tree_init
         self.random_state = random_state
         self.algorithm = algorithm
@@ -1104,7 +1395,6 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.max_candidates = max_candidates
         self.n_iters = n_iters
         self.early_termination_value = early_termination_value
-        self.sampling_rate = sampling_rate
         self.verbose = verbose
 
     def fit(self, X):
@@ -1114,7 +1404,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         Parameters
         ----------
         X : array-like, shape (n_samples, n_features)
-            Sample data
+            Sample graph_data
 
         Returns
         -------
@@ -1128,14 +1418,16 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         else:
             metric_kwds = self.metric_kwds
 
-        self.pynndescent_ = NNDescent(
+        self.index_ = NNDescent(
             X,
             self.metric,
             metric_kwds,
             self.n_neighbors,
             self.n_trees,
             self.leaf_size,
-            self.pruning_level,
+            self.pruning_degree_multiplier,
+            self.diversify_epsilon,
+            self.n_search_trees,
             self.tree_init,
             self.random_state,
             self.algorithm,
@@ -1143,7 +1435,6 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             self.max_candidates,
             self.n_iters,
             self.early_termination_value,
-            self.sampling_rate,
             verbose=self.verbose,
         )
 
@@ -1155,7 +1446,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         Parameters
         ----------
         X : array-like, shape (n_samples_transform, n_features)
-            Sample data
+            Sample graph_data
 
         Returns
         -------
@@ -1170,10 +1461,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             n_samples_transform = X.shape[0]
 
         if X is None:
-            indices, distances = self.pynndescent_._neighbor_graph
+            indices, distances = self.index_.neighbor_graph
         else:
-            indices, distances = self.pynndescent_.query(
-                X, k=self.n_neighbors, queue_size=self.search_queue_size
+            indices, distances = self.index_.query(
+                X, k=self.n_neighbors, epsilon=self.search_epsilon
             )
 
         result = lil_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
@@ -1183,7 +1474,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         return result.tocsr()
 
     def fit_transform(self, X, y=None, **fit_params):
-        """Fit to data, then transform it.
+        """Fit to graph_data, then transform it.
 
         Fits transformer to X and y with optional parameters fit_params
         and returns a transformed version of X.

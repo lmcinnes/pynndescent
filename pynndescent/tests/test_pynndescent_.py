@@ -16,17 +16,17 @@ np.random.seed(42)
 spatial_data = np.random.randn(10, 20)
 spatial_data = np.vstack(
     [spatial_data, np.zeros((2, 20))]
-)  # Add some all zero data for corner case test
+)  # Add some all zero graph_data for corner case test
 
 nn_data = np.random.uniform(0, 1, size=(1000, 5))
 nn_data = np.vstack(
     [nn_data, np.zeros((2, 5))]
-)  # Add some all zero data for corner case test
+)  # Add some all zero graph_data for corner case test
 # for_sparse_nn_data = np.random.uniform(0, 1, size=(1002, 500))
 # binary_nn_data = np.random.choice(a=[False, True], size=(1000, 500), p=[0.1, 1 - 0.1])
 # binary_nn_data = np.vstack(
 #     [binary_nn_data, np.zeros((2, 500))]
-# )  # Add some all zero data for corner case test
+# )  # Add some all zero graph_data for corner case test
 # sparse_nn_data = sparse.csr_matrix(for_sparse_nn_data * binary_nn_data)
 sparse_nn_data = sparse.random(1000, 50, density=0.5, format="csr")
 # sparse_nn_data = sparse.csr_matrix(nn_data)
@@ -75,7 +75,7 @@ def test_angular_nn_descent_neighbor_accuracy():
 
 def test_sparse_nn_descent_neighbor_accuracy():
     knn_indices, _ = NNDescent(
-        sparse_nn_data, "euclidean", n_neighbors=20, random_state=np.random
+        sparse_nn_data, "euclidean", n_neighbors=20, random_state=None
     )._neighbor_graph
 
     tree = KDTree(sparse_nn_data.toarray())
@@ -95,7 +95,7 @@ def test_sparse_nn_descent_neighbor_accuracy():
 
 def test_sparse_angular_nn_descent_neighbor_accuracy():
     knn_indices, _ = NNDescent(
-        sparse_nn_data, "cosine", {}, 20, random_state=np.random
+        sparse_nn_data, "cosine", {}, 20, random_state=None
     )._neighbor_graph
 
     angular_data = normalize(sparse_nn_data, norm="l2").toarray()
@@ -115,8 +115,8 @@ def test_sparse_angular_nn_descent_neighbor_accuracy():
 
 
 def test_nn_descent_query_accuracy():
-    nnd = NNDescent(nn_data[200:], "euclidean", n_neighbors=10, random_state=np.random)
-    knn_indices, _ = nnd.query(nn_data[:200], k=10)
+    nnd = NNDescent(nn_data[200:], "euclidean", n_neighbors=10, random_state=None)
+    knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
 
     tree = KDTree(nn_data[200:])
     true_indices = tree.query(nn_data[:200], 10, return_distance=False)
@@ -128,14 +128,14 @@ def test_nn_descent_query_accuracy():
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert_greater_equal(
         percent_correct,
-        0.99,
-        "NN-descent query did not get 99% " "accuracy on nearest neighbors",
+        0.95,
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors",
     )
 
 
 def test_sparse_nn_descent_query_accuracy():
     nnd = NNDescent(
-        sparse_nn_data[200:], "euclidean", n_neighbors=10, random_state=np.random
+        sparse_nn_data[200:], "euclidean", n_neighbors=10, random_state=None
     )
     knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10)
 
@@ -150,18 +150,18 @@ def test_sparse_nn_descent_query_accuracy():
     assert_greater_equal(
         percent_correct,
         0.95,
-        "Sparse NN-descent query did not get 97% " "accuracy on nearest neighbors",
+        "Sparse NN-descent query did not get 95% " "accuracy on nearest neighbors",
     )
 
 
 def test_transformer_equivalence():
     N_NEIGHBORS = 15
-    QUEUE_SIZE = 5.0
+    EPSILON = 0.15
     train = nn_data[:400]
     test = nn_data[:200]
 
     nnd = NNDescent(data=train, n_neighbors=N_NEIGHBORS, random_state=42)
-    indices, dists = nnd.query(test, k=N_NEIGHBORS, queue_size=QUEUE_SIZE)
+    indices, dists = nnd.query(test, k=N_NEIGHBORS, epsilon=EPSILON)
     sort_idx = np.argsort(indices, axis=1)
     indices_sorted = np.vstack(
         [indices[i, sort_idx[i]] for i in range(sort_idx.shape[0])]
@@ -169,11 +169,11 @@ def test_transformer_equivalence():
     dists_sorted = np.vstack([dists[i, sort_idx[i]] for i in range(sort_idx.shape[0])])
 
     transformer = PyNNDescentTransformer(
-        n_neighbors=N_NEIGHBORS, search_queue_size=QUEUE_SIZE, random_state=42
+        n_neighbors=N_NEIGHBORS, search_epsilon=EPSILON, random_state=42
     ).fit(train)
     Xt = transformer.transform(test).sorted_indices()
 
-    assert np.all(Xt.indices == indices_sorted.flat)
+    assert np.all(Xt.indices == indices_sorted.flatten())
     assert np.allclose(Xt.data, dists_sorted.flat)
 
 
@@ -215,7 +215,7 @@ def test_deterministic():
 
 # This tests a recursion error on cosine metric reported at:
 # https://github.com/lmcinnes/umap/issues/99
-# data used is a cut-down version of that provided by @scharron
+# graph_data used is a cut-down version of that provided by @scharron
 # It contains lots of all-zero vectors and some other duplicates
 def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
     this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -231,7 +231,7 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data():
         assert_equal(
             len(knn_indices[i]),
             len(np.unique(knn_indices[i])),
-            "Duplicate indices in knn graph",
+            "Duplicate graph_indices in knn graph",
         )
 
 
@@ -251,7 +251,7 @@ def test_deduplicated_data_behaves_normally():
         assert_equal(
             len(knn_indices[i]),
             len(np.unique(knn_indices[i])),
-            "Duplicate indices in knn graph",
+            "Duplicate graph_indices in knn graph",
         )
 
     angular_data = normalize(data, norm="l2")

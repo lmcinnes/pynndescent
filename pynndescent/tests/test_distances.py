@@ -9,15 +9,17 @@ from sklearn.utils.testing import assert_array_almost_equal
 
 np.random.seed(42)
 spatial_data = np.random.randn(10, 20)
-spatial_data = np.vstack(
-    [spatial_data, np.zeros((2, 20))]
-)  # Add some all zero data for corner case test
+spatial_data = np.vstack([spatial_data, np.zeros((2, 20))]).astype(
+    np.float32, order="C"
+)  # Add some all zero graph_data for corner case test
 binary_data = np.random.choice(a=[False, True], size=(10, 20), p=[0.66, 1 - 0.66])
 binary_data = np.vstack(
     [binary_data, np.zeros((2, 20), dtype="bool")]
-)  # Add some all zero data for corner case test
-sparse_spatial_data = sparse.csr_matrix(spatial_data * binary_data)
+)  # Add some all zero graph_data for corner case test
+sparse_spatial_data = sparse.csr_matrix(spatial_data * binary_data, dtype=np.float32)
+sparse_spatial_data.sort_indices()
 sparse_binary_data = sparse.csr_matrix(binary_data)
+sparse_binary_data.sort_indices()
 
 
 def spatial_check(metric):
@@ -73,9 +75,11 @@ def binary_check(metric):
     )
 
 
-def sparse_spatial_check(metric):
+def sparse_spatial_check(metric, decimal=6):
     if metric in spdist.sparse_named_distances:
-        dist_matrix = pairwise_distances(sparse_spatial_data.todense(), metric=metric)
+        dist_matrix = pairwise_distances(
+            sparse_spatial_data.todense().astype(np.float32), metric=metric
+        )
     if metric in ("braycurtis", "dice", "sokalsneath", "yule"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
     if metric in ("cosine", "correlation", "kulsinski", "russellrao"):
@@ -116,11 +120,11 @@ def sparse_spatial_check(metric):
                 for i in range(sparse_spatial_data.shape[0])
             ]
         )
-
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
         err_msg="Sparse distances don't match " "for metric {}".format(metric),
+        decimal=decimal,
     )
 
 
@@ -268,7 +272,7 @@ def test_sparse_hamming():
 
 
 def test_sparse_canberra():
-    sparse_spatial_check("canberra")
+    sparse_spatial_check("canberra")  # Be a little forgiving
 
 
 def test_sparse_cosine():

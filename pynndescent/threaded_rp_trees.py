@@ -3,6 +3,11 @@ import numba
 
 from pynndescent.utils import tau_rand_int, norm
 
+######################################################
+# Alternative tree approach; should be the basis
+# for a dask-distributed version of the algorithm
+######################################################
+
 
 @numba.njit(fastmath=True, nogil=True)
 def apply_hyperplane(
