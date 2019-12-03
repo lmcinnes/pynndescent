@@ -31,7 +31,8 @@ Proceedings of the 20th international conference on World wide web. ACM, 2011.
 This library supplements that approach with the use of random projection
 trees for initialisation. This can be particularly useful for the metrics
 that are amenable to such approaches (euclidean, minkowski, angular, cosine,
-etc.).
+etc.). The library also uses graph diversification techniques to make
+the search process faster.
 
 Currently this library targets relatively high accuracy 
 (90%-99% accuracy rate) approximate nearest neighbor searches.
@@ -80,6 +81,7 @@ distance metrics by default:
 **Angular and correlation metrics**
 
 - cosine
+- hellinger
 - correlation
 - spearmanr
 
@@ -127,6 +129,40 @@ set ``query_data`` you can do something like
     index.query(query_data, k=15)
 
 and that is pretty much all there is to it.
+
+----------
+Parameters
+----------
+
+There is a trade-off between query accuracy, and the time a query takes. If
+you are willing to accept less accurate queries you can potentially get
+results much faster. PyNNDescent provides some parameters that can control
+aspects of this of this trade-off. The simplest approach is during the query
+phase using the ``epsilon`` parameter:
+
+.. code:: python
+
+    index.query(query_data, k=15, epsilon=0.15)
+
+A larger value of ``epsilon`` will result in a more accurate set of results
+returned, at the cost of significantly more time spent on the query. A value
+of 0.0 will produce reasonably accurate results *as fast as possible*. In general
+a value much higher than 0.3 is not advisable, as queries will simply be too slow.
+If you need higher accuracy than ``epsilon=0.3`` can provide you should consider
+adjusting the parameters of your index construction.
+
+The major index construction parameters are ``n_neighbors``,
+``pruning_degree_multiplier`` and ``diversify_epsilon``. The first of these,
+``n_neighbors`` is the one you should consider changing first. This is the
+number of neighbors to compute during index construction. Higher values will
+result in more accurate indices. In general ``n_neighbors`` should range
+between about 10 (for high performance queries) and 150 (for high accuracy
+queries). The next option to to consider adjust ``pruning_degree_multiplier``.
+This controls how the graph gets pruned. In general this should be in the range
+1.0 to 3.0. Finally you can consider adjusting ``diversify_epsilon`` which
+controls the graph diversification phase. This should be a value between
+0.0 and 1.0; 0.0 will result in more accurate queries, while 1.0 will result
+in faster queries.
 
 ----------
 Installing
