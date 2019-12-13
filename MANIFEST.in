@@ -3,3 +3,4 @@ include *.md
 include *.rst
 include requirements.txt
 recursive-include pynndescent *
+prune pynndescent/__pycache__
