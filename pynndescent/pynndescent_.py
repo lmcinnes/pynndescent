@@ -743,6 +743,11 @@ class NNDescent(object):
         ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
         ``-1`` means using all processors.
 
+    compressed: bool (optional, default=False)
+        Whether to prune out data not needed for searching the index. This will
+        result in a significantly smaller index, particularly useful for saving,
+        but will remove information that might otherwise be useful.
+
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
     """
@@ -766,6 +771,7 @@ class NNDescent(object):
         n_iters=None,
         delta=0.001,
         n_jobs=None,
+        compressed=False,
         seed_per_row=False,
         verbose=False,
     ):
@@ -789,6 +795,7 @@ class NNDescent(object):
         self.delta = delta
         self.dim = data.shape[1]
         self.n_jobs = n_jobs
+        self.compressed = compressed
         self.verbose = verbose
 
         data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
@@ -1100,8 +1107,15 @@ class NNDescent(object):
             for tree in self._rp_forest[: self.n_search_trees]
         )
 
+        if self.compressed:
+            del self._rp_forest
+            del self._neighbor_graph
+
     @property
     def neighbor_graph(self):
+        if self.compressed:
+            warn("Compressed indexes do not have neighbor graph information.")
+            return None
         if self._distance_correction is not None:
             result = (
                 self._neighbor_graph[0].copy(),
@@ -1111,6 +1125,13 @@ class NNDescent(object):
             result = (self._neighbor_graph[0].copy(), self._neighbor_graph[1].copy())
 
         return result
+
+
+    def compress_index(self):
+        self.compressed = True
+        del self._rp_forest
+        del self._neighbor_graph
+
 
     def query(self, query_data, k=10, epsilon=0.1):
         """Query the training graph_data for the k nearest neighbors
