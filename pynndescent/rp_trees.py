@@ -237,7 +237,7 @@ def euclidean_random_projection_split(data, indices, rng_state):
         "normalized_left_data": numba.types.float32[::1],
         "normalized_right_data": numba.types.float32[::1],
         "hyperplane_norm": numba.types.float32,
-        "i": numba.types.uint16,
+        "i": numba.types.uint32,
     },
 )
 def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_state):
