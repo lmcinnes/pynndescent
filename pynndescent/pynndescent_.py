@@ -1128,10 +1128,12 @@ class NNDescent(object):
 
 
     def compress_index(self):
+        import gc
         self.compressed = True
         del self._rp_forest
         del self._neighbor_graph
-
+        gc.collect()
+        return
 
     def query(self, query_data, k=10, epsilon=0.1):
         """Query the training graph_data for the k nearest neighbors
