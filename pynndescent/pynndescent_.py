@@ -828,7 +828,7 @@ class NNDescent(object):
         else:
             raise ValueError("Metric is neither callable, " + "nor a recognised string")
 
-        if metric in ("cosine", "correlation", "dice", "jaccard"):
+        if metric in ("cosine", "correlation", "dice", "jaccard", "hellinger"):
             self._angular_trees = True
         else:
             self._angular_trees = False
