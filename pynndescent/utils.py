@@ -7,6 +7,8 @@ import time
 import numba
 import numpy as np
 
+from collections import namedtuple
+
 
 @numba.njit("void(i8[:], i8)")
 def seed(rng_state, seed):
@@ -112,7 +114,10 @@ def rejection_sample(n_samples, pool_size, rng_state):
     return result
 
 
-@numba.njit(locals={"result": numba.types.float32[:, :, ::1]})
+Heap = namedtuple("Heap", ("indices", "distances", "flags"))
+
+
+@numba.njit()
 def make_heap(n_points, size):
     """Constructor for the numba enabled heap objects. The heaps are used
     for approximate nearest neighbor search, maintaining a list of potential
@@ -135,19 +140,19 @@ def make_heap(n_points, size):
     -------
     heap: An ndarray suitable for passing to other numba enabled heap functions.
     """
-    result = np.zeros((3, int(n_points), int(size)), dtype=np.float32)
-    result[0] = -1
-    result[1] = np.infty
-    result[2] = 0
+    indices = np.full((int(n_points), int(size)), -1, dtype=np.int32)
+    distances = np.full((int(n_points), int(size)), np.infty, dtype=np.int32)
+    flags = np.zeros((int(n_points), int(size)), dtype=np.uint8)
+    result = Heap(indices, distances, flags)
 
     return result
 
 
 @numba.jit(
     locals={
-        "indices": numba.types.float32[::1],
+        "indices": numba.types.int32[::1],
         "weights": numba.types.float32[::1],
-        "is_new": numba.types.float32[::1],
+        "is_new": numba.types.uint8[::1],
         "i": numba.types.uint16,
         "ic1": numba.types.uint16,
         "ic2": numba.types.uint16,
@@ -184,9 +189,9 @@ def heap_push(heap, row, weight, index, flag):
     success: The number of new elements successfully pushed into the heap.
     """
     row = int(row)
-    indices = heap[0, row]
-    weights = heap[1, row]
-    is_new = heap[2, row]
+    indices = heap[0][row]
+    weights = heap[1][row]
+    is_new = heap[2][row]
 
     if weight >= weights[0]:
         return 0
@@ -207,9 +212,9 @@ def heap_push(heap, row, weight, index, flag):
         ic1 = 2 * i + 1
         ic2 = ic1 + 1
 
-        if ic1 >= heap.shape[2]:
+        if ic1 >= indices.shape[0]:
             break
-        elif ic2 >= heap.shape[2]:
+        elif ic2 >= indices.shape[0]:
             if weights[ic1] > weight:
                 i_swap = ic1
             else:
@@ -240,9 +245,9 @@ def heap_push(heap, row, weight, index, flag):
 
 @numba.jit(
     locals={
-        "indices": numba.types.float32[::1],
+        "indices": numba.types.int32[::1],
         "weights": numba.types.float32[::1],
-        "is_new": numba.types.float32[::1],
+        "is_new": numba.types.uint8[::1],
         "i": numba.types.uint16,
         "ic1": numba.types.uint16,
         "ic2": numba.types.uint16,
@@ -278,19 +283,19 @@ def unchecked_heap_push(heap, row, weight, index, flag):
     -------
     success: The number of new elements successfully pushed into the heap.
     """
-    if weight >= heap[1, row, 0]:
+    if weight >= heap[1][row, 0]:
         return 0
 
-    indices = heap[0, row]
-    weights = heap[1, row]
-    is_new = heap[2, row]
+    indices = heap[0][row]
+    weights = heap[1][row]
+    is_new = heap[2][row]
 
     # insert val at position zero
     weights[0] = weight
     indices[0] = index
     is_new[0] = flag
 
-    heap_size = heap.shape[2]
+    heap_size = indices.shape[0]
 
     # descend the heap, swapping values until the max heap criterion is met
     i = 0
@@ -417,9 +422,9 @@ def smallest_flagged(heap, row):
         of the ``row``th heap, or -1 if no flagged
         elements remain in the heap.
     """
-    ind = heap[0, row]
-    dist = heap[1, row]
-    flag = heap[2, row]
+    ind = heap[0][row]
+    dist = heap[1][row]
+    flag = heap[2][row]
 
     min_dist = np.inf
     result_index = -1
@@ -467,14 +472,14 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates, rng
     candidate_neighbors = make_heap(n_vertices, max_candidates)
     for i in range(n_vertices):
         for j in range(n_neighbors):
-            if current_graph[0, i, j] < 0:
+            if current_graph[0][i, j] < 0:
                 continue
-            idx = current_graph[0, i, j]
-            isn = current_graph[2, i, j]
+            idx = current_graph[0][i, j]
+            isn = current_graph[2][i, j]
             d = tau_rand(rng_state)
             heap_push(candidate_neighbors, i, d, idx, isn)
             heap_push(candidate_neighbors, idx, d, i, isn)
-            current_graph[2, i, j] = 0
+            current_graph[2][i, j] = 0
 
     return candidate_neighbors
 
@@ -524,10 +529,10 @@ def new_build_candidates(
         if seed_per_row:
             seed(rng_state, i)
         for j in range(n_neighbors):
-            if current_graph[0, i, j] < 0:
+            if current_graph[0][i, j] < 0:
                 continue
-            idx = int(current_graph[0, i, j])
-            isn = current_graph[2, i, j]
+            idx = int(current_graph[0][i, j])
+            isn = current_graph[2][i, j]
 
             d = tau_rand(rng_state)
 
@@ -560,11 +565,11 @@ def new_build_candidates(
 
     for i in numba.prange(n_vertices):
         for j in range(n_neighbors):
-            idx = current_graph[0, i, j]
+            idx = current_graph[0][i, j]
 
             for k in range(max_candidates):
-                if new_candidate_neighbors[0, i, k] == idx:
-                    current_graph[2, i, j] = 0
+                if new_candidate_neighbors[0][i, k] == idx:
+                    current_graph[2][i, j] = 0
                     break
 
     return new_candidate_neighbors, old_candidate_neighbors

@@ -259,7 +259,7 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
         block_end = min(n_leaves, (i + 1) * block_size)
 
         leaf_block = leaf_array[block_start:block_end]
-        dist_thresholds = current_graph[1, :, 0]
+        dist_thresholds = current_graph[1][:, 0]
 
         updates = generate_leaf_updates(
             leaf_block, dist_thresholds, data, dist, dist_args
@@ -365,7 +365,7 @@ def nn_descent_internal_low_memory_parallel(
 
             new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
             old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
-            dist_thresholds = current_graph[1, :, 0]
+            dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
                 new_candidate_block,
@@ -401,7 +401,7 @@ def nn_descent_internal_high_memory_parallel(
     n_blocks = n_vertices // block_size
 
     in_graph = [
-        set(current_graph[0, i].astype(np.int64)) for i in range(current_graph.shape[1])
+        set(current_graph[0][i].astype(np.int64)) for i in range(current_graph[0].shape[0])
     ]
 
     for n in range(n_iters):
@@ -424,7 +424,7 @@ def nn_descent_internal_high_memory_parallel(
 
             new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
             old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
-            dist_thresholds = current_graph[1, :, 0]
+            dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
                 new_candidate_block,
