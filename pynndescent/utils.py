@@ -141,7 +141,7 @@ def make_heap(n_points, size):
     heap: An ndarray suitable for passing to other numba enabled heap functions.
     """
     indices = np.full((int(n_points), int(size)), -1, dtype=np.int32)
-    distances = np.full((int(n_points), int(size)), np.infty, dtype=np.int32)
+    distances = np.full((int(n_points), int(size)), np.infty, dtype=np.float32)
     flags = np.zeros((int(n_points), int(size)), dtype=np.uint8)
     result = Heap(indices, distances, flags)
 
@@ -188,7 +188,11 @@ def heap_push(heap, row, weight, index, flag):
     -------
     success: The number of new elements successfully pushed into the heap.
     """
-    row = int(row)
+    row = np.int32(row)
+    weight = np.float32(weight)
+    index = np.int32(index)
+    flag = np.uint8(flag)
+
     indices = heap[0][row]
     weights = heap[1][row]
     is_new = heap[2][row]
@@ -563,13 +567,17 @@ def new_build_candidates(
                 #     unchecked_heap_push(old_candidate_neighbors, idx, d, i, isn)
                 #     in_old_candidates[idx].add(i)
 
+    indices = current_graph[0]
+    candidate_indices = new_candidate_neighbors[0]
+    flags = current_graph[2]
+
     for i in numba.prange(n_vertices):
         for j in range(n_neighbors):
-            idx = current_graph[0][i, j]
+            idx = indices[i, j]
 
             for k in range(max_candidates):
-                if new_candidate_neighbors[0][i, k] == idx:
-                    current_graph[2][i, j] = 0
+                if candidate_indices[i, k] == idx:
+                    flags[i, j] = 0
                     break
 
     return new_candidate_neighbors, old_candidate_neighbors
