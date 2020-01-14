@@ -778,6 +778,7 @@ class NNDescent(object):
 
         if n_trees is None:
             n_trees = 5 + int(round((data.shape[0]) ** 0.5 / 20.0))
+            n_trees = min(64, n_trees) # Only so many trees are useful
         if n_iters is None:
             n_iters = max(5, int(round(np.log2(data.shape[0]))))
 
