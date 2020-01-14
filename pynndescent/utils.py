@@ -59,7 +59,14 @@ def tau_rand(state):
     return abs(float(integer) / 0x7FFFFFFF)
 
 
-@numba.njit(fastmath=True)
+@numba.njit(
+    'f4(f4[::1])',
+    locals={
+        "dim": numba.types.uint32,
+        "i": numba.types.uint32,
+        "result": numba.types.float32,
+    },
+    fastmath=True)
 def norm(vec):
     """Compute the (standard l2) norm of a vector.
 
@@ -72,8 +79,9 @@ def norm(vec):
     The l2 norm of vec.
     """
     result = 0.0
-    for i in range(vec.shape[0]):
-        result += vec[i] ** 2
+    dim = vec.shape[0]
+    for i in range(dim):
+        result += vec[i] * vec[i]
     return np.sqrt(result)
 
 

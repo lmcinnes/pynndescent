@@ -872,7 +872,18 @@ class NNDescent(object):
                 # Sparse case
                 self._is_sparse = True
                 if metric in sparse.sparse_named_distances:
-                    self._distance_func = sparse.sparse_named_distances[metric]
+                    if metric in sparse.sparse_fast_distance_alternatives:
+                        self._distance_func = \
+                        sparse.sparse_fast_distance_alternatives[metric][
+                            "dist"
+                        ]
+                        self._distance_correction = \
+                        sparse.sparse_fast_distance_alternatives[metric][
+                            "correction"
+                        ]
+                    else:
+                        self._distance_func = sparse.sparse_named_distances[metric]
+
                     if metric in sparse.sparse_need_n_features:
                         metric_kwds["n_features"] = self._raw_data.shape[1]
                     self._dist_args = tuple(metric_kwds.values())
