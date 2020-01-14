@@ -304,8 +304,8 @@ def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
 def init_random(n_neighbors, inds, indptr, data, heap, dist, dist_args, rng_state):
     n_samples = indptr.shape[0] - 1
     for i in range(n_samples):
-        if heap[0, i, 0] < 0.0:
-            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
+        if heap[0][i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % n_samples
 
                 from_inds = inds[indptr[idx] : indptr[idx + 1]]
