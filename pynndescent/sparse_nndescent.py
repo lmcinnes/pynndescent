@@ -412,8 +412,8 @@ def nn_descent_internal_low_memory_parallel(
             block_start = i * block_size
             block_end = min(n_vertices, (i + 1) * block_size)
 
-            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
+            new_candidate_block = new_candidate_neighbors[0][block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0][block_start:block_end]
             dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
@@ -475,8 +475,8 @@ def nn_descent_internal_high_memory_parallel(
             block_start = i * block_size
             block_end = min(n_vertices, (i + 1) * block_size)
 
-            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
+            new_candidate_block = new_candidate_neighbors[0][block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0][block_start:block_end]
             dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
