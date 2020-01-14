@@ -283,7 +283,7 @@ def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
         block_end = min(n_leaves, (i + 1) * block_size)
 
         leaf_block = leaf_array[block_start:block_end]
-        dist_thresholds = current_graph[1, :, 0]
+        dist_thresholds = current_graph[1][:, 0]
 
         updates = generate_leaf_updates(
             leaf_block, dist_thresholds, inds, indptr, data, dist, dist_args
@@ -304,8 +304,8 @@ def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
 def init_random(n_neighbors, inds, indptr, data, heap, dist, dist_args, rng_state):
     n_samples = indptr.shape[0] - 1
     for i in range(n_samples):
-        if heap[0, i, 0] < 0.0:
-            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
+        if heap[0][i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % n_samples
 
                 from_inds = inds[indptr[idx] : indptr[idx + 1]]
@@ -412,9 +412,9 @@ def nn_descent_internal_low_memory_parallel(
             block_start = i * block_size
             block_end = min(n_vertices, (i + 1) * block_size)
 
-            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
-            dist_thresholds = current_graph[1, :, 0]
+            new_candidate_block = new_candidate_neighbors[0][block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0][block_start:block_end]
+            dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
                 new_candidate_block,
@@ -454,7 +454,7 @@ def nn_descent_internal_high_memory_parallel(
     n_blocks = n_vertices // block_size
 
     in_graph = [
-        set(current_graph[0, i].astype(np.int64)) for i in range(current_graph.shape[1])
+        set(current_graph[0][i].astype(np.int64)) for i in range(current_graph[0].shape[0])
     ]
 
     for n in range(n_iters):
@@ -475,9 +475,9 @@ def nn_descent_internal_high_memory_parallel(
             block_start = i * block_size
             block_end = min(n_vertices, (i + 1) * block_size)
 
-            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
-            dist_thresholds = current_graph[1, :, 0]
+            new_candidate_block = new_candidate_neighbors[0][block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0][block_start:block_end]
+            dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
                 new_candidate_block,
