@@ -223,7 +223,7 @@ def sparse_euclidean(ind1, data1, ind2, data2):
 def sparse_squared_euclidean(ind1, data1, ind2, data2):
     _, aux_data = sparse_diff(ind1, data1, ind2, data2)
     result = 0.0
-    dim = aux_data.shape[0]
+    dim = len(aux_data)
     for i in range(dim):
         result += aux_data[i] * aux_data[i]
     return result
@@ -421,7 +421,7 @@ def sparse_alternative_cosine(ind1, data1, ind2, data2):
     result = 0.0
     norm_x = norm(data1)
     norm_y = norm(data2)
-    dim = aux_data.shape[0]
+    dim = len(aux_data)
     for i in range(dim):
         result += aux_data[i]
 
@@ -538,7 +538,7 @@ def sparse_alternative_hellinger(ind1, data1, ind2, data2):
     result = 0.0
     l1_norm_x = np.sum(data1)
     l1_norm_y = np.sum(data2)
-    dim = aux_data.shape[0]
+    dim = len(aux_data)
 
     for i in range(dim):
         result += np.sqrt(aux_data[i])
