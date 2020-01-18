@@ -209,6 +209,26 @@ def sparse_euclidean(ind1, data1, ind2, data2):
     return np.sqrt(result)
 
 
+@numba.njit(
+    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+    fastmath=True,
+    locals={
+        "aux_data": numba.types.float32[::1],
+        "result": numba.types.float32,
+        "diff": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
+)
+def sparse_squared_euclidean(ind1, data1, ind2, data2):
+    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
+    result = 0.0
+    dim = len(aux_data)
+    for i in range(dim):
+        result += aux_data[i] * aux_data[i]
+    return result
+
+
 @numba.njit()
 def sparse_manhattan(ind1, data1, ind2, data2):
     _, aux_data = sparse_diff(ind1, data1, ind2, data2)
@@ -385,6 +405,41 @@ def sparse_cosine(ind1, data1, ind2, data2):
         return 1.0 - (result / (norm1 * norm2))
 
 
+@numba.njit(
+    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "norm_x": numba.types.float32,
+        "norm_y": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
+)
+def sparse_alternative_cosine(ind1, data1, ind2, data2):
+    _, aux_data = sparse_mul(ind1, data1, ind2, data2)
+    result = 0.0
+    norm_x = norm(data1)
+    norm_y = norm(data2)
+    dim = len(aux_data)
+    for i in range(dim):
+        result += aux_data[i]
+
+    if norm_x == 0.0 and norm_y == 0.0:
+        return 0.0
+    elif norm_x == 0.0 or norm_y == 0.0:
+        return np.inf
+    elif result <= 0.0:
+        return np.inf
+    else:
+        return 0.5 * (np.log(norm_x) + np.log(norm_y)) - np.log(result)
+
+
+@numba.vectorize(fastmath=True, cache=True)
+def sparse_correct_alternative_cosine(d):
+    return 1.0 - np.exp(-d)
+
+
 @numba.njit()
 def sparse_correlation(ind1, data1, ind2, data2, n_features):
 
@@ -466,6 +521,41 @@ def sparse_hellinger(ind1, data1, ind2, data2):
     else:
         return np.sqrt(1.0 - (result / sqrt_norm_prod))
 
+
+@numba.njit(
+    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
+)
+def sparse_alternative_hellinger(ind1, data1, ind2, data2):
+    aux_inds, aux_data = sparse_mul(ind1, data1, ind2, data2)
+    result = 0.0
+    l1_norm_x = np.sum(data1)
+    l1_norm_y = np.sum(data2)
+    dim = len(aux_data)
+
+    for i in range(dim):
+        result += np.sqrt(aux_data[i])
+
+    if l1_norm_x == 0 and l1_norm_y == 0:
+        return 0.0
+    elif l1_norm_x == 0 or l1_norm_y == 0:
+        return np.inf
+    elif result <= 0:
+        return np.inf
+    else:
+        return 0.5 * (np.log(l1_norm_x) + np.log(l1_norm_y)) - np.log(result)
+
+
+@numba.vectorize(fastmath=True, cache=True)
+def sparse_correct_alternative_hellinger(d):
+    return np.arccos(np.exp(-d))
 
 @numba.njit(parallel=True)
 def diversify(
@@ -610,3 +700,21 @@ sparse_need_n_features = (
     "sokalmichener",
     "correlation",
 )
+
+
+# Some distances have a faster to compute alternative that
+# retains the same ordering of distances. We can compute with
+# this instead, and then correct the final distances when complete.
+# This provides a list of distances that have such an alternative
+# along with the alternative distance function and the correction
+# function to be applied.
+sparse_fast_distance_alternatives = {
+    "euclidean": {"dist": sparse_squared_euclidean, "correction": np.sqrt},
+    "l2": {"dist": sparse_squared_euclidean, "correction": np.sqrt},
+    "cosine": {"dist": sparse_alternative_cosine, "correction":
+        sparse_correct_alternative_cosine},
+    "hellinger": {
+        "dist": sparse_alternative_hellinger,
+        "correction": sparse_correct_alternative_hellinger,
+    },
+}

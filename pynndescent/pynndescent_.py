@@ -259,7 +259,7 @@ def init_rp_tree(data, dist, dist_args, current_graph, leaf_array):
         block_end = min(n_leaves, (i + 1) * block_size)
 
         leaf_block = leaf_array[block_start:block_end]
-        dist_thresholds = current_graph[1, :, 0]
+        dist_thresholds = current_graph[1][:, 0]
 
         updates = generate_leaf_updates(
             leaf_block, dist_thresholds, data, dist, dist_args
@@ -283,8 +283,8 @@ def init_random(
     for i in range(data.shape[0]):
         if seed_per_row:
             seed(rng_state, i)
-        if heap[0, i, 0] < 0.0:
-            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
+        if heap[0][i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], data[i], *dist_args)
                 heap_push(heap, i, d, idx, 1)
@@ -363,9 +363,9 @@ def nn_descent_internal_low_memory_parallel(
             block_start = i * block_size
             block_end = min(n_vertices, (i + 1) * block_size)
 
-            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
-            dist_thresholds = current_graph[1, :, 0]
+            new_candidate_block = new_candidate_neighbors[0][block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0][block_start:block_end]
+            dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
                 new_candidate_block,
@@ -401,7 +401,7 @@ def nn_descent_internal_high_memory_parallel(
     n_blocks = n_vertices // block_size
 
     in_graph = [
-        set(current_graph[0, i].astype(np.int64)) for i in range(current_graph.shape[1])
+        set(current_graph[0][i].astype(np.int64)) for i in range(current_graph[0].shape[0])
     ]
 
     for n in range(n_iters):
@@ -422,9 +422,9 @@ def nn_descent_internal_high_memory_parallel(
             block_start = i * block_size
             block_end = min(n_vertices, (i + 1) * block_size)
 
-            new_candidate_block = new_candidate_neighbors[0, block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[0, block_start:block_end]
-            dist_thresholds = current_graph[1, :, 0]
+            new_candidate_block = new_candidate_neighbors[0][block_start:block_end]
+            old_candidate_block = old_candidate_neighbors[0][block_start:block_end]
+            dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
                 new_candidate_block,
@@ -873,7 +873,18 @@ class NNDescent(object):
                 # Sparse case
                 self._is_sparse = True
                 if metric in sparse.sparse_named_distances:
-                    self._distance_func = sparse.sparse_named_distances[metric]
+                    if metric in sparse.sparse_fast_distance_alternatives:
+                        self._distance_func = \
+                        sparse.sparse_fast_distance_alternatives[metric][
+                            "dist"
+                        ]
+                        self._distance_correction = \
+                        sparse.sparse_fast_distance_alternatives[metric][
+                            "correction"
+                        ]
+                    else:
+                        self._distance_func = sparse.sparse_named_distances[metric]
+
                     if metric in sparse.sparse_need_n_features:
                         metric_kwds["n_features"] = self._raw_data.shape[1]
                     self._dist_args = tuple(metric_kwds.values())
