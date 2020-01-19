@@ -75,7 +75,6 @@ def search_from_init(
     epsilon,
     visited,
     dist,
-    dist_args,
 ):
     distance_scale = 1.0 + epsilon
     distance_bound = distance_scale * heap_priorities[0]
@@ -96,7 +95,7 @@ def search_from_init(
             if has_been_visited(visited, candidate) == 0:
                 mark_visited(visited, candidate)
 
-                d = dist(data[candidate], current_query, *dist_args)
+                d = dist(data[candidate], current_query)
 
                 if d < distance_bound:
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
@@ -127,7 +126,7 @@ def search_from_init(
     },
 )
 def search_init(
-    current_query, k, data, forest, n_neighbors, visited, dist, dist_args, rng_state
+    current_query, k, data, forest, n_neighbors, visited, dist, rng_state
 ):
 
     heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
@@ -150,7 +149,7 @@ def search_init(
 
         for j in range(n_initial_points):
             candidate = indices[j]
-            d = dist(data[candidate], current_query, *dist_args)
+            d = dist(data[candidate], current_query)
             # indices are guaranteed different
             simple_heap_push(heap_priorities, heap_indices, d, candidate)
             mark_visited(visited, candidate)
@@ -159,7 +158,7 @@ def search_init(
         for i in range(n_random_samples):
             candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
             if has_been_visited(visited, candidate) == 0:
-                d = dist(data[candidate], current_query, *dist_args)
+                d = dist(data[candidate], current_query)
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
                 mark_visited(visited, candidate)
 
@@ -172,7 +171,7 @@ def search_init(
         "i": numba.types.uint32,
         "heap_priorities": numba.types.float32[::1],
         "heap_indices": numba.types.int32[::1],
-        "result": numba.types.float32[:, :, ::1],
+#         "result": numba.types.float32[:, :, ::1],
     }
 )
 def search(
@@ -186,7 +185,6 @@ def search(
     n_neighbors,
     visited,
     dist,
-    dist_args,
     rng_state,
 ):
 
@@ -202,7 +200,6 @@ def search(
             n_neighbors,
             visited,
             dist,
-            dist_args,
             rng_state,
         )
         heap_priorities, heap_indices = search_from_init(
@@ -215,11 +212,10 @@ def search(
             epsilon,
             visited,
             dist,
-            dist_args,
         )
 
-        result[0, i] = heap_indices
-        result[1, i] = heap_priorities
+        result[0][i] = heap_indices
+        result[1][i] = heap_priorities
 
     return result
 
@@ -493,7 +489,7 @@ def nn_descent(
 
 
 @numba.njit(parallel=True)
-def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
+def diversify(indices, distances, data, dist, epsilon=0.01):
 
     for i in numba.prange(indices.shape[0]):
 
@@ -506,7 +502,7 @@ def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
             flag = True
             for k in range(len(new_indices)):
                 c = new_indices[k]
-                d = dist(data[indices[i, j]], data[c], *dist_args)
+                d = dist(data[indices[i, j]], data[c])
                 if new_distances[k] > FLOAT32_EPS and d < epsilon * distances[i, j]:
                     flag = False
                     break
@@ -528,7 +524,7 @@ def diversify(indices, distances, data, dist, dist_args, epsilon=0.01):
 
 @numba.njit(parallel=True)
 def diversify_csr(
-    graph_indptr, graph_indices, graph_data, source_data, dist, dist_args, epsilon=0.01
+    graph_indptr, graph_indices, graph_data, source_data, dist, epsilon=0.01
 ):
     n_nodes = graph_indptr.shape[0] - 1
 
@@ -549,7 +545,6 @@ def diversify_csr(
                     d = dist(
                         source_data[current_indices[j]],
                         source_data[current_indices[k]],
-                        *dist_args
                     )
                     if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
                         retained[j] = 0
@@ -876,7 +871,7 @@ class NNDescent(object):
                 self._is_sparse = True
                 if metric in sparse.sparse_named_distances:
                     if metric in sparse.sparse_fast_distance_alternatives:
-                        self._distance_func = \
+                        _distance_func = \
                         sparse.sparse_fast_distance_alternatives[metric][
                             "dist"
                         ]
@@ -885,11 +880,23 @@ class NNDescent(object):
                             "correction"
                         ]
                     else:
-                        self._distance_func = sparse.sparse_named_distances[metric]
+                        _distance_func = sparse.sparse_named_distances[metric]
 
                     if metric in sparse.sparse_need_n_features:
                         metric_kwds["n_features"] = self._raw_data.shape[1]
                     self._dist_args = tuple(metric_kwds.values())
+
+                    # Create a partial function for distances with arguments
+                    if len(self._dist_args) > 0:
+                        @numba.njit()
+                        def _partial_dist_func(ind1, data1, ind2, data2):
+                            return _distance_func(
+                                ind1, data1, ind2, data2, *self._dist_args
+                            )
+
+                        self._distance_func = _partial_dist_func
+                    else:
+                        self._distance_func = _distance_func
                 else:
                     raise ValueError(
                         "Metric {} not supported for sparse graph_data".format(metric)
@@ -940,20 +947,36 @@ class NNDescent(object):
 
                 if metric in sparse.sparse_named_distances:
                     if metric in sparse.sparse_fast_distance_alternatives:
-                        self._distance_func = \
+                        _distance_func = \
                         sparse.sparse_fast_distance_alternatives[metric][
                             "dist"
                         ]
-                        self._distance_correction = \
+                        _distance_correction = \
                         sparse.sparse_fast_distance_alternatives[metric][
                             "correction"
                         ]
                     else:
-                        self._distance_func = sparse.sparse_named_distances[metric]
+                        _distance_func = sparse.sparse_named_distances[metric]
                 else:
                     raise ValueError(
                         "Metric {} not supported for sparse graph_data".format(metric)
                     )
+
+                if metric in sparse.sparse_need_n_features:
+                    metric_kwds["n_features"] = self._raw_data.shape[1]
+                self._dist_args = tuple(metric_kwds.values())
+
+                # Create a partial function for distances with arguments
+                if len(self._dist_args) > 0:
+                    @numba.njit()
+                    def _partial_dist_func(ind1, data1, ind2, data2):
+                        return _distance_func(
+                            ind1, data1, ind2, data2, *self._dist_args
+                        )
+
+                    self._distance_func = _partial_dist_func
+                else:
+                    self._distance_func = _distance_func
 
                 if verbose:
                     print(ts(), "metric NN descent for", str(n_iters), "iterations")
@@ -966,7 +989,6 @@ class NNDescent(object):
                     self.rng_state,
                     max_candidates=effective_max_candidates,
                     dist=self._distance_func,
-                    dist_args=self._dist_args,
                     n_iters=self.n_iters,
                     delta=self.delta,
                     rp_tree_init=True,
@@ -1023,7 +1045,6 @@ class NNDescent(object):
                 self._raw_data.indptr,
                 self._raw_data.data,
                 self._distance_func,
-                self._dist_args,
                 self.diversify_epsilon,
             )
         else:
@@ -1032,7 +1053,6 @@ class NNDescent(object):
                 self._neighbor_graph[1],
                 self._raw_data,
                 self._distance_func,
-                self._dist_args,
                 self.diversify_epsilon,
             )
 
@@ -1072,7 +1092,6 @@ class NNDescent(object):
                 self._raw_data.indices,
                 self._raw_data.data,
                 self._distance_func,
-                self._dist_args,
                 self.diversify_epsilon,
             )
             pass
@@ -1083,7 +1102,6 @@ class NNDescent(object):
                 reverse_graph.data,
                 self._raw_data,
                 self._distance_func,
-                self._dist_args,
                 self.diversify_epsilon,
             )
         reverse_graph.eliminate_zeros()
@@ -1212,7 +1230,6 @@ class NNDescent(object):
                 self.n_neighbors,
                 self._visited,
                 self._distance_func,
-                self._dist_args,
                 self.rng_state,
             )
         else:
@@ -1239,7 +1256,6 @@ class NNDescent(object):
                 self.n_neighbors,
                 self._visited,
                 self._distance_func,
-                self._dist_args,
                 self.rng_state,
             )
 

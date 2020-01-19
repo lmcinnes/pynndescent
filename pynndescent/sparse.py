@@ -565,7 +565,6 @@ def diversify(
     data_indptr,
     data_data,
     dist,
-    dist_args,
     epsilon=0.01,
 ):
 
@@ -591,7 +590,7 @@ def diversify(
                 to_ind = data_indices[data_indptr[c] : data_indptr[c + 1]]
                 to_data = data_data[data_indptr[c] : data_indptr[c + 1]]
 
-                d = dist(from_ind, from_data, to_ind, to_data, *dist_args)
+                d = dist(from_ind, from_data, to_ind, to_data)
                 if new_distances[k] > FLOAT32_EPS and d < epsilon * distances[i, j]:
                     flag = False
                     break
@@ -611,7 +610,7 @@ def diversify(
     return indices, distances
 
 
-@numba.njit(parallel=True)
+#@numba.njit(parallel=True)
 def diversify_csr(
     graph_indptr,
     graph_indices,
@@ -620,7 +619,6 @@ def diversify_csr(
     data_indices,
     data_data,
     dist,
-    dist_args,
     epsilon=0.01,
 ):
 
@@ -648,7 +646,7 @@ def diversify_csr(
 
                     to_inds = data_indices[data_indptr[q] : data_indptr[q + 1]]
                     to_data = data_data[data_indptr[q] : data_indptr[q + 1]]
-                    d = dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                    d = dist(from_inds, from_data, to_inds, to_data)
 
                     if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
                         retained[j] = 0

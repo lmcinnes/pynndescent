@@ -4,6 +4,7 @@ import re
 from contextlib import redirect_stdout
 
 from nose.tools import assert_greater_equal, assert_true, assert_equal
+from nose import SkipTest
 
 import numpy as np
 from scipy import sparse
@@ -133,11 +134,12 @@ def test_nn_descent_query_accuracy():
     )
 
 
+#@SkipTest
 def test_sparse_nn_descent_query_accuracy():
     nnd = NNDescent(
-        sparse_nn_data[200:], "euclidean", n_neighbors=10, random_state=None
+        sparse_nn_data[200:], "euclidean", n_neighbors=15, random_state=None
     )
-    knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10)
+    knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10, epsilon=0.24)
 
     tree = KDTree(sparse_nn_data[200:].toarray())
     true_indices = tree.query(sparse_nn_data[:200].toarray(), 10, return_distance=False)
