@@ -40,7 +40,6 @@ def sparse_current_graph_map_jit(
     rng_state,
     seed_per_row,
     sparse_dist,
-    dist_args,
 ):
     rng_state_local = rng_state.copy()
     for i in rows:
@@ -56,7 +55,7 @@ def sparse_current_graph_map_jit(
                 to_inds = inds[indptr[idx] : indptr[idx + 1]]
                 to_data = data[indptr[idx] : indptr[idx + 1]]
 
-                d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                d = sparse_dist(from_inds, from_data, to_inds, to_data)
 
                 heap_push(heap, i, d, idx, 1)
 
@@ -69,7 +68,6 @@ def sparse_init_random(
     indptr,
     data,
     dist,
-    dist_args,
     n_neighbors,
     chunk_size,
     rng_state,
@@ -100,7 +98,6 @@ def sparse_init_random(
                 rng_state_threads[index],
                 seed_per_row=seed_per_row,
                 sparse_dist=dist,
-                dist_args=dist_args,
             ),
         )
 
@@ -114,7 +111,7 @@ def sparse_init_random(
 
 @numba.njit(nogil=True, fastmath=True)
 def sparse_init_rp_tree_map_jit(
-    rows, leaf_array, inds, indptr, data, heap_updates, sparse_dist, dist_args
+    rows, leaf_array, inds, indptr, data, heap_updates, sparse_dist
 ):
     count = 0
     for n in rows:
@@ -138,7 +135,7 @@ def sparse_init_rp_tree_map_jit(
                 to_inds = inds[indptr[la_n_j] : indptr[la_n_j + 1]]
                 to_data = data[indptr[la_n_j] : indptr[la_n_j + 1]]
 
-                d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                d = sparse_dist(from_inds, from_data, to_inds, to_data)
 
                 hu = heap_updates[count]
                 hu[0] = la_n_i
@@ -159,7 +156,7 @@ def sparse_init_rp_tree_map_jit(
 
 
 def sparse_init_rp_tree(
-    inds, indptr, data, dist, dist_args, current_graph, leaf_array, chunk_size, parallel
+    inds, indptr, data, dist, current_graph, leaf_array, chunk_size, parallel
 ):
     n_vertices = data.shape[0]
     n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
@@ -181,7 +178,6 @@ def sparse_init_rp_tree(
                 data,
                 heap_updates[index],
                 dist,
-                dist_args,
             ),
         )
 
@@ -221,7 +217,6 @@ def sparse_nn_descent_map_jit(
     heap_updates,
     offset,
     sparse_dist,
-    dist_args,
 ):
     count = 0
     for i in rows:
@@ -241,7 +236,7 @@ def sparse_nn_descent_map_jit(
                 to_inds = inds[indptr[q] : indptr[q + 1]]
                 to_data = data[indptr[q] : indptr[q + 1]]
 
-                d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                d = sparse_dist(from_inds, from_data, to_inds, to_data)
 
                 hu = heap_updates[count]
                 hu[0] = p
@@ -267,7 +262,7 @@ def sparse_nn_descent_map_jit(
                 to_inds = inds[indptr[q] : indptr[q + 1]]
                 to_data = data[indptr[q] : indptr[q + 1]]
 
-                d = sparse_dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                d = sparse_dist(from_inds, from_data, to_inds, to_data)
 
                 hu = heap_updates[count]
                 hu[0] = p
@@ -293,7 +288,6 @@ def sparse_nn_descent(
     rng_state,
     max_candidates=50,
     dist=sparse.sparse_euclidean,
-    dist_args=(),
     n_iters=10,
     delta=0.001,
     rp_tree_init=False,
@@ -319,7 +313,6 @@ def sparse_nn_descent(
                 indptr,
                 data,
                 dist,
-                dist_args,
                 current_graph,
                 leaf_array,
                 chunk_size,
@@ -332,7 +325,6 @@ def sparse_nn_descent(
             indptr,
             data,
             dist,
-            dist_args,
             n_neighbors,
             chunk_size,
             rng_state,
@@ -377,7 +369,6 @@ def sparse_nn_descent(
                         heap_updates[index],
                         offset=0,
                         sparse_dist=dist,
-                        dist_args=dist_args,
                     ),
                 )
 

@@ -78,7 +78,6 @@ def test_init_random():
         data,
         current_graph,
         dist,
-        dist_args,
         new_rng_state(),
         seed_per_row=True,
     )
@@ -88,7 +87,6 @@ def test_init_random():
         current_graph_threaded,
         data,
         dist,
-        dist_args,
         n_neighbors,
         chunk_size=chunk_size,
         rng_state=new_rng_state(),
@@ -121,7 +119,7 @@ def test_init_rp_tree():
         random_state=random_state,
     )
     leaf_array = rptree_leaf_array(_rp_forest)
-    pynndescent_.init_rp_tree(data, dist, dist_args, current_graph, leaf_array)
+    pynndescent_.init_rp_tree(data, dist, current_graph, leaf_array)
 
     rng_state = new_rng_state()
     random_state = check_random_state(42)
@@ -137,7 +135,7 @@ def test_init_rp_tree():
     leaf_array = rptree_leaf_array(_rp_forest)
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
     threaded.init_rp_tree(
-        data, dist, dist_args, current_graph_threaded, leaf_array, chunk_size, parallel
+        data, dist, current_graph_threaded, leaf_array, chunk_size, parallel
     )
 
     assert_allclose(current_graph_threaded, current_graph)
@@ -158,7 +156,6 @@ def test_new_build_candidates():
         data,
         current_graph,
         dist,
-        dist_args,
         new_rng_state(),
         seed_per_row=True,
     )
@@ -177,7 +174,6 @@ def test_new_build_candidates():
         data,
         current_graph,
         dist,
-        dist_args,
         new_rng_state(),
         seed_per_row=True,
     )
@@ -216,15 +212,17 @@ def test_mark_candidate_results():
         data,
         current_graph,
         dist,
-        dist_args,
         new_rng_state(),
         seed_per_row=True,
     )
     pynndescent_.nn_descent_internal_low_memory_parallel(
         current_graph, data, n_neighbors, new_rng_state(), n_iters=2, seed_per_row=True
     )
-    current_graph_threaded = current_graph.copy()
-
+    current_graph_threaded = utils.Heap(
+        current_graph[0].copy(),
+        current_graph[1].copy(),
+        current_graph[2].copy(),
+    )
     new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
         current_graph,
         n_vertices,
