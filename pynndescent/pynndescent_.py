@@ -172,7 +172,7 @@ def search_init(
         "i": numba.types.uint32,
         "heap_priorities": numba.types.float32[::1],
         "heap_indices": numba.types.int32[::1],
-        "result": numba.types.float32[:, :, ::1],
+#        "result": numba.types.float32[:, :, ::1],
     }
 )
 def search(
@@ -218,8 +218,8 @@ def search(
             dist_args,
         )
 
-        result[0, i] = heap_indices
-        result[1, i] = heap_priorities
+        result[0][i] = heap_indices
+        result[1][i] = heap_priorities
 
     return result
 
