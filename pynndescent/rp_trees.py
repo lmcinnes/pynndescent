@@ -513,7 +513,7 @@ def make_euclidean_tree(
 
         hyperplanes.append(hyperplane)
         offsets.append(offset)
-        children.append((left_node_num, right_node_num))
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
         point_indices.append(np.array([-1], dtype=np.int32))
         # print("Made a node in tree with", len(point_indices), "nodes")
     else:
@@ -529,7 +529,11 @@ def make_euclidean_tree(
 @numba.njit(
     nogil=True,
     cache=True,
-    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+    locals={
+        "children": numba.types.ListType(children_type),
+        "left_node_num": numba.types.int32,
+        "right_node_num": numba.types.int32
+    },
 )
 def make_angular_tree(
     data,
@@ -577,7 +581,7 @@ def make_angular_tree(
 
         hyperplanes.append(hyperplane)
         offsets.append(offset)
-        children.append((left_node_num, right_node_num))
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
         point_indices.append(np.array([-1], dtype=np.int32))
     else:
         hyperplanes.append(np.array([-1.0], dtype=np.float32))
@@ -647,7 +651,7 @@ def make_sparse_euclidean_tree(
 
         hyperplanes.append(hyperplane)
         offsets.append(offset)
-        children.append((left_node_num, right_node_num))
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
         point_indices.append(np.array([-1], dtype=np.int32))
     else:
         hyperplanes.append(np.array([[-1.0], [-1.0]], dtype=np.float64))
@@ -717,7 +721,7 @@ def make_sparse_angular_tree(
 
         hyperplanes.append(hyperplane)
         offsets.append(offset)
-        children.append((left_node_num, right_node_num))
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
         point_indices.append(np.array([-1], dtype=np.int32))
     else:
         hyperplanes.append(np.array([[-1.0], [-1.0]], dtype=np.float64))

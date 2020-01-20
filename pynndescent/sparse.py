@@ -406,13 +406,13 @@ def sparse_cosine(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+#    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int32,
         "i": numba.types.uint16,
     },
 )
@@ -424,7 +424,6 @@ def sparse_alternative_cosine(ind1, data1, ind2, data2):
     dim = len(aux_data)
     for i in range(dim):
         result += aux_data[i]
-
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
     elif norm_x == 0.0 or norm_y == 0.0:
@@ -523,7 +522,7 @@ def sparse_hellinger(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+ #   "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
     fastmath=True,
     locals={
         "result": numba.types.float32,
