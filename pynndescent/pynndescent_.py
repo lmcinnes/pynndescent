@@ -171,7 +171,11 @@ def search_init(
         "i": numba.types.uint32,
         "heap_priorities": numba.types.float32[::1],
         "heap_indices": numba.types.int32[::1],
-#         "result": numba.types.float32[:, :, ::1],
+        # "result": numba.types.Tuple((
+        #     numba.types.int32[:, ::1],
+        #     numba.types.float32[:, ::1],
+        #     numba.types.uint8[:, ::1],
+        # ))
     }
 )
 def search(
