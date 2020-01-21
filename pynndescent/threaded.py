@@ -88,16 +88,16 @@ def shuffle_jit(
 
 @numba.njit(nogil=True)
 def current_graph_map_jit(
-    heap, rows, n_neighbors, data, rng_state, seed_per_row, dist, dist_args
+    heap, rows, n_neighbors, data, rng_state, seed_per_row, dist,
 ):
     rng_state_local = rng_state.copy()
     for i in rows:
         if seed_per_row:
             seed(rng_state_local, i)
-        if heap[0, i, 0] < 0.0:
-            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
+        if heap[0][i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state_local)) % data.shape[0]
-                d = dist(data[i], data[idx], *dist_args)
+                d = dist(data[i], data[idx])
                 heap_push(heap, i, d, idx, 1)
 
     return True
@@ -122,7 +122,6 @@ def init_random(
     current_graph,
     data,
     dist,
-    dist_args,
     n_neighbors,
     chunk_size,
     rng_state,
@@ -149,7 +148,6 @@ def init_random(
                 rng_state_threads[index],
                 seed_per_row=seed_per_row,
                 dist=dist,
-                dist_args=dist_args,
             ),
         )
 
@@ -162,7 +160,7 @@ def init_random(
 
 
 @numba.njit(nogil=True, fastmath=True)
-def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates, dist, dist_args):
+def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates, dist):
     count = 0
     for n in rows:
         if n >= leaf_array.shape[0]:
@@ -178,7 +176,7 @@ def init_rp_tree_map_jit(rows, leaf_array, data, heap_updates, dist, dist_args):
                     break
                 if (la_n_i, la_n_j) in tried:
                     continue
-                d = dist(data[la_n_i], data[la_n_j], *dist_args)
+                d = dist(data[la_n_i], data[la_n_j])
                 hu = heap_updates[count]
                 hu[0] = la_n_i
                 hu[1] = d
@@ -212,7 +210,7 @@ def init_rp_tree_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index
 
 
 def init_rp_tree(
-    data, dist, dist_args, current_graph, leaf_array, chunk_size, parallel
+    data, dist, current_graph, leaf_array, chunk_size, parallel
 ):
     n_vertices = data.shape[0]
     n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
@@ -227,7 +225,7 @@ def init_rp_tree(
         return (
             index,
             init_rp_tree_map_jit(
-                rows, leaf_array, data, heap_updates[index], dist, dist_args
+                rows, leaf_array, data, heap_updates[index], dist
             ),
         )
 
@@ -265,10 +263,10 @@ def candidates_map_jit(
         if seed_per_row:
             seed(rng_state_local, i)
         for j in range(n_neighbors):
-            if current_graph[0, i - offset, j] < 0:
+            if current_graph[0][i - offset, j] < 0:
                 continue
-            idx = current_graph[0, i - offset, j]
-            isn = current_graph[2, i - offset, j]
+            idx = current_graph[0][i - offset, j]
+            isn = current_graph[2][i - offset, j]
             d = tau_rand(rng_state_local)
             # if tau_rand(rng_state_local) < rho:
             # updates are common to old and new - decided by 'isn' flag
@@ -326,11 +324,11 @@ def mark_candidate_results_map(
 ):
     for i in rows:
         for j in range(n_neighbors):
-            idx = current_graph[0, i, j]
+            idx = current_graph[0][i, j]
 
             for k in range(max_candidates):
-                if new_candidate_neighbors[0, i, k] == idx:
-                    current_graph[2, i, j] = 0
+                if new_candidate_neighbors[0][i, k] == idx:
+                    current_graph[2][i, j] = 0
                     break
 
     return
@@ -424,21 +422,20 @@ def nn_descent_map_jit(
     heap_updates,
     offset,
     dist,
-    dist_args,
 ):
     count = 0
     for i in rows:
         i -= offset
         for j in range(max_candidates):
-            p = int(new_candidate_neighbors[0, i, j])
+            p = int(new_candidate_neighbors[0][i, j])
             if p < 0:
                 continue
             for k in range(j, max_candidates):
-                q = int(new_candidate_neighbors[0, i, k])
+                q = int(new_candidate_neighbors[0][i, k])
                 if q < 0:
                     continue
 
-                d = dist(data[p], data[q], *dist_args)
+                d = dist(data[p], data[q])
                 hu = heap_updates[count]
                 hu[0] = p
                 hu[1] = d
@@ -453,11 +450,11 @@ def nn_descent_map_jit(
                 count += 1
 
             for k in range(max_candidates):
-                q = int(old_candidate_neighbors[0, i, k])
+                q = int(old_candidate_neighbors[0][i, k])
                 if q < 0:
                     continue
 
-                d = dist(data[p], data[q], *dist_args)
+                d = dist(data[p], data[q])
                 hu = heap_updates[count]
                 hu[0] = p
                 hu[1] = d
@@ -523,7 +520,6 @@ def nn_descent(
     rng_state,
     max_candidates=50,
     dist=dst.euclidean,
-    dist_args=(),
     n_iters=10,
     delta=0.001,
     rp_tree_init=False,
@@ -546,14 +542,13 @@ def nn_descent(
 
         if rp_tree_init:
             init_rp_tree(
-                data, dist, dist_args, current_graph, leaf_array, chunk_size, parallel
+                data, dist, current_graph, leaf_array, chunk_size, parallel
             )
 
         init_random(
             current_graph,
             data,
             dist,
-            dist_args,
             n_neighbors,
             chunk_size,
             rng_state,
@@ -596,7 +591,6 @@ def nn_descent(
                         heap_updates[index],
                         offset=0,
                         dist=dist,
-                        dist_args=dist_args,
                     ),
                 )
 

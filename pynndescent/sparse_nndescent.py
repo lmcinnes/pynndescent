@@ -56,7 +56,6 @@ def search_from_init(
     epsilon,
     tried,
     sparse_dist,
-    dist_args,
 ):
     distance_scale = 1.0 + epsilon
     distance_bound = distance_scale * heap_priorities[0]
@@ -81,7 +80,7 @@ def search_from_init(
                 from_data = data[indptr[candidate] : indptr[candidate + 1]]
 
                 d = sparse_dist(
-                    from_inds, from_data, query_inds, query_data, *dist_args
+                    from_inds, from_data, query_inds, query_data,
                 )
 
                 if d < distance_bound:
@@ -123,7 +122,6 @@ def search_init(
     n_neighbors,
     tried,
     sparse_dist,
-    dist_args,
     rng_state,
 ):
 
@@ -153,7 +151,7 @@ def search_init(
             from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
             from_data = data[indptr[candidate] : indptr[candidate + 1]]
 
-            d = sparse_dist(from_inds, from_data, query_inds, query_data, *dist_args)
+            d = sparse_dist(from_inds, from_data, query_inds, query_data)
 
             # indices are guaranteed different
             simple_heap_push(heap_priorities, heap_indices, d, candidate)
@@ -167,7 +165,7 @@ def search_init(
                 from_data = data[indptr[candidate] : indptr[candidate + 1]]
 
                 d = sparse_dist(
-                    from_inds, from_data, query_inds, query_data, *dist_args
+                    from_inds, from_data, query_inds, query_data,
                 )
 
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
@@ -192,7 +190,6 @@ def search(
     n_neighbors,
     tried,
     sparse_dist,
-    dist_args,
     rng_state,
 ):
 
@@ -215,7 +212,6 @@ def search(
             n_neighbors,
             tried,
             sparse_dist,
-            dist_args,
             rng_state,
         )
         heap_priorities, heap_indices = search_from_init(
@@ -231,18 +227,17 @@ def search(
             epsilon,
             tried,
             sparse_dist,
-            dist_args,
         )
 
-        result[0, i] = heap_indices
-        result[1, i] = heap_priorities
+        result[0][i] = heap_indices
+        result[1][i] = heap_priorities
 
     return result
 
 
 @numba.njit(parallel=True)
 def generate_leaf_updates(
-    leaf_block, dist_thresholds, inds, indptr, data, dist, dist_args
+    leaf_block, dist_thresholds, inds, indptr, data, dist,
 ):
 
     updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
@@ -263,7 +258,7 @@ def generate_leaf_updates(
 
                 to_inds = inds[indptr[q] : indptr[q + 1]]
                 to_data = data[indptr[q] : indptr[q + 1]]
-                d = dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                d = dist(from_inds, from_data, to_inds, to_data)
 
                 if d < dist_thresholds[p] or d < dist_thresholds[q]:
                     updates[n].append((p, q, d))
@@ -272,7 +267,7 @@ def generate_leaf_updates(
 
 
 @numba.njit()
-def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array):
+def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
     block_size = 65536
@@ -286,7 +281,7 @@ def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
         dist_thresholds = current_graph[1][:, 0]
 
         updates = generate_leaf_updates(
-            leaf_block, dist_thresholds, inds, indptr, data, dist, dist_args
+            leaf_block, dist_thresholds, inds, indptr, data, dist,
         )
 
         for j in range(len(updates)):
@@ -301,7 +296,7 @@ def init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
 
 
 @numba.njit(fastmath=True)
-def init_random(n_neighbors, inds, indptr, data, heap, dist, dist_args, rng_state):
+def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
     n_samples = indptr.shape[0] - 1
     for i in range(n_samples):
         if heap[0][i, 0] < 0.0:
@@ -313,7 +308,7 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, dist_args, rng_stat
 
                 to_inds = inds[indptr[i] : indptr[i + 1]]
                 to_data = data[indptr[i] : indptr[i + 1]]
-                d = dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                d = dist(from_inds, from_data, to_inds, to_data)
 
                 heap_push(heap, i, d, idx, 1)
 
@@ -329,7 +324,6 @@ def generate_graph_updates(
     indptr,
     data,
     dist,
-    dist_args,
 ):
 
     block_size = new_candidate_block.shape[0]
@@ -351,7 +345,7 @@ def generate_graph_updates(
 
                 to_inds = inds[indptr[q] : indptr[q + 1]]
                 to_data = data[indptr[q] : indptr[q + 1]]
-                d = dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                d = dist(from_inds, from_data, to_inds, to_data)
 
                 if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
                     updates[i].append((p, q, d))
@@ -366,7 +360,7 @@ def generate_graph_updates(
 
                 to_inds = inds[indptr[q] : indptr[q + 1]]
                 to_data = data[indptr[q] : indptr[q + 1]]
-                d = dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                d = dist(from_inds, from_data, to_inds, to_data)
 
                 if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
                     updates[i].append((p, q, d))
@@ -384,7 +378,6 @@ def nn_descent_internal_low_memory_parallel(
     rng_state,
     max_candidates=50,
     dist=sparse_euclidean,
-    dist_args=(),
     n_iters=10,
     delta=0.001,
     verbose=False,
@@ -424,7 +417,6 @@ def nn_descent_internal_low_memory_parallel(
                 indptr,
                 data,
                 dist,
-                dist_args,
             )
 
             c += apply_graph_updates_low_memory(current_graph, updates)
@@ -443,7 +435,6 @@ def nn_descent_internal_high_memory_parallel(
     rng_state,
     max_candidates=50,
     dist=sparse_euclidean,
-    dist_args=(),
     n_iters=10,
     delta=0.001,
     verbose=False,
@@ -487,7 +478,6 @@ def nn_descent_internal_high_memory_parallel(
                 indptr,
                 data,
                 dist,
-                dist_args,
             )
 
             c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
@@ -505,7 +495,6 @@ def nn_descent(
     rng_state,
     max_candidates=50,
     dist=sparse_euclidean,
-    dist_args=(),
     n_iters=10,
     delta=0.001,
     rp_tree_init=True,
@@ -519,10 +508,10 @@ def nn_descent(
     current_graph = make_heap(n_samples, n_neighbors)
 
     if rp_tree_init:
-        init_rp_tree(inds, indptr, data, dist, dist_args, current_graph, leaf_array)
+        init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array)
 
     init_random(
-        n_neighbors, inds, indptr, data, current_graph, dist, dist_args, rng_state
+        n_neighbors, inds, indptr, data, current_graph, dist, rng_state
     )
 
     if low_memory:
@@ -535,7 +524,6 @@ def nn_descent(
             rng_state,
             max_candidates=max_candidates,
             dist=dist,
-            dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
             verbose=verbose,
@@ -551,7 +539,6 @@ def nn_descent(
             rng_state,
             max_candidates=max_candidates,
             dist=dist,
-            dist_args=dist_args,
             n_iters=n_iters,
             delta=delta,
             verbose=verbose,
