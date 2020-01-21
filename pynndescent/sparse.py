@@ -406,13 +406,13 @@ def sparse_cosine(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+#    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int32,
         "i": numba.types.uint16,
     },
 )
@@ -424,7 +424,6 @@ def sparse_alternative_cosine(ind1, data1, ind2, data2):
     dim = len(aux_data)
     for i in range(dim):
         result += aux_data[i]
-
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
     elif norm_x == 0.0 or norm_y == 0.0:
@@ -523,7 +522,7 @@ def sparse_hellinger(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+ #   "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -565,7 +564,6 @@ def diversify(
     data_indptr,
     data_data,
     dist,
-    dist_args,
     epsilon=0.01,
 ):
 
@@ -591,7 +589,7 @@ def diversify(
                 to_ind = data_indices[data_indptr[c] : data_indptr[c + 1]]
                 to_data = data_data[data_indptr[c] : data_indptr[c + 1]]
 
-                d = dist(from_ind, from_data, to_ind, to_data, *dist_args)
+                d = dist(from_ind, from_data, to_ind, to_data)
                 if new_distances[k] > FLOAT32_EPS and d < epsilon * distances[i, j]:
                     flag = False
                     break
@@ -611,7 +609,7 @@ def diversify(
     return indices, distances
 
 
-@numba.njit(parallel=True)
+#@numba.njit(parallel=True)
 def diversify_csr(
     graph_indptr,
     graph_indices,
@@ -620,7 +618,6 @@ def diversify_csr(
     data_indices,
     data_data,
     dist,
-    dist_args,
     epsilon=0.01,
 ):
 
@@ -648,7 +645,7 @@ def diversify_csr(
 
                     to_inds = data_indices[data_indptr[q] : data_indptr[q + 1]]
                     to_data = data_data[data_indptr[q] : data_indptr[q + 1]]
-                    d = dist(from_inds, from_data, to_inds, to_data, *dist_args)
+                    d = dist(from_inds, from_data, to_inds, to_data)
 
                     if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
                         retained[j] = 0
