@@ -1149,3 +1149,43 @@ def convert_tree_format(tree, data_size):
             tree, hyperplanes, offsets, children, indices, 0, 0, len(tree.children) - 1
         )
     return FlatTree(hyperplanes, offsets, children, indices, tree.leaf_size)
+
+
+def denumbaify_tree(tree):
+    result_hyperplanes = list(tree.hyperplanes)
+    result_offsets = list(tree.offsets)
+    result_children = list(tree.children)
+    result_indices = list(tree.indices)
+
+    result = FlatTree(
+        result_hyperplanes,
+        result_offsets,
+        result_children,
+        result_indices,
+        tree.leaf_size,
+    )
+
+    return result
+
+
+def renumbaify_tree(tree):
+
+    hyperplanes = numba.typed.List.empty_list(sparse_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+
+    hyperplanes.extend(tree.hyperplanes)
+    offsets.extend(tree.offsets)
+    children.extend(tree.children)
+    point_indices.extend(tree.indices)
+
+    result = FlatTree(
+        hyperplanes,
+        offsets,
+        children,
+        point_indices,
+        tree.leaf_size,
+    )
+
+    return result

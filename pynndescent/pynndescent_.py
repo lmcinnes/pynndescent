@@ -39,6 +39,8 @@ from pynndescent.rp_trees import (
     search_flat_tree,
     convert_tree_format,
     FlatTree,
+    denumbaify_tree,
+    renumbaify_tree,
 )
 
 update_type = numba.types.List(
@@ -1029,6 +1031,21 @@ class NNDescent(object):
                 "Results may be less than ideal. Try re-running with"
                 "different parameters."
             )
+
+    def __getstate__(self):
+        result =  self.__dict__.copy()
+        result['_rp_forest'] = tuple(
+            [denumbaify_tree(tree) for tree in self._rp_forest]
+        )
+        return result
+
+
+    def __setstate__(self, d):
+        self.__dict__ = d
+        self._rp_forest = tuple(
+            [renumbaify_tree(tree) for tree in d["_rp_forest"]]
+        )
+
 
     def _init_search_graph(self):
         if hasattr(self, "_search_graph"):
