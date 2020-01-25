@@ -134,7 +134,7 @@ def test_nn_descent_query_accuracy():
     )
 
 
-#@SkipTest
+# @SkipTest
 def test_sparse_nn_descent_query_accuracy():
     nnd = NNDescent(
         sparse_nn_data[200:], "euclidean", n_neighbors=15, random_state=None

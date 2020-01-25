@@ -209,9 +209,7 @@ def init_rp_tree_reduce_jit(n_tasks, current_graph, heap_updates, offsets, index
             )
 
 
-def init_rp_tree(
-    data, dist, current_graph, leaf_array, chunk_size, parallel
-):
+def init_rp_tree(data, dist, current_graph, leaf_array, chunk_size, parallel):
     n_vertices = data.shape[0]
     n_tasks = int(math.ceil(float(n_vertices) / chunk_size))
 
@@ -224,9 +222,7 @@ def init_rp_tree(
         rows = chunk_rows(chunk_size, index, n_vertices)
         return (
             index,
-            init_rp_tree_map_jit(
-                rows, leaf_array, data, heap_updates[index], dist
-            ),
+            init_rp_tree_map_jit(rows, leaf_array, data, heap_updates[index], dist),
         )
 
     def init_rp_tree_reduce(index):
@@ -541,9 +537,7 @@ def nn_descent(
         current_graph = make_heap(data.shape[0], n_neighbors)
 
         if rp_tree_init:
-            init_rp_tree(
-                data, dist, current_graph, leaf_array, chunk_size, parallel
-            )
+            init_rp_tree(data, dist, current_graph, leaf_array, chunk_size, parallel)
 
         init_random(
             current_graph,

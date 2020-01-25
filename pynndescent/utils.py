@@ -60,13 +60,14 @@ def tau_rand(state):
 
 
 @numba.njit(
-    'f4(f4[::1])',
+    "f4(f4[::1])",
     locals={
         "dim": numba.types.uint32,
         "i": numba.types.uint32,
         "result": numba.types.float32,
     },
-    fastmath=True)
+    fastmath=True,
+)
 def norm(vec):
     """Compute the (standard l2) norm of a vector.
 

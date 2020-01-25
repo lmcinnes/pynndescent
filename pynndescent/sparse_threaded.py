@@ -31,15 +31,7 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 @numba.njit(nogil=True)
 def sparse_current_graph_map_jit(
-    heap,
-    rows,
-    n_neighbors,
-    inds,
-    indptr,
-    data,
-    rng_state,
-    seed_per_row,
-    sparse_dist,
+    heap, rows, n_neighbors, inds, indptr, data, rng_state, seed_per_row, sparse_dist,
 ):
     rng_state_local = rng_state.copy()
     for i in rows:
@@ -171,13 +163,7 @@ def sparse_init_rp_tree(
         return (
             index,
             sparse_init_rp_tree_map_jit(
-                rows,
-                leaf_array,
-                inds,
-                indptr,
-                data,
-                heap_updates[index],
-                dist,
+                rows, leaf_array, inds, indptr, data, heap_updates[index], dist,
             ),
         )
 

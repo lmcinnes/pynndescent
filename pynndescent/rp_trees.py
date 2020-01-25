@@ -532,7 +532,7 @@ def make_euclidean_tree(
     locals={
         "children": numba.types.ListType(children_type),
         "left_node_num": numba.types.int32,
-        "right_node_num": numba.types.int32
+        "right_node_num": numba.types.int32,
     },
 )
 def make_angular_tree(
@@ -1180,12 +1180,6 @@ def renumbaify_tree(tree):
     children.extend(tree.children)
     point_indices.extend(tree.indices)
 
-    result = FlatTree(
-        hyperplanes,
-        offsets,
-        children,
-        point_indices,
-        tree.leaf_size,
-    )
+    result = FlatTree(hyperplanes, offsets, children, point_indices, tree.leaf_size,)
 
     return result

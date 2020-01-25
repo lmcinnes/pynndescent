@@ -74,12 +74,7 @@ def test_effective_n_jobs_with_context():
 def test_init_random():
     current_graph = utils.make_heap(data.shape[0], n_neighbors)
     pynndescent_.init_random(
-        n_neighbors,
-        data,
-        current_graph,
-        dist,
-        new_rng_state(),
-        seed_per_row=True,
+        n_neighbors, data, current_graph, dist, new_rng_state(), seed_per_row=True,
     )
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
     current_graph_threaded = utils.make_heap(data.shape[0], n_neighbors)
@@ -152,12 +147,7 @@ def test_new_build_candidates():
 
     current_graph = utils.make_heap(data.shape[0], n_neighbors)
     pynndescent_.init_random(
-        n_neighbors,
-        data,
-        current_graph,
-        dist,
-        new_rng_state(),
-        seed_per_row=True,
+        n_neighbors, data, current_graph, dist, new_rng_state(), seed_per_row=True,
     )
     new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
         current_graph,
@@ -170,12 +160,7 @@ def test_new_build_candidates():
 
     current_graph = utils.make_heap(data.shape[0], n_neighbors)
     pynndescent_.init_random(
-        n_neighbors,
-        data,
-        current_graph,
-        dist,
-        new_rng_state(),
-        seed_per_row=True,
+        n_neighbors, data, current_graph, dist, new_rng_state(), seed_per_row=True,
     )
     parallel = joblib.Parallel(n_jobs=2, prefer="threads")
     (
@@ -208,20 +193,13 @@ def test_mark_candidate_results():
 
     current_graph = utils.make_heap(data.shape[0], n_neighbors)
     pynndescent_.init_random(
-        n_neighbors,
-        data,
-        current_graph,
-        dist,
-        new_rng_state(),
-        seed_per_row=True,
+        n_neighbors, data, current_graph, dist, new_rng_state(), seed_per_row=True,
     )
     pynndescent_.nn_descent_internal_low_memory_parallel(
         current_graph, data, n_neighbors, new_rng_state(), n_iters=2, seed_per_row=True
     )
     current_graph_threaded = utils.Heap(
-        current_graph[0].copy(),
-        current_graph[1].copy(),
-        current_graph[2].copy(),
+        current_graph[0].copy(), current_graph[1].copy(), current_graph[2].copy(),
     )
     new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
         current_graph,
