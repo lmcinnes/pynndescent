@@ -554,7 +554,10 @@ def sparse_alternative_hellinger(ind1, data1, ind2, data2):
 
 @numba.vectorize(fastmath=True, cache=True)
 def sparse_correct_alternative_hellinger(d):
-    return np.arccos(np.exp(-d))
+    if np.isclose(0.0, abs(d), atol=1e-7):
+        return 0.0
+    else:
+        return np.sqrt(1.0 - np.exp(-d))
 
 
 @numba.njit(parallel=True)
