@@ -793,7 +793,7 @@ class NNDescent(object):
         elif metric in dist.named_distances:
             if metric in dist.fast_distance_alternatives:
                 _distance_func = dist.fast_distance_alternatives[metric]["dist"]
-                _distance_correction = dist.fast_distance_alternatives[metric][
+                self._distance_correction = dist.fast_distance_alternatives[metric][
                     "correction"
                 ]
             else:
@@ -935,7 +935,7 @@ class NNDescent(object):
                         _distance_func = sparse.sparse_fast_distance_alternatives[
                             metric
                         ]["dist"]
-                        _distance_correction = sparse.sparse_fast_distance_alternatives[
+                        self._distance_correction = sparse.sparse_fast_distance_alternatives[
                             metric
                         ]["correction"]
                     else:
