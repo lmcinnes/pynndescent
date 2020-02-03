@@ -79,9 +79,7 @@ def search_from_init(
                 from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
                 from_data = data[indptr[candidate] : indptr[candidate + 1]]
 
-                d = sparse_dist(
-                    from_inds, from_data, query_inds, query_data,
-                )
+                d = sparse_dist(from_inds, from_data, query_inds, query_data,)
 
                 if d < distance_bound:
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
@@ -164,9 +162,7 @@ def search_init(
                 from_inds = inds[indptr[candidate] : indptr[candidate + 1]]
                 from_data = data[indptr[candidate] : indptr[candidate + 1]]
 
-                d = sparse_dist(
-                    from_inds, from_data, query_inds, query_data,
-                )
+                d = sparse_dist(from_inds, from_data, query_inds, query_data,)
 
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
                 mark_visited(tried, candidate)
@@ -317,13 +313,7 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
 
 @numba.njit(parallel=True)
 def generate_graph_updates(
-    new_candidate_block,
-    old_candidate_block,
-    dist_thresholds,
-    inds,
-    indptr,
-    data,
-    dist,
+    new_candidate_block, old_candidate_block, dist_thresholds, inds, indptr, data, dist,
 ):
 
     block_size = new_candidate_block.shape[0]
@@ -445,7 +435,8 @@ def nn_descent_internal_high_memory_parallel(
     n_blocks = n_vertices // block_size
 
     in_graph = [
-        set(current_graph[0][i].astype(np.int64)) for i in range(current_graph[0].shape[0])
+        set(current_graph[0][i].astype(np.int64))
+        for i in range(current_graph[0].shape[0])
     ]
 
     for n in range(n_iters):
@@ -510,9 +501,7 @@ def nn_descent(
     if rp_tree_init:
         init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array)
 
-    init_random(
-        n_neighbors, inds, indptr, data, current_graph, dist, rng_state
-    )
+    init_random(n_neighbors, inds, indptr, data, current_graph, dist, rng_state)
 
     if low_memory:
         nn_descent_internal_low_memory_parallel(

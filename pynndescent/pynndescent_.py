@@ -39,6 +39,8 @@ from pynndescent.rp_trees import (
     search_flat_tree,
     convert_tree_format,
     FlatTree,
+    denumbaify_tree,
+    renumbaify_tree,
 )
 
 update_type = numba.types.List(
@@ -125,9 +127,7 @@ def search_from_init(
         "visited": numba.types.uint8[::1],
     },
 )
-def search_init(
-    current_query, k, data, forest, n_neighbors, visited, dist, rng_state
-):
+def search_init(current_query, k, data, forest, n_neighbors, visited, dist, rng_state):
 
     heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
     heap_indices = np.int32(-1) + np.zeros(k, dtype=np.int32)
@@ -197,14 +197,7 @@ def search(
         visited[:] = 0
         current_query = query_points[i]
         heap_priorities, heap_indices = search_init(
-            current_query,
-            k,
-            data,
-            forest,
-            n_neighbors,
-            visited,
-            dist,
-            rng_state,
+            current_query, k, data, forest, n_neighbors, visited, dist, rng_state,
         )
         heap_priorities, heap_indices = search_from_init(
             current_query,
@@ -261,9 +254,7 @@ def init_rp_tree(data, dist, current_graph, leaf_array):
         leaf_block = leaf_array[block_start:block_end]
         dist_thresholds = current_graph[1][:, 0]
 
-        updates = generate_leaf_updates(
-            leaf_block, dist_thresholds, data, dist,
-        )
+        updates = generate_leaf_updates(leaf_block, dist_thresholds, data, dist,)
 
         for j in range(len(updates)):
             for k in range(len(updates[j])):
@@ -277,9 +268,7 @@ def init_rp_tree(data, dist, current_graph, leaf_array):
 
 
 @numba.njit(fastmath=True)
-def init_random(
-    n_neighbors, data, heap, dist, rng_state, seed_per_row=False
-):
+def init_random(n_neighbors, data, heap, dist, rng_state, seed_per_row=False):
     for i in range(data.shape[0]):
         if seed_per_row:
             seed(rng_state, i)
@@ -367,11 +356,7 @@ def nn_descent_internal_low_memory_parallel(
             dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
-                new_candidate_block,
-                old_candidate_block,
-                dist_thresholds,
-                data,
-                dist,
+                new_candidate_block, old_candidate_block, dist_thresholds, data, dist,
             )
 
             c += apply_graph_updates_low_memory(current_graph, updates)
@@ -398,7 +383,8 @@ def nn_descent_internal_high_memory_parallel(
     n_blocks = n_vertices // block_size
 
     in_graph = [
-        set(current_graph[0][i].astype(np.int64)) for i in range(current_graph[0].shape[0])
+        set(current_graph[0][i].astype(np.int64))
+        for i in range(current_graph[0].shape[0])
     ]
 
     for n in range(n_iters):
@@ -424,11 +410,7 @@ def nn_descent_internal_high_memory_parallel(
             dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
-                new_candidate_block,
-                old_candidate_block,
-                dist_thresholds,
-                data,
-                dist,
+                new_candidate_block, old_candidate_block, dist_thresholds, data, dist,
             )
 
             c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
@@ -458,9 +440,7 @@ def nn_descent(
     if rp_tree_init:
         init_rp_tree(data, dist, current_graph, leaf_array)
 
-    init_random(
-        n_neighbors, data, current_graph, dist, rng_state, seed_per_row
-    )
+    init_random(n_neighbors, data, current_graph, dist, rng_state, seed_per_row)
 
     if low_memory:
         nn_descent_internal_low_memory_parallel(
@@ -770,7 +750,7 @@ class NNDescent(object):
 
         if n_trees is None:
             n_trees = 5 + int(round((data.shape[0]) ** 0.5 / 20.0))
-            n_trees = min(64, n_trees) # Only so many trees are useful
+            n_trees = min(64, n_trees)  # Only so many trees are useful
         if n_iters is None:
             n_iters = max(5, int(round(np.log2(data.shape[0]))))
 
@@ -823,9 +803,11 @@ class NNDescent(object):
 
         # Create a partial function for distances with arguments
         if len(self._dist_args) > 0:
+
             @numba.njit()
             def _partial_dist_func(x, y):
                 return _distance_func(x, y, *self._dist_args)
+
             self._distance_func = _partial_dist_func
         else:
             self._distance_func = _distance_func
@@ -875,12 +857,12 @@ class NNDescent(object):
                 self._is_sparse = True
                 if metric in sparse.sparse_named_distances:
                     if metric in sparse.sparse_fast_distance_alternatives:
-                        _distance_func = \
-                        sparse.sparse_fast_distance_alternatives[metric][
-                            "dist"
-                        ]
-                        self._distance_correction = \
-                        sparse.sparse_fast_distance_alternatives[metric][
+                        _distance_func = sparse.sparse_fast_distance_alternatives[
+                            metric
+                        ]["dist"]
+                        self._distance_correction = sparse.sparse_fast_distance_alternatives[
+                            metric
+                        ][
                             "correction"
                         ]
                     else:
@@ -892,6 +874,7 @@ class NNDescent(object):
 
                     # Create a partial function for distances with arguments
                     if len(self._dist_args) > 0:
+
                         @numba.njit()
                         def _partial_dist_func(ind1, data1, ind2, data2):
                             return _distance_func(
@@ -949,14 +932,12 @@ class NNDescent(object):
 
                 if metric in sparse.sparse_named_distances:
                     if metric in sparse.sparse_fast_distance_alternatives:
-                        _distance_func = \
-                        sparse.sparse_fast_distance_alternatives[metric][
-                            "dist"
-                        ]
-                        _distance_correction = \
-                        sparse.sparse_fast_distance_alternatives[metric][
-                            "correction"
-                        ]
+                        _distance_func = sparse.sparse_fast_distance_alternatives[
+                            metric
+                        ]["dist"]
+                        _distance_correction = sparse.sparse_fast_distance_alternatives[
+                            metric
+                        ]["correction"]
                     else:
                         _distance_func = sparse.sparse_named_distances[metric]
                 else:
@@ -970,6 +951,7 @@ class NNDescent(object):
 
                 # Create a partial function for distances with arguments
                 if len(self._dist_args) > 0:
+
                     @numba.njit()
                     def _partial_dist_func(ind1, data1, ind2, data2):
                         return _distance_func(
@@ -1029,6 +1011,17 @@ class NNDescent(object):
                 "Results may be less than ideal. Try re-running with"
                 "different parameters."
             )
+
+    def __getstate__(self):
+        result = self.__dict__.copy()
+        result["_rp_forest"] = tuple(
+            [denumbaify_tree(tree) for tree in self._rp_forest]
+        )
+        return result
+
+    def __setstate__(self, d):
+        self.__dict__ = d
+        self._rp_forest = tuple([renumbaify_tree(tree) for tree in d["_rp_forest"]])
 
     def _init_search_graph(self):
         if hasattr(self, "_search_graph"):
@@ -1164,9 +1157,9 @@ class NNDescent(object):
 
         return result
 
-
     def compress_index(self):
         import gc
+
         self.compressed = True
         del self._rp_forest
         del self._neighbor_graph

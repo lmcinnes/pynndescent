@@ -406,7 +406,7 @@ def sparse_cosine(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-#    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+    #    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -522,7 +522,7 @@ def sparse_hellinger(ind1, data1, ind2, data2):
 
 
 @numba.njit(
- #   "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+    #   "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -556,15 +556,10 @@ def sparse_alternative_hellinger(ind1, data1, ind2, data2):
 def sparse_correct_alternative_hellinger(d):
     return np.arccos(np.exp(-d))
 
+
 @numba.njit(parallel=True)
 def diversify(
-    indices,
-    distances,
-    data_indices,
-    data_indptr,
-    data_data,
-    dist,
-    epsilon=0.01,
+    indices, distances, data_indices, data_indptr, data_data, dist, epsilon=0.01,
 ):
 
     for i in numba.prange(indices.shape[0]):
@@ -609,7 +604,7 @@ def diversify(
     return indices, distances
 
 
-#@numba.njit(parallel=True)
+# @numba.njit(parallel=True)
 def diversify_csr(
     graph_indptr,
     graph_indices,
@@ -708,8 +703,10 @@ sparse_need_n_features = (
 sparse_fast_distance_alternatives = {
     "euclidean": {"dist": sparse_squared_euclidean, "correction": np.sqrt},
     "l2": {"dist": sparse_squared_euclidean, "correction": np.sqrt},
-    "cosine": {"dist": sparse_alternative_cosine, "correction":
-        sparse_correct_alternative_cosine},
+    "cosine": {
+        "dist": sparse_alternative_cosine,
+        "correction": sparse_correct_alternative_cosine,
+    },
     "hellinger": {
         "dist": sparse_alternative_hellinger,
         "correction": sparse_correct_alternative_hellinger,
