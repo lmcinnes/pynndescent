@@ -436,7 +436,10 @@ def sparse_alternative_cosine(ind1, data1, ind2, data2):
 
 @numba.vectorize(fastmath=True, cache=True)
 def sparse_correct_alternative_cosine(d):
-    return 1.0 - np.exp(-d)
+    if np.isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
+        return 0.0
+    else:
+        return 1.0 - np.exp(-d)
 
 
 @numba.njit()
@@ -554,7 +557,7 @@ def sparse_alternative_hellinger(ind1, data1, ind2, data2):
 
 @numba.vectorize(fastmath=True, cache=True)
 def sparse_correct_alternative_hellinger(d):
-    if np.isclose(0.0, abs(d), atol=1e-7):
+    if np.isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
         return 0.0
     else:
         return np.sqrt(1.0 - np.exp(-d))
