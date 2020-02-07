@@ -553,7 +553,7 @@ def nn_descent(
         # store the updates in an array
         # note that the factor here is `n_neighbors * n_neighbors`, not `max_candidates * max_candidates`
         # since no more than `n_neighbors` candidates are added for each row
-        max_heap_update_count = chunk_size * n_neighbors * n_neighbors * 4
+        max_heap_update_count = chunk_size * n_neighbors * n_neighbors * 4 + 1
         heap_updates = np.zeros((n_tasks, max_heap_update_count, 4), dtype=np.float32)
         heap_update_counts = np.zeros((n_tasks,), dtype=np.int64)
 
