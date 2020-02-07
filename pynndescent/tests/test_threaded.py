@@ -3,6 +3,7 @@ import numpy as np
 
 from numpy.testing import assert_allclose
 from nose.tools import assert_equal
+from nose import SkipTest
 
 from sklearn.neighbors import NearestNeighbors
 from sklearn.utils import check_random_state
@@ -318,6 +319,7 @@ def test_nn_decent_with_parallel_backend():
     assert_allclose(nn_distances_threaded, nn_distances)
 
 
+@SkipTest
 def test_nn_decent_with_n_jobs_minus_one():
     nn_indices, nn_distances = NNDescent(
         data,
