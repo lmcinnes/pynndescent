@@ -15,6 +15,13 @@ FLOAT32_EPS = np.finfo(np.float32).eps
 
 # Just reproduce a simpler version of numpy unique (not numba supported yet)
 @numba.njit()
+def isclose(a, b, rtol=1.e-5, atol=1.e-8):
+    diff = np.abs(a - b)
+    return diff <= (atol + rtol * np.abs(b))
+
+
+# Just reproduce a simpler version of numpy unique (not numba supported yet)
+@numba.njit()
 def arr_unique(arr):
     aux = np.sort(arr)
     flag = np.concatenate((np.ones(1, dtype=np.bool_), aux[1:] != aux[:-1]))
@@ -436,7 +443,7 @@ def sparse_alternative_cosine(ind1, data1, ind2, data2):
 
 @numba.vectorize(fastmath=True, cache=True)
 def sparse_correct_alternative_cosine(d):
-    if np.isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
+    if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
         return 0.0
     else:
         return 1.0 - np.exp(-d)
@@ -557,7 +564,7 @@ def sparse_alternative_hellinger(ind1, data1, ind2, data2):
 
 @numba.vectorize(fastmath=True, cache=True)
 def sparse_correct_alternative_hellinger(d):
-    if np.isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
+    if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
         return 0.0
     else:
         return np.sqrt(1.0 - np.exp(-d))
