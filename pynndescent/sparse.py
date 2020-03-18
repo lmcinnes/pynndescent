@@ -12,6 +12,7 @@ from pynndescent.utils import norm
 locale.setlocale(locale.LC_NUMERIC, "C")
 
 FLOAT32_EPS = np.finfo(np.float32).eps
+FLOAT32_MAX = np.finfo(np.float32).max
 
 # Just reproduce a simpler version of numpy unique (not numba supported yet)
 @numba.njit()
@@ -434,9 +435,9 @@ def sparse_alternative_cosine(ind1, data1, ind2, data2):
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
     elif norm_x == 0.0 or norm_y == 0.0:
-        return np.inf
+        return FLOAT32_MAX
     elif result <= 0.0:
-        return np.inf
+        return FLOAT32_MAX
     else:
         return 0.5 * (np.log(norm_x) + np.log(norm_y)) - np.log(result)
 
@@ -555,9 +556,9 @@ def sparse_alternative_hellinger(ind1, data1, ind2, data2):
     if l1_norm_x == 0 and l1_norm_y == 0:
         return 0.0
     elif l1_norm_x == 0 or l1_norm_y == 0:
-        return np.inf
+        return FLOAT32_MAX
     elif result <= 0:
-        return np.inf
+        return FLOAT32_MAX
     else:
         return 0.5 * (np.log(l1_norm_x) + np.log(l1_norm_y)) - np.log(result)
 
