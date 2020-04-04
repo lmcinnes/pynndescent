@@ -4,8 +4,19 @@
 import numpy as np
 import numba
 
+from pynndescent.optimal_transport import (
+    allocate_graph_structures,
+    initialize_graph_structures,
+    initialize_supply,
+    initialize_cost,
+    network_simplex_core,
+    total_cost,
+    ProblemStatus,
+)
+
 _mock_identity = np.eye(2, dtype=np.float32)
 _mock_ones = np.ones(2, dtype=np.float32)
+_dummy_cost = np.zeros((2, 2), dtype=np.float64)
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -524,6 +535,34 @@ def spearmanr(x, y):
     return rs[1, 0]
 
 
+@numba.njit()
+def kantorovich_distance(x, y, cost=_dummy_cost, max_iter=100000):
+    if cost is _dummy_cost:
+        raise ValueError("Kantorovich distance requires a cost matrix to be supplied.")
+    node_arc_data, spanning_tree, graph = allocate_graph_structures(
+        x.shape[0], y.shape[0], False,
+    )
+    initialize_supply(x, -y, graph, node_arc_data.supply)
+    initialize_cost(cost, graph, node_arc_data.cost)
+    init_status = initialize_graph_structures(graph, node_arc_data, spanning_tree)
+    if init_status == False:
+        raise ValueError(
+            "Kantorovich distance inputs must be valid probability " "distributions."
+        )
+    solve_status = network_simplex_core(node_arc_data, spanning_tree, graph, max_iter,)
+    if solve_status == ProblemStatus.MAX_ITER_REACHED:
+        print("WARNING: RESULT MIGHT BE INACURATE\nMax number of iteration reached!")
+    elif solve_status == ProblemStatus.INFEASIBLE:
+        raise ValueError(
+            "Optimal transport problem was INFEASIBLE. Please check " "inputs."
+        )
+    elif solve_status == ProblemStatus.UNBOUNDED:
+        raise ValueError(
+            "Optimal transport problem was UNBOUNDED. Please check " "inputs."
+        )
+    return total_cost(node_arc_data.flow, node_arc_data.cost)
+
+
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
@@ -550,6 +589,8 @@ named_distances = {
     "haversine": haversine,
     "braycurtis": bray_curtis,
     "spearmanr": spearmanr,
+    "kantorovich": kantorovich_distance,
+    "wasserstein": kantorovich_distance,
     # Binary distances
     "hamming": hamming,
     "jaccard": jaccard,
