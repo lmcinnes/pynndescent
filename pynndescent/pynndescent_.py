@@ -15,8 +15,6 @@ import heapq
 import pynndescent.sparse as sparse
 import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as dist
-import pynndescent.threaded as threaded
-import pynndescent.sparse_threaded as sparse_threaded
 
 from pynndescent.utils import (
     tau_rand_int,
@@ -844,168 +842,92 @@ class NNDescent(object):
         else:
             effective_max_candidates = self.max_candidates
 
-        if threaded.effective_n_jobs_with_context(n_jobs) != 1:
-            if algorithm != "standard":
+        # Set threading constraints
+        if self.n_jobs != -1:
+            self._original_num_threads = numba.get_num_threads()
+            numba.set_num_threads(n_jobs)
+
+        if isspmatrix_csr(self._raw_data):
+
+            self._is_sparse = True
+
+            if not self._raw_data.has_sorted_indices:
+                self._raw_data.sort_indices()
+
+            if metric in sparse.sparse_named_distances:
+                if metric in sparse.sparse_fast_distance_alternatives:
+                    _distance_func = sparse.sparse_fast_distance_alternatives[
+                        metric
+                    ]["dist"]
+                    self._distance_correction = sparse.sparse_fast_distance_alternatives[
+                        metric
+                    ][
+                        "correction"
+                    ]
+                else:
+                    _distance_func = sparse.sparse_named_distances[metric]
+            else:
                 raise ValueError(
-                    "Algorithm {} not supported in parallel mode".format(algorithm)
+                    "Metric {} not supported for sparse graph_data".format(metric)
                 )
+
+            if metric in sparse.sparse_need_n_features:
+                metric_kwds["n_features"] = self._raw_data.shape[1]
+            self._dist_args = tuple(metric_kwds.values())
+
+            # Create a partial function for distances with arguments
+            if len(self._dist_args) > 0:
+
+                @numba.njit()
+                def _partial_dist_func(ind1, data1, ind2, data2):
+                    return _distance_func(
+                        ind1, data1, ind2, data2, *self._dist_args
+                    )
+
+                self._distance_func = _partial_dist_func
+            else:
+                self._distance_func = _distance_func
+
             if verbose:
-                print(ts(), "parallel NN descent for", str(n_iters), "iterations")
+                print(ts(), "metric NN descent for", str(n_iters), "iterations")
 
-            if isspmatrix_csr(self._raw_data):
-                # Sparse case
-                self._is_sparse = True
-                if metric in sparse.sparse_named_distances:
-                    if metric in sparse.sparse_fast_distance_alternatives:
-                        _distance_func = sparse.sparse_fast_distance_alternatives[
-                            metric
-                        ]["dist"]
-                        self._distance_correction = sparse.sparse_fast_distance_alternatives[
-                            metric
-                        ][
-                            "correction"
-                        ]
-                    else:
-                        _distance_func = sparse.sparse_named_distances[metric]
+            self._neighbor_graph = sparse_nnd.nn_descent(
+                self._raw_data.indices,
+                self._raw_data.indptr,
+                self._raw_data.data,
+                self.n_neighbors,
+                self.rng_state,
+                max_candidates=effective_max_candidates,
+                dist=self._distance_func,
+                n_iters=self.n_iters,
+                delta=self.delta,
+                rp_tree_init=True,
+                leaf_array=leaf_array,
+                low_memory=self.low_memory,
+                verbose=verbose,
+            )
 
-                    if metric in sparse.sparse_need_n_features:
-                        metric_kwds["n_features"] = self._raw_data.shape[1]
-                    self._dist_args = tuple(metric_kwds.values())
-
-                    # Create a partial function for distances with arguments
-                    if len(self._dist_args) > 0:
-
-                        @numba.njit()
-                        def _partial_dist_func(ind1, data1, ind2, data2):
-                            return _distance_func(
-                                ind1, data1, ind2, data2, *self._dist_args
-                            )
-
-                        self._distance_func = _partial_dist_func
-                    else:
-                        self._distance_func = _distance_func
-                else:
-                    raise ValueError(
-                        "Metric {} not supported for sparse graph_data".format(metric)
-                    )
-                self._neighbor_graph = sparse_threaded.sparse_nn_descent(
-                    self._raw_data.indices,
-                    self._raw_data.indptr,
-                    self._raw_data.data,
-                    self._raw_data.shape[0],
-                    self.n_neighbors,
-                    self.rng_state,
-                    effective_max_candidates,
-                    self._distance_func,
-                    self.n_iters,
-                    self.delta,
-                    rp_tree_init=self.tree_init,
-                    leaf_array=leaf_array,
-                    verbose=verbose,
-                    n_jobs=n_jobs,
-                    seed_per_row=seed_per_row,
-                )
-            else:
-                # Regular case
-                self._is_sparse = False
-                self._neighbor_graph = threaded.nn_descent(
-                    self._raw_data,
-                    self.n_neighbors,
-                    self.rng_state,
-                    effective_max_candidates,
-                    self._distance_func,
-                    self.n_iters,
-                    self.delta,
-                    rp_tree_init=self.tree_init,
-                    leaf_array=leaf_array,
-                    verbose=verbose,
-                    n_jobs=n_jobs,
-                    seed_per_row=seed_per_row,
-                )
-        elif algorithm == "standard" or leaf_array.shape[0] == 1:
-            if isspmatrix_csr(self._raw_data):
-
-                self._is_sparse = True
-
-                if not self._raw_data.has_sorted_indices:
-                    self._raw_data.sort_indices()
-
-                if metric in sparse.sparse_named_distances:
-                    if metric in sparse.sparse_fast_distance_alternatives:
-                        _distance_func = sparse.sparse_fast_distance_alternatives[
-                            metric
-                        ]["dist"]
-                        self._distance_correction = sparse.sparse_fast_distance_alternatives[
-                            metric
-                        ][
-                            "correction"
-                        ]
-                    else:
-                        _distance_func = sparse.sparse_named_distances[metric]
-                else:
-                    raise ValueError(
-                        "Metric {} not supported for sparse graph_data".format(metric)
-                    )
-
-                if metric in sparse.sparse_need_n_features:
-                    metric_kwds["n_features"] = self._raw_data.shape[1]
-                self._dist_args = tuple(metric_kwds.values())
-
-                # Create a partial function for distances with arguments
-                if len(self._dist_args) > 0:
-
-                    @numba.njit()
-                    def _partial_dist_func(ind1, data1, ind2, data2):
-                        return _distance_func(
-                            ind1, data1, ind2, data2, *self._dist_args
-                        )
-
-                    self._distance_func = _partial_dist_func
-                else:
-                    self._distance_func = _distance_func
-
-                if verbose:
-                    print(ts(), "metric NN descent for", str(n_iters), "iterations")
-
-                self._neighbor_graph = sparse_nnd.nn_descent(
-                    self._raw_data.indices,
-                    self._raw_data.indptr,
-                    self._raw_data.data,
-                    self.n_neighbors,
-                    self.rng_state,
-                    max_candidates=effective_max_candidates,
-                    dist=self._distance_func,
-                    n_iters=self.n_iters,
-                    delta=self.delta,
-                    rp_tree_init=True,
-                    leaf_array=leaf_array,
-                    low_memory=self.low_memory,
-                    verbose=verbose,
-                )
-
-            else:
-
-                self._is_sparse = False
-
-                if verbose:
-                    print(ts(), "NN descent for", str(n_iters), "iterations")
-
-                self._neighbor_graph = nn_descent(
-                    self._raw_data,
-                    self.n_neighbors,
-                    self.rng_state,
-                    effective_max_candidates,
-                    self._distance_func,
-                    self.n_iters,
-                    self.delta,
-                    low_memory=self.low_memory,
-                    rp_tree_init=True,
-                    leaf_array=leaf_array,
-                    verbose=verbose,
-                    seed_per_row=seed_per_row,
-                )
         else:
-            raise ValueError("Unknown algorithm selected")
+
+            self._is_sparse = False
+
+            if verbose:
+                print(ts(), "NN descent for", str(n_iters), "iterations")
+
+            self._neighbor_graph = nn_descent(
+                self._raw_data,
+                self.n_neighbors,
+                self.rng_state,
+                effective_max_candidates,
+                self._distance_func,
+                self.n_iters,
+                self.delta,
+                low_memory=self.low_memory,
+                rp_tree_init=True,
+                leaf_array=leaf_array,
+                verbose=verbose,
+                seed_per_row=seed_per_row,
+            )
 
         if np.any(self._neighbor_graph[0] < 0):
             warn(
@@ -1013,6 +935,8 @@ class NNDescent(object):
                 "Results may be less than ideal. Try re-running with"
                 "different parameters."
             )
+
+        numba.set_num_threads(self._original_num_threads)
 
     def __getstate__(self):
         result = self.__dict__.copy()
