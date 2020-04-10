@@ -843,8 +843,8 @@ class NNDescent(object):
             effective_max_candidates = self.max_candidates
 
         # Set threading constraints
-        if self.n_jobs != -1:
-            self._original_num_threads = numba.get_num_threads()
+        self._original_num_threads = numba.get_num_threads()
+        if self.n_jobs != -1 and self.n_jobs is not None:
             numba.set_num_threads(n_jobs)
 
         if isspmatrix_csr(self._raw_data):
