@@ -8,7 +8,7 @@ import numba
 import numpy as np
 from sklearn.utils import check_random_state, check_array
 from sklearn.base import BaseEstimator, TransformerMixin
-from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr
+from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr, vstack as sparse_vstack
 
 import heapq
 
@@ -1202,7 +1202,7 @@ class NNDescent(object):
         pass
 
         if self._is_sparse:
-            self._raw_date = scipy.sparse.vstack([self._raw_data, X])
+            self._raw_date = sparse_vstack([self._raw_data, X])
         else:
             self._raw_data = np.vstack([self._raw_data, X])
 
