@@ -8,7 +8,7 @@ def readme():
 
 configuration = {
     "name": "pynndescent",
-    "version": "0.4.7",
+    "version": "0.5.0rc1",
     "description": "Nearest Neighbor Descent",
     "long_description": readme(),
     "classifiers": [
@@ -39,7 +39,7 @@ configuration = {
     "install_requires": [
         "scikit-learn >= 0.18",
         "scipy >= 1.0",
-        "numba >= 0.49",
+        "numba >= 0.49rc1",
         "llvmlite >= 0.30",
         "joblib >= 0.11",
     ],

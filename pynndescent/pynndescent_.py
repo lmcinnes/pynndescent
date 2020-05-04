@@ -50,6 +50,8 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 FLOAT32_EPS = np.finfo(np.float32).eps
 
+EMPTY_GRAPH = make_heap(1, 1)
+
 
 @numba.njit(
     fastmath=True,
@@ -426,6 +428,7 @@ def nn_descent(
     dist=dist.euclidean,
     n_iters=10,
     delta=0.001,
+    init_graph=EMPTY_GRAPH,
     rp_tree_init=True,
     leaf_array=None,
     low_memory=False,
@@ -433,12 +436,20 @@ def nn_descent(
     seed_per_row=False,
 ):
 
-    current_graph = make_heap(data.shape[0], n_neighbors)
+    if init_graph == EMPTY_GRAPH:
+        current_graph = make_heap(data.shape[0], n_neighbors)
 
-    if rp_tree_init:
-        init_rp_tree(data, dist, current_graph, leaf_array)
+        if rp_tree_init:
+            init_rp_tree(data, dist, current_graph, leaf_array)
 
-    init_random(n_neighbors, data, current_graph, dist, rng_state, seed_per_row)
+        init_random(n_neighbors, data, current_graph, dist, rng_state, seed_per_row)
+    elif (
+        init_graph.indices.shape[0] == data.shape[0]
+        and init_graph.indices.shape[1] == n_neighbors
+    ):
+        current_graph = init_graph
+    else:
+        raise ValueError("Invalid initial graph specified!")
 
     if low_memory:
         nn_descent_internal_low_memory_parallel(
@@ -735,7 +746,6 @@ class NNDescent(object):
         n_search_trees=1,
         tree_init=True,
         random_state=None,
-        algorithm="standard",
         low_memory=False,
         max_candidates=None,
         n_iters=None,
@@ -856,9 +866,9 @@ class NNDescent(object):
 
             if metric in sparse.sparse_named_distances:
                 if metric in sparse.sparse_fast_distance_alternatives:
-                    _distance_func = sparse.sparse_fast_distance_alternatives[
-                        metric
-                    ]["dist"]
+                    _distance_func = sparse.sparse_fast_distance_alternatives[metric][
+                        "dist"
+                    ]
                     self._distance_correction = sparse.sparse_fast_distance_alternatives[
                         metric
                     ][
@@ -880,9 +890,7 @@ class NNDescent(object):
 
                 @numba.njit()
                 def _partial_dist_func(ind1, data1, ind2, data2):
-                    return _distance_func(
-                        ind1, data1, ind2, data2, *self._dist_args
-                    )
+                    return _distance_func(ind1, data1, ind2, data2, *self._dist_args)
 
                 self._distance_func = _partial_dist_func
             else:
@@ -1189,6 +1197,14 @@ class NNDescent(object):
             dists = self._distance_correction(dists)
 
         return indices, dists
+
+    def update(self, X):
+        pass
+
+        if self._is_sparse:
+            self._raw_date = scipy.sparse.vstack([self._raw_data, X])
+        else:
+            self._raw_data = np.vstack([self._raw_data, X])
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
