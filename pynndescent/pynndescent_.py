@@ -427,8 +427,6 @@ def nn_descent_internal_high_memory_parallel(
 
             c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
 
-        print("changed:", c)
-
         if c <= delta * n_neighbors * data.shape[0]:
             return
 
