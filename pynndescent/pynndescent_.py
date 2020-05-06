@@ -281,6 +281,7 @@ def init_random(n_neighbors, data, heap, dist, rng_state, seed_per_row=False):
 
     return
 
+
 @numba.njit()
 def init_from_neighbor_graph(heap, indices, distances):
     for p in range(indices.shape[0]):
@@ -449,7 +450,7 @@ def nn_descent(
     seed_per_row=False,
 ):
 
-    if init_graph.indices.shape[0] == 1: # EMPTY_GRAPH
+    if init_graph.indices.shape[0] == 1:  # EMPTY_GRAPH
         print("Initializing from leaf array")
         current_graph = make_heap(data.shape[0], n_neighbors)
 
@@ -1220,10 +1221,14 @@ class NNDescent(object):
         )
         X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
 
+        original_order = np.argsort(self._vertex_order)
+
         if self._is_sparse:
-            self._raw_date = sparse_vstack([self._raw_data, X])
+            self._raw_data = sparse_vstack([self._raw_data, X])
         else:
-            self._raw_data = np.vstack([self._raw_data, X])
+            self._raw_data = np.ascontiguousarray(
+                np.vstack([self._raw_data[original_order, :], X])
+            )
 
         if self._is_sparse:
             raise NotImplementedError("Sparse update not complete yet")
@@ -1241,10 +1246,10 @@ class NNDescent(object):
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
             current_graph = make_heap(self._raw_data.shape[0], self.n_neighbors)
-            init_from_neighbor_graph(current_graph, self._neighbor_graph[0],
-                                     self._neighbor_graph[1])
-            init_rp_tree(self._raw_data, self._distance_func, current_graph,
-                         leaf_array)
+            init_from_neighbor_graph(
+                current_graph, self._neighbor_graph[0], self._neighbor_graph[1]
+            )
+            init_rp_tree(self._raw_data, self._distance_func, current_graph, leaf_array)
 
             if self.max_candidates is None:
                 effective_max_candidates = min(60, self.n_neighbors)
@@ -1262,10 +1267,9 @@ class NNDescent(object):
                 init_graph=current_graph,
                 low_memory=self.low_memory,
                 rp_tree_init=False,
-                leaf_array=np.array([[-1],[-1]]),
+                leaf_array=np.array([[-1], [-1]]),
                 verbose=self.verbose,
             )
-
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
