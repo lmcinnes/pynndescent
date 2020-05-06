@@ -20,6 +20,7 @@ from pynndescent.utils import (
     tau_rand_int,
     make_heap,
     heap_push,
+    unchecked_heap_push,
     seed,
     deheap_sort,
     new_build_candidates,
@@ -280,6 +281,16 @@ def init_random(n_neighbors, data, heap, dist, rng_state, seed_per_row=False):
 
     return
 
+@numba.njit()
+def init_from_neighbor_graph(heap, indices, distances):
+    for p in range(indices.shape[0]):
+        for k in range(indices.shape[1]):
+            q = indices[p, k]
+            d = distances[p, k]
+            unchecked_heap_push(heap, p, d, q, 0)
+
+    return
+
 
 @numba.njit(parallel=True)
 def generate_graph_updates(
@@ -415,6 +426,8 @@ def nn_descent_internal_high_memory_parallel(
 
             c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
 
+        print("changed:", c)
+
         if c <= delta * n_neighbors * data.shape[0]:
             return
 
@@ -436,7 +449,8 @@ def nn_descent(
     seed_per_row=False,
 ):
 
-    if init_graph == EMPTY_GRAPH:
+    if init_graph.indices.shape[0] == 1: # EMPTY_GRAPH
+        print("Initializing from leaf array")
         current_graph = make_heap(data.shape[0], n_neighbors)
 
         if rp_tree_init:
@@ -447,6 +461,7 @@ def nn_descent(
         init_graph.indices.shape[0] == data.shape[0]
         and init_graph.indices.shape[1] == n_neighbors
     ):
+        print("Using given init_graph")
         current_graph = init_graph
     else:
         raise ValueError("Invalid initial graph specified!")
@@ -978,8 +993,8 @@ class NNDescent(object):
             )
         else:
             diversified_rows, diversified_data = diversify(
-                self._neighbor_graph[0],
-                self._neighbor_graph[1],
+                self._neighbor_graph[0].copy(),
+                self._neighbor_graph[1].copy(),
                 self._raw_data,
                 self._distance_func,
                 self.diversify_epsilon,
@@ -1199,12 +1214,58 @@ class NNDescent(object):
         return indices, dists
 
     def update(self, X):
-        pass
+        current_random_state = check_random_state(self.random_state)
+        rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
+            np.int64
+        )
+        X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
 
         if self._is_sparse:
             self._raw_date = sparse_vstack([self._raw_data, X])
         else:
             self._raw_data = np.vstack([self._raw_data, X])
+
+        if self._is_sparse:
+            raise NotImplementedError("Sparse update not complete yet")
+        else:
+            self.n_trees = int(np.round(self.n_trees / 3))
+            self._rp_forest = make_forest(
+                self._raw_data,
+                self.n_neighbors,
+                self.n_trees,
+                self.leaf_size,
+                rng_state,
+                current_random_state,
+                self.n_jobs,
+                self._angular_trees,
+            )
+            leaf_array = rptree_leaf_array(self._rp_forest)
+            current_graph = make_heap(self._raw_data.shape[0], self.n_neighbors)
+            init_from_neighbor_graph(current_graph, self._neighbor_graph[0],
+                                     self._neighbor_graph[1])
+            init_rp_tree(self._raw_data, self._distance_func, current_graph,
+                         leaf_array)
+
+            if self.max_candidates is None:
+                effective_max_candidates = min(60, self.n_neighbors)
+            else:
+                effective_max_candidates = self.max_candidates
+
+            self._neighbor_graph = nn_descent(
+                self._raw_data,
+                self.n_neighbors,
+                self.rng_state,
+                effective_max_candidates,
+                self._distance_func,
+                self.n_iters,
+                self.delta,
+                init_graph=current_graph,
+                low_memory=self.low_memory,
+                rp_tree_init=False,
+                leaf_array=np.array([[-1],[-1]]),
+                verbose=self.verbose,
+            )
+
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
