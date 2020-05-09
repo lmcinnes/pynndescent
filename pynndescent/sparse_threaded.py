@@ -37,8 +37,8 @@ def sparse_current_graph_map_jit(
     for i in rows:
         if seed_per_row:
             seed(rng_state_local, i)
-        if heap[0, i, 0] < 0.0:
-            for j in range(n_neighbors - np.sum(heap[0, i] >= 0.0)):
+        if heap[0][i, 0] < 0.0:
+            for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state_local)) % data.shape[0]
 
                 from_inds = inds[indptr[i] : indptr[i + 1]]
@@ -208,11 +208,11 @@ def sparse_nn_descent_map_jit(
     for i in rows:
         i -= offset
         for j in range(max_candidates):
-            p = int(new_candidate_neighbors[0, i, j])
+            p = int(new_candidate_neighbors[0][i, j])
             if p < 0:
                 continue
             for k in range(j, max_candidates):
-                q = int(new_candidate_neighbors[0, i, k])
+                q = int(new_candidate_neighbors[0][i, k])
                 if q < 0:
                     continue
 
@@ -238,7 +238,7 @@ def sparse_nn_descent_map_jit(
                 count += 1
 
             for k in range(max_candidates):
-                q = int(old_candidate_neighbors[0, i, k])
+                q = int(old_candidate_neighbors[0][i, k])
                 if q < 0:
                     continue
 
