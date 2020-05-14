@@ -803,7 +803,7 @@ class NNDescent(object):
 
         # Create a partial function for distances with arguments
         if len(self._dist_args) > 0:
-            dist_args = tuple(metric_kwds.values())
+            dist_args = self._dist_args
             @numba.njit()
             def _partial_dist_func(x, y):
                 return _distance_func(x, y, *dist_args)
@@ -874,11 +874,11 @@ class NNDescent(object):
 
                     # Create a partial function for distances with arguments
                     if len(self._dist_args) > 0:
-
+                        dist_args = self._dist_args
                         @numba.njit()
                         def _partial_dist_func(ind1, data1, ind2, data2):
                             return _distance_func(
-                                ind1, data1, ind2, data2, *self._dist_args
+                                ind1, data1, ind2, data2, *dist_args
                             )
 
                         self._distance_func = _partial_dist_func
