@@ -332,7 +332,7 @@ def test_transformer_output_when_verbose_is_false():
         _ = PyNNDescentTransformer(
             n_neighbors=4,
             metric="standardised_euclidean",
-            metric_kwds={'sigma': np.arange(1,spatial_data.shape[0]+1)},
+            metric_kwds={"sigma": np.arange(1, spatial_data.shape[0] + 1)},
             random_state=np.random,
             n_trees=5,
             n_iters=2,
