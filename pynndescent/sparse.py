@@ -16,7 +16,7 @@ FLOAT32_MAX = np.finfo(np.float32).max
 
 # Just reproduce a simpler version of numpy unique (not numba supported yet)
 @numba.njit()
-def isclose(a, b, rtol=1.e-5, atol=1.e-8):
+def isclose(a, b, rtol=1.0e-5, atol=1.0e-8):
     diff = np.abs(a - b)
     return diff <= (atol + rtol * np.abs(b))
 
