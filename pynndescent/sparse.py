@@ -14,7 +14,7 @@ locale.setlocale(locale.LC_NUMERIC, "C")
 FLOAT32_EPS = np.finfo(np.float32).eps
 FLOAT32_MAX = np.finfo(np.float32).max
 
-# Just reproduce a simpler version of numpy unique (not numba supported yet)
+# Just reproduce a simpler version of numpy isclose (not numba supported yet)
 @numba.njit()
 def isclose(a, b, rtol=1.e-5, atol=1.e-8):
     diff = np.abs(a - b)
