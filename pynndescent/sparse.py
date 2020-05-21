@@ -8,6 +8,7 @@ import numpy as np
 import numba
 
 from pynndescent.utils import norm
+from pynndescent.distances import kantorovich
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 
@@ -571,6 +572,61 @@ def sparse_correct_alternative_hellinger(d):
         return np.sqrt(1.0 - np.exp(-d))
 
 
+@numba.njit()
+def dummy_ground_metric(x, y):
+    return np.float32(not x == y)
+
+
+def create_ground_metric(ground_vectors, metric):
+    """Generate a "ground_metric" suitable for passing to a ``sparse_kantorovich``
+    distance function. This should be a metric that, given indices of the data,
+    should produce the ground distance between the corresponding vectors. This
+    allows the construction of a cost_matrix or ground_distance_matrix between
+    sparse samples on the fly -- without having to compute an all pairs distance.
+    This is particularly useful for things like word-mover-distance.
+
+    For example, to create a suitable ground_metric for word-mover distance one
+    would use:
+
+    ``wmd_ground_metric = create_ground_metric(word_vectors, cosine)``
+
+    Parameters
+    ----------
+    ground_vectors: array of shape (n_features, d)
+        The set of vectors between which ground_distances are measured. That is,
+        there should be a vector for each feature of the space one wishes to compute
+        Kantorovich distance over.
+
+    metric: callable (numba jitted)
+        The underlying metric used to cpmpute distances between feature vectors.
+
+    Returns
+    -------
+    ground_metric: callable (numba jitted)
+        A ground metric suitable for passing to ``sparse_kantorovich``.
+    """
+
+    @numba.njit()
+    def ground_metric(index1, index2):
+        return metric(ground_vectors[index1], ground_vectors[index2])
+
+    return ground_metric
+
+
+@numba.njit()
+def sparse_kantorovich(
+    ind1, data1, ind2, data2, ground_metric=dummy_ground_metric
+):
+
+    cost_matrix = np.empty((ind1.shape[0], ind2.shape[0]))
+    for i in range(ind1.shape[0]):
+        for j in range(ind2.shape[0]):
+            cost_matrix[i, j] = ground_metric(ind1[i], ind2[j])
+
+    return kantorovich(data1, data2, cost_matrix)
+
+
+
 @numba.njit(parallel=True)
 def diversify(
     indices, distances, data_indices, data_indptr, data_data, dist, epsilon=0.01,
@@ -681,6 +737,8 @@ sparse_named_distances = {
     "minkowski": sparse_minkowski,
     # Other distances
     "canberra": sparse_canberra,
+    "kantorovich": sparse_kantorovich,
+    "wasserstein": sparse_kantorovich,
     # 'braycurtis': sparse_bray_curtis,
     # Binary distances
     "hamming": sparse_hamming,
@@ -692,6 +750,7 @@ sparse_named_distances = {
     "russellrao": sparse_russellrao,
     "sokalmichener": sparse_sokal_michener,
     "sokalsneath": sparse_sokal_sneath,
+    # Angular distances
     "cosine": sparse_cosine,
     "correlation": sparse_correlation,
     "hellinger": sparse_hellinger,
