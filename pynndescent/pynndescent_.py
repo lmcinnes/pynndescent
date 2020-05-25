@@ -942,9 +942,11 @@ class NNDescent(object):
                         ]
                     else:
                         _distance_func = sparse.sparse_named_distances[metric]
+                elif callable(metric):
+                    _distance_func = metric
                 else:
                     raise ValueError(
-                        "Metric {} not supported for sparse graph_data".format(metric)
+                        "Metric {} not supported for sparse data".format(metric)
                     )
 
                 if metric in sparse.sparse_need_n_features:
@@ -954,11 +956,11 @@ class NNDescent(object):
                 # Create a partial function for distances with arguments
                 if len(self._dist_args) > 0:
 
+                    dist_args = self._dist_args
+
                     @numba.njit()
                     def _partial_dist_func(ind1, data1, ind2, data2):
-                        return _distance_func(
-                            ind1, data1, ind2, data2, *self._dist_args
-                        )
+                        return _distance_func(ind1, data1, ind2, data2, *dist_args,)
 
                     self._distance_func = _partial_dist_func
                 else:
