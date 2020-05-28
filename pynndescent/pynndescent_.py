@@ -879,22 +879,24 @@ class NNDescent(object):
             if not self._raw_data.has_sorted_indices:
                 self._raw_data.sort_indices()
 
-            if metric in sparse.sparse_named_distances:
-                if metric in sparse.sparse_fast_distance_alternatives:
-                    _distance_func = sparse.sparse_fast_distance_alternatives[metric][
-                        "dist"
-                    ]
-                    self._distance_correction = sparse.sparse_fast_distance_alternatives[
-                        metric
-                    ][
-                        "correction"
-                    ]
+                if metric in sparse.sparse_named_distances:
+                    if metric in sparse.sparse_fast_distance_alternatives:
+                        _distance_func = sparse.sparse_fast_distance_alternatives[
+                            metric
+                        ]["dist"]
+                        self._distance_correction = sparse.sparse_fast_distance_alternatives[
+                            metric
+                        ][
+                            "correction"
+                        ]
+                    else:
+                        _distance_func = sparse.sparse_named_distances[metric]
+                elif callable(metric):
+                    _distance_func = metric
                 else:
-                    _distance_func = sparse.sparse_named_distances[metric]
-            else:
-                raise ValueError(
-                    "Metric {} not supported for sparse graph_data".format(metric)
-                )
+                    raise ValueError(
+                        "Metric {} not supported for sparse data".format(metric)
+                    )
 
             if metric in sparse.sparse_need_n_features:
                 metric_kwds["n_features"] = self._raw_data.shape[1]
@@ -903,9 +905,9 @@ class NNDescent(object):
             # Create a partial function for distances with arguments
             if len(self._dist_args) > 0:
 
-                @numba.njit()
+                dist_args = self._dist_args@numba.njit()
                 def _partial_dist_func(ind1, data1, ind2, data2):
-                    return _distance_func(ind1, data1, ind2, data2, *self._dist_args)
+                    return _distance_func(ind1, data1, ind2, data2, *dist_args,)
 
                 self._distance_func = _partial_dist_func
             else:
