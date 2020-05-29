@@ -13,7 +13,6 @@ from pynndescent.optimal_transport import (
     total_cost,
     ProblemStatus,
 )
-from pynndescent.sparse import isclose
 
 _mock_identity = np.eye(2, dtype=np.float32)
 _mock_ones = np.ones(2, dtype=np.float32)
@@ -548,10 +547,10 @@ def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
     a_sum = a.sum()
     b_sum = b.sum()
 
-    if not isclose(a_sum, b_sum):
-        raise ValueError(
-            "Kantorovich distance inputs must be valid probability distributions."
-        )
+    # if not isclose(a_sum, b_sum):
+    #     raise ValueError(
+    #         "Kantorovich distance inputs must be valid probability distributions."
+    #     )
 
     a /= a_sum
     b /= b_sum
@@ -570,9 +569,9 @@ def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
             "Kantorovich distance inputs must be valid probability distributions."
         )
     solve_status = network_simplex_core(node_arc_data, spanning_tree, graph, max_iter,)
-    if solve_status == ProblemStatus.MAX_ITER_REACHED:
-        print("WARNING: RESULT MIGHT BE INACURATE\nMax number of iteration reached!")
-    elif solve_status == ProblemStatus.INFEASIBLE:
+    # if solve_status == ProblemStatus.MAX_ITER_REACHED:
+    #     print("WARNING: RESULT MIGHT BE INACCURATE\nMax number of iteration reached!")
+    if solve_status == ProblemStatus.INFEASIBLE:
         raise ValueError(
             "Optimal transport problem was INFEASIBLE. Please check " "inputs."
         )

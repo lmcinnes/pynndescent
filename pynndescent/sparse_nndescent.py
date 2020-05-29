@@ -27,6 +27,7 @@ from pynndescent.rp_trees import search_sparse_flat_tree
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 
+EMPTY_GRAPH = make_heap(1, 1)
 
 @numba.njit(
     fastmath=True,
@@ -488,6 +489,7 @@ def nn_descent(
     dist=sparse_euclidean,
     n_iters=10,
     delta=0.001,
+    init_graph=EMPTY_GRAPH,
     rp_tree_init=True,
     leaf_array=None,
     low_memory=False,
@@ -496,12 +498,23 @@ def nn_descent(
 ):
 
     n_samples = indptr.shape[0] - 1
-    current_graph = make_heap(n_samples, n_neighbors)
 
-    if rp_tree_init:
-        init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array)
+    if init_graph.indices.shape[0] == 1:  # EMPTY_GRAPH
+        current_graph = make_heap(n_samples, n_neighbors)
 
-    init_random(n_neighbors, inds, indptr, data, current_graph, dist, rng_state)
+        if rp_tree_init:
+            init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array)
+
+        init_random(n_neighbors, inds, indptr, data, current_graph, dist, rng_state)
+    elif (
+        init_graph.indices.shape[0] == data.shape[0]
+        and init_graph.indices.shape[1] == n_neighbors
+    ):
+        print("Using given init_graph")
+        current_graph = init_graph
+    else:
+        raise ValueError("Invalid initial graph specified!")
+
 
     if low_memory:
         nn_descent_internal_low_memory_parallel(
