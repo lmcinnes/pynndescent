@@ -18,6 +18,9 @@ _mock_identity = np.eye(2, dtype=np.float32)
 _mock_ones = np.ones(2, dtype=np.float32)
 _dummy_cost = np.zeros((2, 2), dtype=np.float64)
 
+FLOAT32_EPS = np.finfo(np.float32).eps
+FLOAT32_MAX = np.finfo(np.float32).max
+
 
 @numba.njit(fastmath=True, cache=True)
 def euclidean(x, y):
