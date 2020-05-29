@@ -377,9 +377,9 @@ def alternative_cosine(x, y):
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
     elif norm_x == 0.0 or norm_y == 0.0:
-        return np.inf
+        return FLOAT32_MAX
     elif result <= 0.0:
-        return np.inf
+        return FLOAT32_MAX
     else:
         return 0.5 * (np.log(norm_x) + np.log(norm_y)) - np.log(result)
 
@@ -474,9 +474,9 @@ def alternative_hellinger(x, y):
     if l1_norm_x == 0 and l1_norm_y == 0:
         return 0.0
     elif l1_norm_x == 0 or l1_norm_y == 0:
-        return np.inf
+        return FLOAT32_MAX
     elif result <= 0:
-        return np.inf
+        return FLOAT32_MAX
     else:
         return 0.5 * (np.log(l1_norm_x) + np.log(l1_norm_y)) - np.log(result)
 
