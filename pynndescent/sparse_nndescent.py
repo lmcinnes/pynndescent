@@ -507,7 +507,7 @@ def nn_descent(
 
         init_random(n_neighbors, inds, indptr, data, current_graph, dist, rng_state)
     elif (
-        init_graph.indices.shape[0] == data.shape[0]
+        init_graph.indices.shape[0] == n_samples
         and init_graph.indices.shape[1] == n_neighbors
     ):
         print("Using given init_graph")
