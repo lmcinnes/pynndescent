@@ -380,7 +380,7 @@ def nn_descent_internal_low_memory_parallel(
 
     for n in range(n_iters):
         if verbose:
-            print("\t", n, " / ", n_iters)
+            print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
             current_graph,
@@ -442,7 +442,7 @@ def nn_descent_internal_high_memory_parallel(
 
     for n in range(n_iters):
         if verbose:
-            print("\t", n, " / ", n_iters)
+            print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
             current_graph,
@@ -510,7 +510,6 @@ def nn_descent(
         init_graph.indices.shape[0] == n_samples
         and init_graph.indices.shape[1] == n_neighbors
     ):
-        print("Using given init_graph")
         current_graph = init_graph
     else:
         raise ValueError("Invalid initial graph specified!")

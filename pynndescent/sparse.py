@@ -60,14 +60,14 @@ def arr_intersect(ar1, ar2):
         "result_ind": numba.types.int32[::1],
         "result_data": numba.types.float32[::1],
         "val": numba.types.float32,
-        "i1": numba.types.uint32,
-        "i2": numba.types.uint32,
-        "j1": numba.types.uint32,
-        "j2": numba.types.uint32,
+        "i1": numba.types.int32,
+        "i2": numba.types.int32,
+        "j1": numba.types.int32,
+        "j2": numba.types.int32,
     },
 )
 def sparse_sum(ind1, data1, ind2, data2):
-    result_size = len(set(np.concatenate((ind1, ind2))))
+    result_size = ind1.shape[0] + ind2.shape[0] # len(set(np.concatenate((ind1, ind2))))
     result_ind = np.zeros(result_size, dtype=np.int32)
     result_data = np.zeros(result_size, dtype=np.float32)
 
@@ -142,10 +142,10 @@ def sparse_diff(ind1, data1, ind2, data2):
         "ind2": numba.types.int32[::1],
         "data2": numba.types.float32[::1],
         "val": numba.types.float32,
-        "i1": numba.types.uint32,
-        "i2": numba.types.uint32,
-        "j1": numba.types.uint32,
-        "j2": numba.types.uint32,
+        "i1": numba.types.int32,
+        "i2": numba.types.int32,
+        "j1": numba.types.int32,
+        "j2": numba.types.int32,
     },
 )
 def sparse_mul(ind1, data1, ind2, data2):
