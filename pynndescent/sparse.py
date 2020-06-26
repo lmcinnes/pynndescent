@@ -67,7 +67,7 @@ def arr_intersect(ar1, ar2):
     },
 )
 def sparse_sum(ind1, data1, ind2, data2):
-    result_size = ind1.shape[0] + ind2.shape[0] # len(set(np.concatenate((ind1, ind2))))
+    result_size = ind1.shape[0] + ind2.shape[0]
     result_ind = np.zeros(result_size, dtype=np.int32)
     result_data = np.zeros(result_size, dtype=np.float32)
 

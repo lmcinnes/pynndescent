@@ -387,8 +387,8 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
         random hyperplane.
     """
     # Select two random points, set the hyperplane between them
-    left_index = tau_rand_int(rng_state) % indices.shape[0]
-    right_index = tau_rand_int(rng_state) % indices.shape[0]
+    left_index = np.abs(tau_rand_int(rng_state)) % indices.shape[0]
+    right_index = np.abs(tau_rand_int(rng_state)) % indices.shape[0]
     right_index += left_index == right_index
     right_index = right_index % indices.shape[0]
     left = indices[left_index]
