@@ -1524,8 +1524,8 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             )
 
         result = lil_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
-        result.rows = indices
-        result.data = distances
+        result.rows[:] = indices.tolist()
+        result.data[:] = distances.tolist()
 
         return result.tocsr()
 
