@@ -30,6 +30,8 @@ from pynndescent.utils import (
     mark_visited,
     apply_graph_updates_high_memory,
     apply_graph_updates_low_memory,
+    initalize_heap_from_graph_indices,
+    sparse_initalize_heap_from_graph_indices,
 )
 
 from pynndescent.rp_trees import (
@@ -758,6 +760,7 @@ class NNDescent(object):
         diversify_epsilon=1.0,
         n_search_trees=1,
         tree_init=True,
+        init_graph=None,
         random_state=None,
         low_memory=False,
         max_candidates=None,
@@ -795,7 +798,7 @@ class NNDescent(object):
         data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
         self._raw_data = data
 
-        if not tree_init or n_trees == 0:
+        if not tree_init or n_trees == 0 or init_graph is not None:
             self.tree_init = False
         else:
             self.tree_init = True
@@ -880,9 +883,9 @@ class NNDescent(object):
 
             if metric in sparse.sparse_named_distances:
                 if metric in sparse.sparse_fast_distance_alternatives:
-                    _distance_func = sparse.sparse_fast_distance_alternatives[
-                        metric
-                    ]["dist"]
+                    _distance_func = sparse.sparse_fast_distance_alternatives[metric][
+                        "dist"
+                    ]
                     self._distance_correction = sparse.sparse_fast_distance_alternatives[
                         metric
                     ][
@@ -914,6 +917,19 @@ class NNDescent(object):
             else:
                 self._distance_func = _distance_func
 
+            if init_graph is None:
+                _init_graph = EMPTY_GRAPH
+            else:
+                _init_graph = make_heap(init_graph.shape[0], init_graph.shape[1])
+                _init_graph = sparse_initalize_heap_from_graph_indices(
+                    _init_graph,
+                    init_graph,
+                    self._raw_data.indptr,
+                    self._raw_data.indices,
+                    self._raw_data.data,
+                    self._distance_func,
+                )
+
             if verbose:
                 print(ts(), "metric NN descent for", str(n_iters), "iterations")
 
@@ -929,6 +945,7 @@ class NNDescent(object):
                 delta=self.delta,
                 rp_tree_init=True,
                 leaf_array=leaf_array,
+                init_graph=_init_graph,
                 low_memory=self.low_memory,
                 verbose=verbose,
             )
@@ -936,6 +953,14 @@ class NNDescent(object):
         else:
 
             self._is_sparse = False
+
+            if init_graph is None:
+                _init_graph = EMPTY_GRAPH
+            else:
+                _init_graph = make_heap(init_graph.shape[0], init_graph.shape[1])
+                _init_graph = initalize_heap_from_graph_indices(
+                    _init_graph, init_graph, data, metric
+                )
 
             if verbose:
                 print(ts(), "NN descent for", str(n_iters), "iterations")
@@ -950,6 +975,7 @@ class NNDescent(object):
                 self.delta,
                 low_memory=self.low_memory,
                 rp_tree_init=True,
+                init_graph=_init_graph,
                 leaf_array=leaf_array,
                 verbose=verbose,
                 seed_per_row=seed_per_row,
