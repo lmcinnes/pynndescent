@@ -1062,8 +1062,8 @@ class NNDescent(object):
         # Preserve any distance 0 points
         diversified_data[diversified_data == 0.0] = FLOAT32_EPS
 
-        self._search_graph.rows = diversified_rows
-        self._search_graph.data = diversified_data
+        self._search_graph.rows[:] = diversified_rows.tolist()
+        self._search_graph.data[:] = diversified_data.tolist()
 
         # Get rid of any -1 index entries
         self._search_graph = self._search_graph.tocsr()
@@ -1076,8 +1076,8 @@ class NNDescent(object):
         )
         reverse_data = self._neighbor_graph[1].copy()
         reverse_data[reverse_data == 0.0] = FLOAT32_EPS
-        reverse_graph.rows = self._neighbor_graph[0]
-        reverse_graph.data = reverse_data
+        reverse_graph.rows[:] = self._neighbor_graph[0].tolist()
+        reverse_graph.data[:] = reverse_data.tolist()
         reverse_graph = reverse_graph.tocsr()
         reverse_graph.data[reverse_graph.indices == -1] = 0.0
         reverse_graph.eliminate_zeros()
