@@ -8,6 +8,8 @@ from warnings import warn
 import locale
 import numpy as np
 import numba
+from numba.core import types
+from numba.experimental import structref
 import scipy.sparse
 
 from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum
@@ -21,14 +23,141 @@ EPS = 1e-8
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
-RandomProjectionTreeNode = namedtuple(
-    "RandomProjectionTreeNode",
+
+@structref.register
+class RandomProjectionTreeNodeType(types.StructRef):
+    pass
+
+
+class RandomProjectionTreeNode(structref.StructRefProxy):
+    @property
+    def graph_indices(self):
+        return RandomProjectionTreeNode_get_graph_indices(self)
+
+    @property
+    def is_leaf(self):
+        return RandomProjectionTreeNode_get_is_leaf(self)
+
+    @property
+    def hyperplane(self):
+        return RandomProjectionTreeNode_get_hyperplane(self)
+
+    @property
+    def offset(self):
+        return RandomProjectionTreeNode_get_offset(self)
+
+    @property
+    def left_child(self):
+        return RandomProjectionTreeNode_get_left_child(self)
+
+    @property
+    def right_child(self):
+        return RandomProjectionTreeNode_get_right_child(self)
+
+
+@numba.njit
+def RandomProjectionTreeNode_get_graph_indices(self):
+    return self.graph_indices
+
+
+@numba.njit
+def RandomProjectionTreeNode_get_is_leaf(self):
+    return self.is_leaf
+
+
+@numba.njit
+def RandomProjectionTreeNode_get_hyperplane(self):
+    return self.hyperplane
+
+
+@numba.njit
+def RandomProjectionTreeNode_get_offset(self):
+    return self.offset
+
+
+@numba.njit
+def RandomProjectionTreeNode_get_left_child(self):
+    return self.left_child
+
+
+@numba.njit
+def RandomProjectionTreeNode_get_right_child(self):
+    return self.right_child
+
+
+structref.define_proxy(
+    RandomProjectionTreeNode,
+    RandomProjectionTreeNodeType,
     ["graph_indices", "is_leaf", "hyperplane", "offset", "left_child", "right_child"],
 )
 
-FlatTree = namedtuple(
-    "FlatTree", ["hyperplanes", "offsets", "children", "indices", "leaf_size"]
+# RandomProjectionTreeNode = namedtuple(
+#     "RandomProjectionTreeNode",
+#     ["graph_indices", "is_leaf", "hyperplane", "offset", "left_child", "right_child"],
+# )
+
+
+@structref.register
+class FlatTreeType(types.StructRef):
+    pass
+
+
+class FlatTree(structref.StructRefProxy):
+    @property
+    def hyperplanes(self):
+        return FlatTree_get_hyperplanes(self)
+
+    @property
+    def offsets(self):
+        return FlatTree_get_offsets(self)
+
+    @property
+    def children(self):
+        return FlatTree_get_children(self)
+
+    @property
+    def indices(self):
+        return FlatTree_get_indices(self)
+
+    @property
+    def leaf_size(self):
+        return FlatTree_get_leaf_size(self)
+
+
+@numba.njit
+def FlatTree_get_hyperplanes(self):
+    return self.hyperplanes
+
+
+@numba.njit
+def FlatTree_get_offsets(self):
+    return self.offsets
+
+
+@numba.njit
+def FlatTree_get_children(self):
+    return self.children
+
+
+@numba.njit
+def FlatTree_get_indices(self):
+    return self.indices
+
+
+@numba.njit
+def FlatTree_get_leaf_size(self):
+    return self.leaf_size
+
+
+structref.define_proxy(
+    FlatTree,
+    FlatTreeType,
+    ["hyperplanes", "offsets", "children", "indices", "leaf_size"],
 )
+
+# FlatTree = namedtuple(
+#     "FlatTree", ["hyperplanes", "offsets", "children", "indices", "leaf_size"]
+# )
 
 dense_hyperplane_type = numba.float32[::1]
 sparse_hyperplane_type = numba.float64[:, ::1]
@@ -808,7 +937,15 @@ def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=Fals
 
 
 @numba.njit(
-    "b1(f4[::1],f4,f4[::1],i8[::1])",
+    [
+        "b1(f4[::1],f4,f4[::1],i8[::1])",
+        numba.types.boolean(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.float32,
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+        ),
+    ],
     fastmath=True,
     locals={
         "margin": numba.types.float32,
@@ -835,7 +972,17 @@ def select_side(hyperplane, offset, point, rng_state):
 
 
 @numba.njit(
-    "i4[::1](f4[::1],f4[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])",
+    [
+        "i4[::1](f4[::1],f4[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])",
+        numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 2, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 2, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+        ),
+    ],
     locals={"node": numba.types.uint32, "side": numba.types.boolean},
 )
 def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):

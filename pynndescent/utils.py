@@ -5,6 +5,8 @@
 import time
 
 import numba
+from numba.core import types
+from numba.experimental import structref
 import numpy as np
 
 from collections import namedtuple
@@ -122,8 +124,47 @@ def rejection_sample(n_samples, pool_size, rng_state):
         result[i] = j
     return result
 
+@structref.register
+class HeapType(types.StructRef):
+    pass
 
-Heap = namedtuple("Heap", ("indices", "distances", "flags"))
+
+class Heap(structref.StructRefProxy):
+    @property
+    def indices(self):
+        return Heap_get_indices(self)
+
+    @property
+    def distances(self):
+        return Heap_get_distances(self)
+
+    @property
+    def flags(self):
+        return Heap_get_flags(self)
+
+
+@numba.njit
+def Heap_get_flags(self):
+    return self.flags
+
+
+@numba.njit
+def Heap_get_distances(self):
+    return self.distances
+
+
+@numba.njit
+def Heap_get_indices(self):
+    return self.indices
+
+
+structref.define_proxy(
+    Heap,
+    HeapType,
+    ["indices", "distances", "flags"],
+)
+
+# Heap = namedtuple("Heap", ("indices", "distances", "flags"))
 
 
 @numba.njit()
@@ -152,7 +193,7 @@ def make_heap(n_points, size):
     indices = np.full((int(n_points), int(size)), -1, dtype=np.int32)
     distances = np.full((int(n_points), int(size)), np.infty, dtype=np.float32)
     flags = np.zeros((int(n_points), int(size)), dtype=np.uint8)
-    result = Heap(indices, distances, flags)
+    result = (indices, distances, flags)
 
     return result
 

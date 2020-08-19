@@ -130,11 +130,19 @@ def search_from_init(
         "visited": numba.types.uint8[::1],
     },
 )
-def search_init(current_query, k, data, forest, n_neighbors, visited, dist, rng_state):
+def search_init(
+    current_query,
+    heap_priorities,
+    heap_indices,
+    data,
+    forest,
+    n_neighbors,
+    visited,
+    dist,
+    rng_state,
+):
 
-    heap_priorities = np.float32(np.inf) + np.zeros(k, dtype=np.float32)
-    heap_indices = np.int32(-1) + np.zeros(k, dtype=np.int32)
-
+    k = heap_priorities.shape[0]
     n_random_samples = min(k, n_neighbors)
 
     for tree in forest:
@@ -199,10 +207,20 @@ def search(
     for i in range(query_points.shape[0]):
         visited[:] = 0
         current_query = query_points[i]
-        heap_priorities, heap_indices = search_init(
-            current_query, k, data, forest, n_neighbors, visited, dist, rng_state,
+        heap_priorities = result[1][i]
+        heap_indices = result[0][i]
+        search_init(
+            current_query,
+            heap_priorities,
+            heap_indices,
+            data,
+            forest,
+            n_neighbors,
+            visited,
+            dist,
+            rng_state,
         )
-        heap_priorities, heap_indices = search_from_init(
+        search_from_init(
             current_query,
             data,
             indptr,
@@ -213,9 +231,6 @@ def search(
             visited,
             dist,
         )
-
-        result[0][i] = heap_indices
-        result[1][i] = heap_priorities
 
     return result
 
@@ -450,7 +465,7 @@ def nn_descent(
     seed_per_row=False,
 ):
 
-    if init_graph.indices.shape[0] == 1:  # EMPTY_GRAPH
+    if init_graph[0].shape[0] == 1:  # EMPTY_GRAPH
         current_graph = make_heap(data.shape[0], n_neighbors)
 
         if rp_tree_init:
@@ -458,8 +473,8 @@ def nn_descent(
 
         init_random(n_neighbors, data, current_graph, dist, rng_state, seed_per_row)
     elif (
-        init_graph.indices.shape[0] == data.shape[0]
-        and init_graph.indices.shape[1] == n_neighbors
+        init_graph[0].shape[0] == data.shape[0]
+        and init_graph[0].shape[1] == n_neighbors
     ):
         print("Using given init_graph")
         current_graph = init_graph

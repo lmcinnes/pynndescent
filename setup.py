@@ -39,7 +39,7 @@ configuration = {
     "install_requires": [
         "scikit-learn >= 0.18",
         "scipy >= 1.0",
-        "numba >= 0.49rc1",
+        "numba >= 0.51",
         "llvmlite >= 0.30",
         "joblib >= 0.11",
     ],
