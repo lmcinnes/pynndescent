@@ -363,7 +363,13 @@ def cosine(x, y):
 
 
 @numba.njit(
-    "f4(f4[::1],f4[::1])",
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -390,7 +396,56 @@ def alternative_cosine(x, y):
     elif result <= 0.0:
         return FLOAT32_MAX
     else:
-        return 0.5 * (np.log(norm_x) + np.log(norm_y)) - np.log(result)
+        result = np.sqrt(norm_x * norm_y) / result
+        return np.log2(result)
+
+
+@numba.njit(
+    "f4(f4[::1],f4[::1])",
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
+)
+def dot(x, y):
+    result = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        result += x[i] * y[i]
+
+    if result <= 0.0:
+        return 1.0
+    else:
+        return 1.0 - result
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
+)
+def alternative_dot(x, y):
+    result = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        result += x[i] * y[i]
+
+    if result <= 0.0:
+        return FLOAT32_MAX
+    else:
+        return -np.log2(result)
 
 
 @numba.vectorize(fastmath=True, cache=True)
@@ -614,6 +669,7 @@ named_distances = {
     # Other distances
     "canberra": canberra,
     "cosine": cosine,
+    "dot": dot,
     "correlation": correlation,
     "hellinger": hellinger,
     "haversine": haversine,
@@ -644,6 +700,7 @@ fast_distance_alternatives = {
     "euclidean": {"dist": squared_euclidean, "correction": np.sqrt},
     "l2": {"dist": squared_euclidean, "correction": np.sqrt},
     "cosine": {"dist": alternative_cosine, "correction": correct_alternative_cosine},
+    "dot": {"dist": alternative_dot, "correction": correct_alternative_cosine},
     "hellinger": {
         "dist": alternative_hellinger,
         "correction": correct_alternative_hellinger,
