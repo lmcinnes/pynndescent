@@ -525,6 +525,10 @@ def diversify(indices, distances, data, dist, epsilon=0.01):
 
             flag = True
             for k in range(len(new_indices)):
+
+                if new_distances[k] > epsilon * distances[i, j]:
+                    break
+
                 c = new_indices[k]
                 d = dist(data[indices[i, j]], data[c])
                 if new_distances[k] > FLOAT32_EPS and d < epsilon * distances[i, j]:
@@ -561,16 +565,18 @@ def diversify_csr(
         retained = np.ones(order.shape[0], dtype=np.int8)
 
         for idx in range(1, order.shape[0]):
-
             j = order[idx]
-
             for k in range(idx):
-                if retained[k] == 1:
+                l = order[k]
+                if retained[l] == 1:
+                    if current_data[l] > epsilon * current_data[j]:
+                        break
+
                     d = dist(
                         source_data[current_indices[j]],
                         source_data[current_indices[k]],
                     )
-                    if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
+                    if current_data[l] > FLOAT32_EPS and d < epsilon * current_data[j]:
                         retained[j] = 0
                         break
 
