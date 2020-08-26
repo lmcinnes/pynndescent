@@ -10,6 +10,8 @@ from sklearn.utils import check_random_state, check_array
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr, vstack as sparse_vstack
 
+import scipy.sparse.csgraph
+
 import heapq
 
 import pynndescent.sparse as sparse
@@ -18,6 +20,7 @@ import pynndescent.distances as dist
 
 from pynndescent.utils import (
     tau_rand_int,
+    tau_rand,
     make_heap,
     heap_push,
     unchecked_heap_push,
@@ -513,7 +516,7 @@ def nn_descent(
 
 
 @numba.njit(parallel=True)
-def diversify(indices, distances, data, dist, epsilon=0.01):
+def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
 
     for i in numba.prange(indices.shape[0]):
 
@@ -526,14 +529,13 @@ def diversify(indices, distances, data, dist, epsilon=0.01):
             flag = True
             for k in range(len(new_indices)):
 
-                if new_distances[k] > epsilon * distances[i, j]:
-                    break
-
                 c = new_indices[k]
+
                 d = dist(data[indices[i, j]], data[c])
-                if new_distances[k] > FLOAT32_EPS and d < epsilon * distances[i, j]:
-                    flag = False
-                    break
+                if new_distances[k] > FLOAT32_EPS and d < distances[i, j]:
+                    if tau_rand(rng_state) < prune_probability:
+                        flag = False
+                        break
 
             if flag:
                 new_indices.append(indices[i, j])
@@ -552,7 +554,7 @@ def diversify(indices, distances, data, dist, epsilon=0.01):
 
 @numba.njit(parallel=True)
 def diversify_csr(
-    graph_indptr, graph_indices, graph_data, source_data, dist, epsilon=0.01
+    graph_indptr, graph_indices, graph_data, source_data, dist, rng_state, prune_probability=1.0
 ):
     n_nodes = graph_indptr.shape[0] - 1
 
@@ -569,16 +571,15 @@ def diversify_csr(
             for k in range(idx):
                 l = order[k]
                 if retained[l] == 1:
-                    if current_data[l] > epsilon * current_data[j]:
-                        break
 
                     d = dist(
                         source_data[current_indices[j]],
                         source_data[current_indices[k]],
                     )
-                    if current_data[l] > FLOAT32_EPS and d < epsilon * current_data[j]:
-                        retained[j] = 0
-                        break
+                    if current_data[l] > FLOAT32_EPS and d < current_data[j]:
+                        if tau_rand(rng_state) < prune_probability:
+                            retained[j] = 0
+                            break
 
         for idx in range(order.shape[0]):
             j = order[idx]
@@ -706,7 +707,7 @@ class NNDescent(object):
         vertex has degree greater than
         ``pruning_degree_multiplier * n_neighbors``.
 
-    diversify_epsilon: float (optional, default=1.0)
+    diversify_prob: float (optional, default=1.0)
         The search graph get "diversified" by removing potentially unnecessary
         edges. This controls the volume of edges removed. A value of 0.0 ensures
         that no edges get removed, and larger values result in significantly more
@@ -779,7 +780,7 @@ class NNDescent(object):
         n_trees=None,
         leaf_size=None,
         pruning_degree_multiplier=2.0,
-        diversify_epsilon=1.0,
+        diversify_prob=1.0,
         n_search_trees=1,
         tree_init=True,
         init_graph=None,
@@ -806,7 +807,7 @@ class NNDescent(object):
         self.metric_kwds = metric_kwds
         self.leaf_size = leaf_size
         self.prune_degree_multiplier = pruning_degree_multiplier
-        self.diversify_epsilon = diversify_epsilon
+        self.diversify_prob = diversify_prob
         self.n_search_trees = n_search_trees
         self.max_candidates = max_candidates
         self.low_memory = low_memory
@@ -1040,7 +1041,8 @@ class NNDescent(object):
                 self._raw_data.indptr,
                 self._raw_data.data,
                 self._distance_func,
-                self.diversify_epsilon,
+                self.rng_state,
+                self.diversify_prob,
             )
         else:
             diversified_rows, diversified_data = diversify(
@@ -1048,7 +1050,8 @@ class NNDescent(object):
                 self._neighbor_graph[1].copy(),
                 self._raw_data,
                 self._distance_func,
-                self.diversify_epsilon,
+                self.rng_state,
+                self.diversify_prob,
             )
 
         self._search_graph = lil_matrix(
@@ -1067,17 +1070,7 @@ class NNDescent(object):
         self._search_graph.eliminate_zeros()
 
         # Reverse graph
-        reverse_graph = lil_matrix(
-            (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
-        )
-        reverse_data = self._neighbor_graph[1].copy()
-        reverse_data[reverse_data == 0.0] = FLOAT32_EPS
-        reverse_graph.rows[:] = self._neighbor_graph[0].tolist()
-        reverse_graph.data[:] = reverse_data.tolist()
-        reverse_graph = reverse_graph.tocsr()
-        reverse_graph.data[reverse_graph.indices == -1] = 0.0
-        reverse_graph.eliminate_zeros()
-        reverse_graph = reverse_graph.transpose()
+        reverse_graph = self._search_graph.transpose()
         if self._is_sparse:
             sparse.diversify_csr(
                 reverse_graph.indptr,
@@ -1087,9 +1080,9 @@ class NNDescent(object):
                 self._raw_data.indices,
                 self._raw_data.data,
                 self._distance_func,
-                self.diversify_epsilon,
+                self.rng_state,
+                self.diversify_prob,
             )
-            pass
         else:
             diversify_csr(
                 reverse_graph.indptr,
@@ -1097,7 +1090,8 @@ class NNDescent(object):
                 reverse_graph.data,
                 self._raw_data,
                 self._distance_func,
-                self.diversify_epsilon,
+                self.rng_state,
+                self.diversify_prob,
             )
         reverse_graph.eliminate_zeros()
 
@@ -1176,7 +1170,7 @@ class NNDescent(object):
 
         self._tree_search = tree_search_closure
 
-        from pynndescent.distances import alternative_dot
+        from pynndescent.distances import alternative_dot, alternative_cosine
 
         data = self._raw_data
         indptr = self._search_graph.indptr
@@ -1211,12 +1205,12 @@ class NNDescent(object):
 
             for i in range(query_points.shape[0]):
                 visited[:] = 0
-                if dist == alternative_dot:
+                if dist == alternative_dot or dist == alternative_cosine:
                     norm = np.sqrt((query_points[i] ** 2).sum())
                     if norm > 0.0:
                         current_query = query_points[i] / norm
                     else:
-                        current_query = query_points[i]
+                        continue
                 else:
                     current_query = query_points[i]
                 heap_priorities = result[1][i]

@@ -629,7 +629,7 @@ def sparse_kantorovich(
 
 @numba.njit(parallel=True)
 def diversify(
-    indices, distances, data_indices, data_indptr, data_data, dist, epsilon=0.01,
+    indices, distances, data_indices, data_indptr, data_data, dist, rng_state, prune_probability=1.0,
 ):
 
     for i in numba.prange(indices.shape[0]):
@@ -655,9 +655,10 @@ def diversify(
                 to_data = data_data[data_indptr[c] : data_indptr[c + 1]]
 
                 d = dist(from_ind, from_data, to_ind, to_data)
-                if new_distances[k] > FLOAT32_EPS and d < epsilon * distances[i, j]:
-                    flag = False
-                    break
+                if new_distances[k] > FLOAT32_EPS and d < distances[i, j]:
+                    if tau_rand(rng_state) < prune_probability:
+                        flag = False
+                        break
 
             if flag:
                 new_indices.append(indices[i, j])
@@ -683,7 +684,7 @@ def diversify_csr(
     data_indices,
     data_data,
     dist,
-    epsilon=0.01,
+    rng_state, prune_probability=1.0,
 ):
 
     n_nodes = graph_indptr.shape[0] - 1
@@ -701,9 +702,12 @@ def diversify_csr(
             j = order[idx]
 
             for k in range(idx):
-                if retained[k] == 1:
+
+                l = order[k]
+
+                if retained[l] == 1:
                     p = current_indices[j]
-                    q = current_indices[k]
+                    q = current_indices[l]
 
                     from_inds = data_indices[data_indptr[p] : data_indptr[p + 1]]
                     from_data = data_data[data_indptr[p] : data_indptr[p + 1]]
@@ -712,9 +716,10 @@ def diversify_csr(
                     to_data = data_data[data_indptr[q] : data_indptr[q + 1]]
                     d = dist(from_inds, from_data, to_inds, to_data)
 
-                    if current_data[k] > FLOAT32_EPS and d < epsilon * current_data[j]:
-                        retained[j] = 0
-                        break
+                    if current_data[l] > FLOAT32_EPS and d < current_data[j]:
+                        if tau_rand(rng_state) < prune_probability:
+                            retained[j] = 0
+                            break
 
         for idx in range(order.shape[0]):
             j = order[idx]
