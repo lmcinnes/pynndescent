@@ -495,7 +495,12 @@ def smallest_flagged(heap, row):
         return -1
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, locals={
+    "d": numba.float32,
+    "i": numba.int32,
+    "idx": numba.int32,
+    "isn": numba.uint8,
+})
 def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates, rng_state):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
@@ -531,8 +536,24 @@ def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates, rng
             idx = current_graph[0][i, j]
             isn = current_graph[2][i, j]
             d = tau_rand(rng_state)
-            heap_push(candidate_neighbors, i, d, idx, isn)
-            heap_push(candidate_neighbors, idx, d, i, isn)
+            # heap_push(candidate_neighbors, i, d, idx, isn)
+            # heap_push(candidate_neighbors, idx, d, i, isn)
+            checked_flagged_heap_push(
+                candidate_neighbors[1][i],
+                candidate_neighbors[0][i],
+                candidate_neighbors[2][i],
+                d,
+                idx,
+                isn,
+            )
+            checked_flagged_heap_push(
+                candidate_neighbors[1][idx],
+                candidate_neighbors[0][idx],
+                candidate_neighbors[2][idx],
+                d,
+                i,
+                isn,
+            )
             current_graph[2][i, j] = 0
 
     return candidate_neighbors
@@ -591,8 +612,24 @@ def new_build_candidates(
             d = tau_rand(rng_state)
 
             if isn:
-                heap_push(new_candidate_neighbors, i, d, idx, isn)
-                heap_push(new_candidate_neighbors, idx, d, i, isn)
+                # heap_push(new_candidate_neighbors, i, d, idx, isn)
+                # heap_push(new_candidate_neighbors, idx, d, i, isn)
+                checked_flagged_heap_push(
+                    new_candidate_neighbors[1][i],
+                    new_candidate_neighbors[0][i],
+                    new_candidate_neighbors[2][i],
+                    d,
+                    idx,
+                    isn,
+                )
+                checked_flagged_heap_push(
+                    new_candidate_neighbors[1][idx],
+                    new_candidate_neighbors[0][idx],
+                    new_candidate_neighbors[2][idx],
+                    d,
+                    i,
+                    isn,
+                )
                 # if idx in in_new_candidates[i]:
                 #     pass
                 # else:
@@ -604,8 +641,24 @@ def new_build_candidates(
                 #     unchecked_heap_push(new_candidate_neighbors, idx, d, i, isn)
                 #     in_new_candidates[idx].add(i)
             else:
-                heap_push(old_candidate_neighbors, i, d, idx, isn)
-                heap_push(old_candidate_neighbors, idx, d, i, isn)
+                # heap_push(old_candidate_neighbors, i, d, idx, isn)
+                # heap_push(old_candidate_neighbors, idx, d, i, isn)
+                checked_flagged_heap_push(
+                    old_candidate_neighbors[1][i],
+                    old_candidate_neighbors[0][i],
+                    old_candidate_neighbors[2][i],
+                    d,
+                    idx,
+                    isn,
+                )
+                checked_flagged_heap_push(
+                    old_candidate_neighbors[1][idx],
+                    old_candidate_neighbors[0][idx],
+                    old_candidate_neighbors[2][idx],
+                    d,
+                    i,
+                    isn,
+                )
                 # if idx in in_old_candidates[i]:
                 #     pass
                 # else:
@@ -704,7 +757,130 @@ def simple_heap_push(priorities, indices, p, n):
     return 1
 
 
-@numba.njit()
+@numba.njit(
+    "i4(f4[::1],i4[::1],u1[::1],f4,i4,u1)",
+    fastmath=True,
+    locals={
+        "size": numba.types.uint16,
+        "i": numba.types.uint16,
+        "ic1": numba.types.uint16,
+        "ic2": numba.types.uint16,
+        "i_swap": numba.types.uint16,
+    },
+)
+def flagged_heap_push(priorities, indices, flags, p, n, f):
+    if p >= priorities[0]:
+        return 0
+
+    size = priorities.shape[0]
+
+    # insert val at position zero
+    priorities[0] = p
+    indices[0] = n
+    flags[0] = f
+
+    # descend the heap, swapping values until the max heap criterion is met
+    i = 0
+    while True:
+        ic1 = 2 * i + 1
+        ic2 = ic1 + 1
+
+        if ic1 >= size:
+            break
+        elif ic2 >= size:
+            if priorities[ic1] > p:
+                i_swap = ic1
+            else:
+                break
+        elif priorities[ic1] >= priorities[ic2]:
+            if p < priorities[ic1]:
+                i_swap = ic1
+            else:
+                break
+        else:
+            if p < priorities[ic2]:
+                i_swap = ic2
+            else:
+                break
+
+        priorities[i] = priorities[i_swap]
+        indices[i] = indices[i_swap]
+        flags[i] = flags[i_swap]
+
+        i = i_swap
+
+    priorities[i] = p
+    indices[i] = n
+    flags[i] = f
+
+    return 1
+
+
+@numba.njit(
+    "i4(f4[::1],i4[::1],u1[::1],f4,i4,u1)",
+    fastmath=True,
+    locals={
+        "size": numba.types.uint16,
+        "i": numba.types.uint16,
+        "ic1": numba.types.uint16,
+        "ic2": numba.types.uint16,
+        "i_swap": numba.types.uint16,
+    },
+)
+def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
+    if p >= priorities[0]:
+        return 0
+
+    size = priorities.shape[0]
+
+    # break if we already have this element.
+    for i in range(size):
+        if n == indices[i]:
+            return 0
+
+    # insert val at position zero
+    priorities[0] = p
+    indices[0] = n
+    flags[0] = f
+
+    # descend the heap, swapping values until the max heap criterion is met
+    i = 0
+    while True:
+        ic1 = 2 * i + 1
+        ic2 = ic1 + 1
+
+        if ic1 >= size:
+            break
+        elif ic2 >= size:
+            if priorities[ic1] > p:
+                i_swap = ic1
+            else:
+                break
+        elif priorities[ic1] >= priorities[ic2]:
+            if p < priorities[ic1]:
+                i_swap = ic1
+            else:
+                break
+        else:
+            if p < priorities[ic2]:
+                i_swap = ic2
+            else:
+                break
+
+        priorities[i] = priorities[i_swap]
+        indices[i] = indices[i_swap]
+        flags[i] = flags[i_swap]
+
+        i = i_swap
+
+    priorities[i] = p
+    indices[i] = n
+    flags[i] = f
+
+    return 1
+
+
+@numba.njit(locals={"p": numba.int32, "q":numba.int32, "d":numba.float32})
 def apply_graph_updates_low_memory(current_graph, updates):
 
     n_changes = 0
@@ -716,10 +892,26 @@ def apply_graph_updates_low_memory(current_graph, updates):
             if p == -1 or q == -1:
                 continue
 
-            added = heap_push(current_graph, p, d, q, 1)
+            # added = heap_push(current_graph, p, d, q, 1)
+            added = checked_flagged_heap_push(
+                current_graph[1][p],
+                current_graph[0][p],
+                current_graph[2][p],
+                d,
+                q,
+                1,
+            )
             n_changes += added
 
-            added = heap_push(current_graph, q, d, p, 1)
+            # added = heap_push(current_graph, q, d, p, 1)
+            added = checked_flagged_heap_push(
+                current_graph[1][q],
+                current_graph[0][q],
+                current_graph[2][q],
+                d,
+                p,
+                1,
+            )
             n_changes += added
 
     return n_changes
@@ -742,7 +934,15 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
             elif q in in_graph[p]:
                 pass
             else:
-                added = unchecked_heap_push(current_graph, p, d, q, 1)
+                # added = unchecked_heap_push(current_graph, p, d, q, 1)
+                added = flagged_heap_push(
+                    current_graph[1][p],
+                    current_graph[0][p],
+                    current_graph[2][p],
+                    d,
+                    q,
+                    1,
+                )
 
                 if added > 0:
                     in_graph[p].add(q)
@@ -751,7 +951,15 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
             if p == q or p in in_graph[q]:
                 pass
             else:
-                added = unchecked_heap_push(current_graph, q, d, p, 1)
+                # added = unchecked_heap_push(current_graph, q, d, p, 1)
+                added = flagged_heap_push(
+                    current_graph[1][p],
+                    current_graph[0][p],
+                    current_graph[2][p],
+                    d,
+                    q,
+                    1,
+                )
 
                 if added > 0:
                     in_graph[q].add(p)
@@ -767,7 +975,8 @@ def initalize_heap_from_graph_indices(heap, graph_indices, data, metric):
         for idx in range(graph_indices.shape[1]):
             j = graph_indices[i, idx]
             d = metric(data[i], data[j])
-            unchecked_heap_push(heap, i, d, j, 1)
+            # unchecked_heap_push(heap, i, d, j, 1)
+            flagged_heap_push(heap[0][i], heap[1][i], heap[2][i], j, d, 1)
 
     return heap
 
@@ -785,7 +994,8 @@ def sparse_initalize_heap_from_graph_indices(
             ind2 = data_indices[data_indptr[j] : data_indptr[j + 1]]
             data2 = data_vals[data_indptr[j] : data_indptr[j + 1]]
             d = metric(ind1, data1, ind2, data2)
-            unchecked_heap_push(heap, i, d, j, 1)
+            # unchecked_heap_push(heap, i, d, j, 1)
+            flagged_heap_push(heap[0][i], heap[1][i], heap[2][i], j, d, 1)
 
     return heap
 

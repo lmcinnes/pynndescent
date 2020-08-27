@@ -29,6 +29,8 @@ from pynndescent.utils import (
     new_build_candidates,
     ts,
     simple_heap_push,
+    flagged_heap_push,
+    checked_flagged_heap_push,
     has_been_visited,
     mark_visited,
     apply_graph_updates_high_memory,
@@ -263,7 +265,11 @@ def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
     return updates
 
 
-@numba.njit()
+@numba.njit(locals={
+    "d": numba.float32,
+    "p": numba.int32,
+    "q": numba.int32,
+})
 def init_rp_tree(data, dist, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
@@ -286,11 +292,28 @@ def init_rp_tree(data, dist, current_graph, leaf_array):
                 if p == -1 or q == -1:
                     continue
 
-                heap_push(current_graph, p, d, q, 1)
-                heap_push(current_graph, q, d, p, 1)
+                # heap_push(current_graph, p, d, q, 1)
+                # heap_push(current_graph, q, d, p, 1)
+                checked_flagged_heap_push(
+                    current_graph[1][p],
+                    current_graph[0][p],
+                    current_graph[2][p],
+                    d,
+                    q,
+                    np.uint8(1),
+                )
+                checked_flagged_heap_push(
+                    current_graph[1][q],
+                    current_graph[0][q],
+                    current_graph[2][q],
+                    d,
+                    p,
+                    np.uint8(1),
+                )
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, locals={"d": numba.float32, "idx": numba.int32,
+                                   "i": numba.int32})
 def init_random(n_neighbors, data, heap, dist, rng_state, seed_per_row=False):
     for i in range(data.shape[0]):
         if seed_per_row:
@@ -299,7 +322,9 @@ def init_random(n_neighbors, data, heap, dist, rng_state, seed_per_row=False):
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], data[i])
-                heap_push(heap, i, d, idx, 1)
+                # heap_push(heap, i, d, idx, 1)
+                checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, idx,
+                                          np.uint8(1))
 
     return
 
@@ -310,7 +335,8 @@ def init_from_neighbor_graph(heap, indices, distances):
         for k in range(indices.shape[1]):
             q = indices[p, k]
             d = distances[p, k]
-            unchecked_heap_push(heap, p, d, q, 0)
+            # unchecked_heap_push(heap, p, d, q, 0)
+            flagged_heap_push(heap[0][p], heap[1][p], heap[2][p], q, d, 0)
 
     return
 

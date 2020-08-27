@@ -16,6 +16,7 @@ from pynndescent.utils import (
     new_build_candidates,
     deheap_sort,
     simple_heap_push,
+    checked_flagged_heap_push,
     has_been_visited,
     mark_visited,
     apply_graph_updates_high_memory,
@@ -263,7 +264,11 @@ def generate_leaf_updates(
     return updates
 
 
-@numba.njit()
+@numba.njit(locals={
+    "d": numba.float32,
+    "p": numba.int32,
+    "q": numba.int32,
+})
 def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
@@ -288,11 +293,31 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
                 if p == -1 or q == -1:
                     continue
 
-                heap_push(current_graph, p, d, q, 1)
-                heap_push(current_graph, q, d, p, 1)
+                # heap_push(current_graph, p, d, q, 1)
+                # heap_push(current_graph, q, d, p, 1)
+                checked_flagged_heap_push(
+                    current_graph[1][p],
+                    current_graph[0][p],
+                    current_graph[2][p],
+                    d,
+                    q,
+                    np.uint8(1),
+                )
+                checked_flagged_heap_push(
+                    current_graph[1][q],
+                    current_graph[0][q],
+                    current_graph[2][q],
+                    d,
+                    p,
+                    np.uint8(1),
+                )
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, locals={
+    "d": numba.float32,
+    "i": numba.int32,
+    "idx": numba.int32,
+})
 def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
     n_samples = indptr.shape[0] - 1
     for i in range(n_samples):
@@ -307,7 +332,9 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
                 to_data = data[indptr[i] : indptr[i + 1]]
                 d = dist(from_inds, from_data, to_inds, to_data)
 
-                heap_push(heap, i, d, idx, 1)
+                # heap_push(heap, i, d, idx, 1)
+                checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, idx,
+                                          np.uint8(1))
 
     return
 
