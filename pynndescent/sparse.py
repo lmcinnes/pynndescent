@@ -7,7 +7,7 @@ import locale
 import numpy as np
 import numba
 
-from pynndescent.utils import norm
+from pynndescent.utils import norm, tau_rand
 from pynndescent.distances import kantorovich
 
 locale.setlocale(locale.LC_NUMERIC, "C")
@@ -675,7 +675,7 @@ def diversify(
     return indices, distances
 
 
-# @numba.njit(parallel=True)
+@numba.njit(parallel=True)
 def diversify_csr(
     graph_indptr,
     graph_indices,

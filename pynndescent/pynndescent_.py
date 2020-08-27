@@ -46,6 +46,7 @@ from pynndescent.rp_trees import (
     denumbaify_tree,
     renumbaify_tree,
     select_side,
+    sparse_select_side,
 )
 
 update_type = numba.types.List(
@@ -1030,14 +1031,16 @@ class NNDescent(object):
 
     def __setstate__(self, d):
         self.__dict__ = d
-        self._search_forest = tuple([renumbaify_tree(tree) for tree in d["_search_forest"]])
+        self._search_forest = tuple(
+            [renumbaify_tree(tree) for tree in d["_search_forest"]]
+        )
 
     def _init_search_graph(self):
 
         if not hasattr(self, "_search_forest"):
             self._search_forest = [
                 convert_tree_format(tree, self._raw_data.shape[0])
-                for tree in self._rp_forest[:self.n_search_trees]
+                for tree in self._rp_forest[: self.n_search_trees]
             ]
 
         if self._is_sparse:
@@ -1123,7 +1126,7 @@ class NNDescent(object):
 
         # reorder according to the search tree leaf order
         self._vertex_order = self._search_forest[0].indices
-        row_ordered_graph = self._search_graph[self._vertex_order, :]
+        row_ordered_graph = self._search_graph[self._vertex_order, :].tocsc()
         self._search_graph = row_ordered_graph[:, self._vertex_order]
         self._search_graph = self._search_graph.tocsr()
         self._search_graph.sort_indices()
@@ -1285,6 +1288,196 @@ class NNDescent(object):
 
         self._search_function = search_closure
 
+    def _init_sparse_search_function(self):
+
+        tree_hyperplanes = self._search_forest[0].hyperplanes
+        tree_offsets = self._search_forest[0].offsets
+        tree_indices = self._search_forest[0].indices
+        tree_children = self._search_forest[0].children
+
+        @numba.njit(
+            [
+                numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
+                    numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+                    numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                ),
+            ],
+            locals={"node": numba.types.uint32, "side": numba.types.boolean},
+        )
+        def tree_search_closure(point_inds, point_data, rng_state):
+            node = 0
+            while tree_children[node, 0] > 0:
+                side = sparse_select_side(
+                    tree_hyperplanes[node],
+                    tree_offsets[node],
+                    point_inds,
+                    point_data,
+                    rng_state,
+                )
+                if side == 0:
+                    node = tree_children[node, 0]
+                else:
+                    node = tree_children[node, 1]
+
+            return -tree_children[node]
+
+        self._tree_search = tree_search_closure
+
+        from pynndescent.distances import alternative_dot, alternative_cosine
+
+        data_inds = self._raw_data.indices
+        data_indptr = self._raw_data.indptr
+        data_data = self._raw_data.data
+        indptr = self._search_graph.indptr
+        indices = self._search_graph.indices
+        dist = self._distance_func
+        n_neighbors = self.n_neighbors
+
+        @numba.njit(
+            fastmath=True,
+            locals={
+                "current_query": numba.types.float32[::1],
+                "i": numba.types.uint32,
+                "heap_priorities": numba.types.float32[::1],
+                "heap_indices": numba.types.int32[::1],
+                "candidate": numba.types.int32,
+                "d": numba.types.float32,
+                "visited": numba.types.uint8[::1],
+                "indices": numba.types.int32[::1],
+                "indptr": numba.types.int32[::1],
+                "data": numba.types.float32[:, ::1],
+                "heap_size": numba.types.int16,
+                "distance_scale": numba.types.float32,
+                "seed_scale": numba.types.float32,
+            },
+        )
+        def search_closure(
+            query_inds, query_indptr, query_data, k, epsilon, visited, rng_state,
+        ):
+
+            n_query_points = query_indptr.shape[0] - 1
+            n_index_points = data_indptr.shape[0] - 1
+            result = make_heap(n_query_points, k)
+            distance_scale = 1.0 + epsilon
+
+            for i in range(n_query_points):
+                visited[:] = 0
+
+                current_query_inds = query_inds[query_indptr[i] : query_indptr[i + 1]]
+                current_query_data = query_data[query_indptr[i] : query_indptr[i + 1]]
+
+                if dist == alternative_dot or dist == alternative_cosine:
+                    norm = np.sqrt((current_query_data ** 2).sum())
+                    if norm > 0.0:
+                        current_query_data = current_query_data / norm
+                    else:
+                        continue
+
+                heap_priorities = result[1][i]
+                heap_indices = result[0][i]
+                seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
+                heapq.heapify(seed_set)
+
+                ############ Init ################
+                index_bounds = tree_search_closure(
+                    current_query_inds, current_query_data, rng_state,
+                )
+                candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
+
+                n_initial_points = candidate_indices.shape[0]
+                n_random_samples = min(k, n_neighbors) - n_initial_points
+
+                for j in range(n_initial_points):
+                    candidate = candidate_indices[j]
+
+                    from_inds = data_inds[
+                        data_indptr[candidate] : data_indptr[candidate + 1]
+                    ]
+                    from_data = data_data[
+                        data_indptr[candidate] : data_indptr[candidate + 1]
+                    ]
+
+                    d = dist(
+                        from_inds, from_data, current_query_inds, current_query_data
+                    )
+                    # indices are guaranteed different
+                    simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                    heapq.heappush(seed_set, (d, candidate))
+                    mark_visited(visited, candidate)
+
+                if n_random_samples > 0:
+                    for i in range(n_random_samples):
+                        candidate = np.int32(
+                            np.abs(tau_rand_int(rng_state)) % n_index_points
+                        )
+                        if has_been_visited(visited, candidate) == 0:
+                            from_inds = data_inds[
+                                data_indptr[candidate] : data_indptr[candidate + 1]
+                            ]
+                            from_data = data_data[
+                                data_indptr[candidate] : data_indptr[candidate + 1]
+                            ]
+
+                            d = dist(
+                                from_inds,
+                                from_data,
+                                current_query_inds,
+                                current_query_data,
+                            )
+
+                            simple_heap_push(
+                                heap_priorities, heap_indices, d, candidate
+                            )
+                            heapq.heappush(seed_set, (d, candidate))
+                            mark_visited(visited, candidate)
+
+                ############ Search ##############
+                distance_bound = distance_scale * heap_priorities[0]
+
+                # Find smallest seed point
+                d_vertex, vertex = heapq.heappop(seed_set)
+
+                while d_vertex < distance_bound:
+
+                    for j in range(indptr[vertex], indptr[vertex + 1]):
+
+                        candidate = indices[j]
+
+                        if has_been_visited(visited, candidate) == 0:
+                            mark_visited(visited, candidate)
+
+                            from_inds = data_inds[
+                                data_indptr[candidate] : data_indptr[candidate + 1]
+                            ]
+                            from_data = data_data[
+                                data_indptr[candidate] : data_indptr[candidate + 1]
+                            ]
+
+                            d = dist(
+                                from_inds,
+                                from_data,
+                                current_query_inds,
+                                current_query_data,
+                            )
+
+                            if d < distance_bound:
+                                simple_heap_push(
+                                    heap_priorities, heap_indices, d, candidate
+                                )
+                                heapq.heappush(seed_set, (d, candidate))
+                                # Update bound
+                                distance_bound = distance_scale * heap_priorities[0]
+
+                    # find new smallest seed point
+                    if len(seed_set) == 0:
+                        break
+                    else:
+                        d_vertex, vertex = heapq.heappop(seed_set)
+
+            return result
+
+        self._search_function = search_closure
+
     @property
     def neighbor_graph(self):
         if self.compressed:
@@ -1370,23 +1563,18 @@ class NNDescent(object):
                 query_data = csr_matrix(query_data, dtype=np.float32)
             if not query_data.has_sorted_indices:
                 query_data.sort_indices()
-            self._init_search_graph()
+            if not hasattr(self, "_search_graph"):
+                self._init_search_graph()
+            if not hasattr(self, "_search_function"):
+                self._init_sparse_search_function()
 
-            result = sparse_nnd.search(
+            result = self._search_function(
                 query_data.indices,
                 query_data.indptr,
                 query_data.data,
                 k,
-                self._raw_data.indices,
-                self._raw_data.indptr,
-                self._raw_data.data,
-                self._search_forest,
-                self._search_graph.indptr,
-                self._search_graph.indices,
                 epsilon,
-                self.n_neighbors,
                 self._visited,
-                self._distance_func,
                 self.rng_state,
             )
 
