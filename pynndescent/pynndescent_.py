@@ -464,7 +464,7 @@ def nn_descent(
     init_graph=EMPTY_GRAPH,
     rp_tree_init=True,
     leaf_array=None,
-    low_memory=False,
+    low_memory=True,
     verbose=False,
     seed_per_row=False,
 ):
@@ -554,7 +554,13 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
 
 @numba.njit(parallel=True)
 def diversify_csr(
-    graph_indptr, graph_indices, graph_data, source_data, dist, rng_state, prune_probability=1.0
+    graph_indptr,
+    graph_indices,
+    graph_data,
+    source_data,
+    dist,
+    rng_state,
+    prune_probability=1.0,
 ):
     n_nodes = graph_indptr.shape[0] - 1
 
@@ -785,12 +791,12 @@ class NNDescent(object):
         tree_init=True,
         init_graph=None,
         random_state=None,
-        low_memory=False,
+        low_memory=True,
         max_candidates=None,
         n_iters=None,
         delta=0.001,
         n_jobs=None,
-        compressed=False,
+        compressed=True,
         seed_per_row=False,
         verbose=False,
     ):
@@ -1014,24 +1020,25 @@ class NNDescent(object):
         numba.set_num_threads(self._original_num_threads)
 
     def __getstate__(self):
+        self._init_search_graph()
+        self._init_search_function()
         result = self.__dict__.copy()
-        result["_rp_forest"] = tuple(
-            [denumbaify_tree(tree) for tree in self._rp_forest]
+        result["_search_forest"] = tuple(
+            [denumbaify_tree(tree) for tree in self._search_forest]
         )
         return result
 
     def __setstate__(self, d):
         self.__dict__ = d
-        self._rp_forest = tuple([renumbaify_tree(tree) for tree in d["_rp_forest"]])
+        self._search_forest = tuple([renumbaify_tree(tree) for tree in d["_search_forest"]])
 
     def _init_search_graph(self):
-        if hasattr(self, "_search_graph"):
-            return
 
-        self._rp_forest = [
-            convert_tree_format(tree, self._raw_data.shape[0])
-            for tree in self._rp_forest
-        ]
+        if not hasattr(self, "_search_forest"):
+            self._search_forest = [
+                convert_tree_format(tree, self._raw_data.shape[0])
+                for tree in self._rp_forest[:self.n_search_trees]
+            ]
 
         if self._is_sparse:
             diversified_rows, diversified_data = sparse.diversify(
@@ -1115,7 +1122,7 @@ class NNDescent(object):
         )
 
         # reorder according to the search tree leaf order
-        self._vertex_order = self._rp_forest[0].indices
+        self._vertex_order = self._search_forest[0].indices
         row_ordered_graph = self._search_graph[self._vertex_order, :]
         self._search_graph = row_ordered_graph[:, self._vertex_order]
         self._search_graph = self._search_graph.tocsr()
@@ -1129,7 +1136,7 @@ class NNDescent(object):
         tree_order = np.argsort(self._vertex_order)
         self._search_forest = tuple(
             resort_tree_indices(tree, tree_order)
-            for tree in self._rp_forest[: self.n_search_trees]
+            for tree in self._search_forest[: self.n_search_trees]
         )
 
         if self.compressed:
@@ -1137,9 +1144,6 @@ class NNDescent(object):
             del self._neighbor_graph
 
     def _init_search_function(self):
-
-        if hasattr(self, "_search_function"):
-            return
 
         tree_hyperplanes = self._search_forest[0].hyperplanes
         tree_offsets = self._search_forest[0].offsets
@@ -1351,8 +1355,11 @@ class NNDescent(object):
         if not self._is_sparse:
             # Standard case
             query_data = np.asarray(query_data).astype(np.float32, order="C")
-            self._init_search_graph()
-            self._init_search_function()
+            if not hasattr(self, "_search_graph"):
+                self._init_search_graph()
+            if not hasattr(self, "_search_function"):
+                self._init_search_function()
+
             result = self._search_function(
                 query_data, k, epsilon, self._visited, self.rng_state,
             )
