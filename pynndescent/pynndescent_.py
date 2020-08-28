@@ -7,6 +7,7 @@ from warnings import warn
 import numba
 import numpy as np
 from sklearn.utils import check_random_state, check_array
+from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr, vstack as sparse_vstack
 
@@ -809,10 +810,10 @@ class NNDescent(object):
         data,
         metric="euclidean",
         metric_kwds=None,
-        n_neighbors=15,
+        n_neighbors=30,
         n_trees=None,
         leaf_size=None,
-        pruning_degree_multiplier=2.0,
+        pruning_degree_multiplier=1.5,
         diversify_prob=1.0,
         n_search_trees=1,
         tree_init=True,
@@ -893,10 +894,13 @@ class NNDescent(object):
         else:
             self._distance_func = _distance_func
 
-        if metric in ("cosine", "correlation", "dice", "jaccard", "hellinger"):
+        if metric in ("cosine", "dot", "correlation", "dice", "jaccard", "hellinger"):
             self._angular_trees = True
         else:
             self._angular_trees = False
+
+        if metric == "dot":
+            data = normalize(data, norm="l2", copy=False)
 
         self.rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
@@ -928,7 +932,7 @@ class NNDescent(object):
         # Set threading constraints
         self._original_num_threads = numba.get_num_threads()
         if self.n_jobs != -1 and self.n_jobs is not None:
-            numba.set_num_threads(n_jobs)
+            numba.set_num_threads(self.n_jobs)
 
         if isspmatrix_csr(self._raw_data):
 
@@ -1826,7 +1830,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         leaf_size=None,
         search_epsilon=0.1,
         pruning_degree_multiplier=2.0,
-        diversify_epsilon=1.0,
+        diversify_prob=1.0,
         n_search_trees=1,
         tree_init=True,
         random_state=None,
@@ -1845,7 +1849,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.leaf_size = leaf_size
         self.search_epsilon = search_epsilon
         self.pruning_degree_multiplier = pruning_degree_multiplier
-        self.diversify_epsilon = diversify_epsilon
+        self.diversify_prob = diversify_prob
         self.n_search_trees = n_search_trees
         self.tree_init = tree_init
         self.random_state = random_state
@@ -1885,7 +1889,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             self.n_trees,
             self.leaf_size,
             self.pruning_degree_multiplier,
-            self.diversify_epsilon,
+            self.diversify_prob,
             self.n_search_trees,
             self.tree_init,
             self.random_state,
