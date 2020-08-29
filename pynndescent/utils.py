@@ -124,6 +124,7 @@ def rejection_sample(n_samples, pool_size, rng_state):
         result[i] = j
     return result
 
+
 @structref.register
 class HeapType(types.StructRef):
     pass
@@ -159,9 +160,7 @@ def Heap_get_indices(self):
 
 
 structref.define_proxy(
-    Heap,
-    HeapType,
-    ["indices", "distances", "flags"],
+    Heap, HeapType, ["indices", "distances", "flags"],
 )
 
 # Heap = namedtuple("Heap", ("indices", "distances", "flags"))
@@ -495,12 +494,15 @@ def smallest_flagged(heap, row):
         return -1
 
 
-@numba.njit(parallel=True, locals={
-    "d": numba.float32,
-    "i": numba.int32,
-    "idx": numba.int32,
-    "isn": numba.uint8,
-})
+@numba.njit(
+    parallel=True,
+    locals={
+        "d": numba.float32,
+        "i": numba.int32,
+        "idx": numba.int32,
+        "isn": numba.uint8,
+    },
+)
 def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates, rng_state):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
@@ -880,7 +882,14 @@ def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
     return 1
 
 
-@numba.njit(locals={"p": numba.int32, "q":numba.int32, "d":numba.float32})
+@numba.njit(
+    locals={
+        "p": numba.int32,
+        "q": numba.int32,
+        "d": numba.float32,
+        "added": numba.uint8,
+    }
+)
 def apply_graph_updates_low_memory(current_graph, updates):
 
     n_changes = 0
@@ -894,23 +903,13 @@ def apply_graph_updates_low_memory(current_graph, updates):
 
             # added = heap_push(current_graph, p, d, q, 1)
             added = checked_flagged_heap_push(
-                current_graph[1][p],
-                current_graph[0][p],
-                current_graph[2][p],
-                d,
-                q,
-                1,
+                current_graph[1][p], current_graph[0][p], current_graph[2][p], d, q, 1,
             )
             n_changes += added
 
             # added = heap_push(current_graph, q, d, p, 1)
             added = checked_flagged_heap_push(
-                current_graph[1][q],
-                current_graph[0][q],
-                current_graph[2][q],
-                d,
-                p,
-                1,
+                current_graph[1][q], current_graph[0][q], current_graph[2][q], d, p, 1,
             )
             n_changes += added
 

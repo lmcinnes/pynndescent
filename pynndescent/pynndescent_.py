@@ -50,6 +50,7 @@ from pynndescent.rp_trees import (
     renumbaify_tree,
     select_side,
     sparse_select_side,
+    score_tree,
 )
 
 update_type = numba.types.List(
@@ -266,11 +267,9 @@ def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
     return updates
 
 
-@numba.njit(locals={
-    "d": numba.float32,
-    "p": numba.int32,
-    "q": numba.int32,
-})
+@numba.njit(
+    locals={"d": numba.float32, "p": numba.int32, "q": numba.int32,}
+)
 def init_rp_tree(data, dist, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
@@ -313,8 +312,9 @@ def init_rp_tree(data, dist, current_graph, leaf_array):
                 )
 
 
-@numba.njit(fastmath=True, locals={"d": numba.float32, "idx": numba.int32,
-                                   "i": numba.int32})
+@numba.njit(
+    fastmath=True, locals={"d": numba.float32, "idx": numba.int32, "i": numba.int32}
+)
 def init_random(n_neighbors, data, heap, dist, rng_state, seed_per_row=False):
     for i in range(data.shape[0]):
         if seed_per_row:
@@ -324,8 +324,9 @@ def init_random(n_neighbors, data, heap, dist, rng_state, seed_per_row=False):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], data[i])
                 # heap_push(heap, i, d, idx, 1)
-                checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, idx,
-                                          np.uint8(1))
+                checked_flagged_heap_push(
+                    heap[1][i], heap[0][i], heap[2][i], d, idx, np.uint8(1)
+                )
 
     return
 
@@ -1068,9 +1069,19 @@ class NNDescent(object):
     def _init_search_graph(self):
 
         if not hasattr(self, "_search_forest"):
-            self._search_forest = [
+            converted_forest = [
                 convert_tree_format(tree, self._raw_data.shape[0])
-                for tree in self._rp_forest[: self.n_search_trees]
+                for tree in self._rp_forest
+            ]
+            tree_scores = [
+                score_tree(
+                    tree, self._neighbor_graph[0], self._raw_data, self.rng_state
+                )
+                for tree in converted_forest
+            ]
+            best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
+            self._search_forest = [
+                converted_forest[idx] for idx in best_tree_indices
             ]
 
         if self._is_sparse:
@@ -1250,6 +1261,7 @@ class NNDescent(object):
                         continue
                 else:
                     current_query = query_points[i]
+
                 heap_priorities = result[1][i]
                 heap_indices = result[0][i]
                 seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]

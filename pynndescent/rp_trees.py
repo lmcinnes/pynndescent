@@ -12,7 +12,7 @@ from numba.core import types
 from numba.experimental import structref
 import scipy.sparse
 
-from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum
+from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_intersect
 from pynndescent.utils import tau_rand_int, norm
 import joblib
 
@@ -1330,3 +1330,27 @@ def renumbaify_tree(tree):
     result = FlatTree(hyperplanes, offsets, children, point_indices, tree.leaf_size,)
 
     return result
+
+
+@numba.njit(
+    parallel=True,
+    locals={
+        "intersection": numba.int64[::1],
+        "result": numba.float32,
+        "i": numba.uint32,
+    },
+)
+def score_tree(tree, neighbor_indices, data, rng_state):
+    result = 0.0
+    for i in numba.prange(neighbor_indices.shape[0]):
+        leaf_indices = search_flat_tree(
+            data[i],
+            tree.hyperplanes,
+            tree.offsets,
+            tree.children,
+            tree.indices,
+            rng_state,
+        )
+        intersection = arr_intersect(neighbor_indices[i], leaf_indices)
+        result += numba.float32(intersection.shape[0] > 1)
+    return result / numba.float32(neighbor_indices.shape[0])
