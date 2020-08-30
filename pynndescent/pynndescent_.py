@@ -11,8 +11,6 @@ from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr, vstack as sparse_vstack
 
-import scipy.sparse.csgraph
-
 import heapq
 
 import pynndescent.sparse as sparse
@@ -23,8 +21,6 @@ from pynndescent.utils import (
     tau_rand_int,
     tau_rand,
     make_heap,
-    heap_push,
-    unchecked_heap_push,
     seed,
     deheap_sort,
     new_build_candidates,
@@ -43,7 +39,6 @@ from pynndescent.utils import (
 from pynndescent.rp_trees import (
     make_forest,
     rptree_leaf_array,
-    search_flat_tree,
     convert_tree_format,
     FlatTree,
     denumbaify_tree,
@@ -63,186 +58,6 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 FLOAT32_EPS = np.finfo(np.float32).eps
 
 EMPTY_GRAPH = make_heap(1, 1)
-
-
-# @numba.njit(
-#     fastmath=True,
-#     locals={
-#         "candidate": numba.types.int32,
-#         "d": numba.types.float32,
-#         "visited": numba.types.uint8[::1],
-#         "indices": numba.types.int32[::1],
-#         "indptr": numba.types.int32[::1],
-#         "data": numba.types.float32[:, ::1],
-#         "heap_size": numba.types.int16,
-#         "distance_scale": numba.types.float32,
-#         "seed_scale": numba.types.float32,
-#     },
-# )
-# def search_from_init(
-#     current_query,
-#     data,
-#     indptr,
-#     indices,
-#     heap_priorities,
-#     heap_indices,
-#     epsilon,
-#     visited,
-#     dist,
-# ):
-#     distance_scale = 1.0 + epsilon
-#     distance_bound = distance_scale * heap_priorities[0]
-#     heap_size = heap_priorities.shape[0]
-#
-#     seed_set = [(heap_priorities[j], heap_indices[j]) for j in range(heap_size)]
-#     heapq.heapify(seed_set)
-#
-#     # Find smallest seed point
-#     d_vertex, vertex = heapq.heappop(seed_set)
-#
-#     while d_vertex < distance_bound:
-#
-#         for j in range(indptr[vertex], indptr[vertex + 1]):
-#
-#             candidate = indices[j]
-#
-#             if has_been_visited(visited, candidate) == 0:
-#                 mark_visited(visited, candidate)
-#
-#                 d = dist(data[candidate], current_query)
-#
-#                 if d < distance_bound:
-#                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-#                     heapq.heappush(seed_set, (d, candidate))
-#                     # Update bound
-#                     distance_bound = distance_scale * heap_priorities[0]
-#
-#         # find new smallest seed point
-#         if len(seed_set) == 0:
-#             break
-#         else:
-#             d_vertex, vertex = heapq.heappop(seed_set)
-#
-#     return heap_priorities, heap_indices
-#
-#
-# @numba.njit(
-#     fastmath=True,
-#     locals={
-#         "heap_priorities": numba.types.float32[::1],
-#         "heap_indices": numba.types.int32[::1],
-#         "indices": numba.types.int32[::1],
-#         "candidate": numba.types.int32,
-#         "current_query": numba.types.float32[::1],
-#         "d": numba.types.float32,
-#         "n_random_samples": numba.types.int32,
-#         "visited": numba.types.uint8[::1],
-#     },
-# )
-# def search_init(
-#     current_query,
-#     heap_priorities,
-#     heap_indices,
-#     data,
-#     forest,
-#     n_neighbors,
-#     visited,
-#     dist,
-#     rng_state,
-# ):
-#
-#     k = heap_priorities.shape[0]
-#     n_random_samples = min(k, n_neighbors)
-#
-#     for tree in forest:
-#         indices = search_flat_tree(
-#             current_query,
-#             tree.hyperplanes,
-#             tree.offsets,
-#             tree.children,
-#             tree.indices,
-#             rng_state,
-#         )
-#
-#         n_initial_points = indices.shape[0]
-#         n_random_samples = min(k, n_neighbors) - n_initial_points
-#
-#         for j in range(n_initial_points):
-#             candidate = indices[j]
-#             d = dist(data[candidate], current_query)
-#             # indices are guaranteed different
-#             simple_heap_push(heap_priorities, heap_indices, d, candidate)
-#             mark_visited(visited, candidate)
-#
-#     if n_random_samples > 0:
-#         for i in range(n_random_samples):
-#             candidate = np.abs(tau_rand_int(rng_state)) % data.shape[0]
-#             if has_been_visited(visited, candidate) == 0:
-#                 d = dist(data[candidate], current_query)
-#                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
-#                 mark_visited(visited, candidate)
-#
-#     return heap_priorities, heap_indices
-#
-#
-# @numba.njit(
-#     locals={
-#         "current_query": numba.types.float32[::1],
-#         "i": numba.types.uint32,
-#         "heap_priorities": numba.types.float32[::1],
-#         "heap_indices": numba.types.int32[::1],
-#         # "result": numba.types.Tuple((
-#         #     numba.types.int32[:, ::1],
-#         #     numba.types.float32[:, ::1],
-#         #     numba.types.uint8[:, ::1],
-#         # ))
-#     }
-# )
-# def search(
-#     query_points,
-#     k,
-#     data,
-#     forest,
-#     indptr,
-#     indices,
-#     epsilon,
-#     n_neighbors,
-#     visited,
-#     dist,
-#     rng_state,
-# ):
-#
-#     result = make_heap(query_points.shape[0], k)
-#     for i in range(query_points.shape[0]):
-#         visited[:] = 0
-#         current_query = query_points[i]
-#         heap_priorities = result[1][i]
-#         heap_indices = result[0][i]
-#         search_init(
-#             current_query,
-#             heap_priorities,
-#             heap_indices,
-#             data,
-#             forest,
-#             n_neighbors,
-#             visited,
-#             dist,
-#             rng_state,
-#         )
-#         search_from_init(
-#             current_query,
-#             data,
-#             indptr,
-#             indices,
-#             heap_priorities,
-#             heap_indices,
-#             epsilon,
-#             visited,
-#             dist,
-#         )
-#
-#     return result
-
 
 @numba.njit(parallel=True)
 def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
