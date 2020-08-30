@@ -50,7 +50,7 @@ from pynndescent.rp_trees import (
     renumbaify_tree,
     select_side,
     sparse_select_side,
-    score_tree,
+    score_linked_tree,
 )
 
 update_type = numba.types.List(
@@ -831,8 +831,8 @@ class NNDescent(object):
     ):
 
         if n_trees is None:
-            n_trees = 5 + int(round((data.shape[0]) ** 0.5 / 20.0))
-            n_trees = min(64, n_trees)  # Only so many trees are useful
+            n_trees = 5 + int(round((data.shape[0]) ** 0.5 / 40.0))
+            n_trees = min(32, n_trees)  # Only so many trees are useful
         if n_iters is None:
             n_iters = max(5, int(round(np.log2(data.shape[0]))))
 
@@ -895,7 +895,8 @@ class NNDescent(object):
         else:
             self._distance_func = _distance_func
 
-        if metric in ("cosine", "dot", "correlation", "dice", "jaccard", "hellinger"):
+        if metric in ("cosine", "dot", "correlation", "dice", "jaccard", "hellinger",
+                      "hamming"):
             self._angular_trees = True
         else:
             self._angular_trees = False
@@ -1069,19 +1070,14 @@ class NNDescent(object):
     def _init_search_graph(self):
 
         if not hasattr(self, "_search_forest"):
-            converted_forest = [
-                convert_tree_format(tree, self._raw_data.shape[0])
-                for tree in self._rp_forest
-            ]
             tree_scores = [
-                score_tree(
-                    tree, self._neighbor_graph[0], self._raw_data, self.rng_state
-                )
-                for tree in converted_forest
+                score_linked_tree(tree, self._neighbor_graph[0])
+                for tree in self._rp_forest
             ]
             best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
             self._search_forest = [
-                converted_forest[idx] for idx in best_tree_indices
+                convert_tree_format(self._rp_forest[idx], self._raw_data.shape[0])
+                for idx in best_tree_indices
             ]
 
         if self._is_sparse:

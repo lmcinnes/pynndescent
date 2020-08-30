@@ -1113,7 +1113,7 @@ def get_leaves_from_tree(tree):
         if tree.children[i][0] == -1 and tree.children[i][1] == -1:
             n_leaves += 1
 
-    result = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int32)
+    result = np.full((n_leaves, tree.leaf_size), -1, dtype=np.int32)
     leaf_index = 0
     for i in range(len(tree.indices)):
         if tree.children[i][0] == -1 or tree.children[i][1] == -1:
@@ -1353,4 +1353,16 @@ def score_tree(tree, neighbor_indices, data, rng_state):
         )
         intersection = arr_intersect(neighbor_indices[i], leaf_indices)
         result += numba.float32(intersection.shape[0] > 1)
+    return result / numba.float32(neighbor_indices.shape[0])
+
+
+@numba.njit(nogil=True, parallel=True)
+def score_linked_tree(tree, neighbor_indices):
+    result = 0.0
+    for i in numba.prange(len(tree.children)):
+        if tree.children[i][0] == -1 and tree.children[i][1] == -1:
+            for j in range(tree.indices[i].shape[0]):
+                idx = tree.indices[i][j]
+                intersection = arr_intersect(neighbor_indices[idx], tree.indices[i])
+                result += numba.float32(intersection.shape[0] > 1)
     return result / numba.float32(neighbor_indices.shape[0])
