@@ -1074,6 +1074,10 @@ class NNDescent(object):
                 score_linked_tree(tree, self._neighbor_graph[0])
                 for tree in self._rp_forest
             ]
+            if self.verbose:
+                print(ts(), "Worst tree score: {:.8f}".format(np.min(tree_scores)))
+                print(ts(), "Mean tree score: {:.8f}".format(np.mean(tree_scores)))
+                print(ts(), "Best tree score: {:.8f}".format(np.max(tree_scores)))
             best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
             self._search_forest = [
                 convert_tree_format(self._rp_forest[idx], self._raw_data.shape[0])
@@ -1116,7 +1120,16 @@ class NNDescent(object):
         self._search_graph.data[self._search_graph.indices == -1] = 0.0
         self._search_graph.eliminate_zeros()
 
+        if self.verbose:
+            print(
+                ts(),
+                "Forward diversification reduced edges from {} to {}".format(
+                    np.sum(self._neighbor_graph[0] >= 0), self._search_graph.nnz
+                ),
+            )
+
         # Reverse graph
+        pre_reverse_diversify_nnz = self._search_graph.nnz
         reverse_graph = self._search_graph.transpose()
         if self._is_sparse:
             sparse.diversify_csr(
@@ -1142,6 +1155,14 @@ class NNDescent(object):
             )
         reverse_graph.eliminate_zeros()
 
+        if self.verbose:
+            print(
+                ts(),
+                "Reverse diversification reduced edges from {} to {}".format(
+                    pre_reverse_diversify_nnz, reverse_graph.nnz
+                ),
+            )
+
         self._search_graph = self._search_graph.maximum(reverse_graph).tocsr()
 
         # Eliminate the diagonal
@@ -1150,6 +1171,7 @@ class NNDescent(object):
 
         self._search_graph.eliminate_zeros()
 
+        pre_prune_nnz = self._search_graph.nnz
         self._search_graph = degree_prune(
             self._search_graph,
             int(np.round(self.prune_degree_multiplier * self.n_neighbors)),
@@ -1157,11 +1179,21 @@ class NNDescent(object):
         self._search_graph.eliminate_zeros()
         self._search_graph = (self._search_graph != 0).astype(np.int8)
 
+        if self.verbose:
+            print(
+                ts(),
+                "Degree pruning reduced edges from {} to {}".format(
+                    pre_prune_nnz, self._search_graph.nnz,
+                ),
+            )
+
         self._visited = np.zeros(
             (self._raw_data.shape[0] // 8) + 1, dtype=np.uint8, order="C"
         )
 
         # reorder according to the search tree leaf order
+        if self.verbose:
+            print(ts(), "Resorting data and graph based on tree order")
         self._vertex_order = self._search_forest[0].indices
         row_ordered_graph = self._search_graph[self._vertex_order, :].tocsc()
         self._search_graph = row_ordered_graph[:, self._vertex_order]
@@ -1180,10 +1212,15 @@ class NNDescent(object):
         )
 
         if self.compressed:
+            if self.verbose:
+                print(ts(), "Compressing index by removing unneeded attributes")
             del self._rp_forest
             del self._neighbor_graph
 
     def _init_search_function(self):
+
+        if self.verbose:
+            print(ts(), "Building and compiling search function")
 
         tree_hyperplanes = self._search_forest[0].hyperplanes
         tree_offsets = self._search_forest[0].offsets
@@ -1227,16 +1264,20 @@ class NNDescent(object):
             locals={
                 "current_query": numba.types.float32[::1],
                 "i": numba.types.uint32,
+                "j": numba.types.uint32,
                 "heap_priorities": numba.types.float32[::1],
                 "heap_indices": numba.types.int32[::1],
                 "candidate": numba.types.int32,
+                "vertex": numba.types.int32,
                 "d": numba.types.float32,
+                "d_vertex": numba.types.float32,
                 "visited": numba.types.uint8[::1],
                 "indices": numba.types.int32[::1],
                 "indptr": numba.types.int32[::1],
                 "data": numba.types.float32[:, ::1],
                 "heap_size": numba.types.int16,
                 "distance_scale": numba.types.float32,
+                "distance_bound": numba.types.float32,
                 "seed_scale": numba.types.float32,
             },
         )
@@ -1261,7 +1302,7 @@ class NNDescent(object):
                 heap_priorities = result[1][i]
                 heap_indices = result[0][i]
                 seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
-                heapq.heapify(seed_set)
+                # heapq.heapify(seed_set)
 
                 ############ Init ################
                 index_bounds = tree_search_closure(current_query, rng_state,)
@@ -1279,7 +1320,7 @@ class NNDescent(object):
                     mark_visited(visited, candidate)
 
                 if n_random_samples > 0:
-                    for i in range(n_random_samples):
+                    for j in range(n_random_samples):
                         candidate = np.int32(
                             np.abs(tau_rand_int(rng_state)) % data.shape[0]
                         )
@@ -1303,30 +1344,33 @@ class NNDescent(object):
 
                         candidate = indices[j]
 
-                        if has_been_visited(visited, candidate) == 0:
-                            mark_visited(visited, candidate)
+                        if has_been_visited(visited, candidate):
+                            continue
 
-                            d = dist(data[candidate], current_query)
+                        mark_visited(visited, candidate)
+                        d = dist(data[candidate], current_query)
+                        if d < distance_bound:
+                            simple_heap_push(
+                                heap_priorities, heap_indices, d, candidate
+                            )
+                            heapq.heappush(seed_set, (d, candidate))
+                            # Update bound
+                            distance_bound = distance_scale * heap_priorities[0]
 
-                            if d < distance_bound:
-                                simple_heap_push(
-                                    heap_priorities, heap_indices, d, candidate
-                                )
-                                heapq.heappush(seed_set, (d, candidate))
-                                # Update bound
-                                distance_bound = distance_scale * heap_priorities[0]
+                    if len(seed_set) == 0:
+                        return result
 
                     # find new smallest seed point
-                    if len(seed_set) == 0:
-                        break
-                    else:
-                        d_vertex, vertex = heapq.heappop(seed_set)
+                    d_vertex, vertex = heapq.heappop(seed_set)
 
             return result
 
         self._search_function = search_closure
 
     def _init_sparse_search_function(self):
+
+        if self.verbose:
+            print(ts(), "Building and compiling sparse search function")
 
         tree_hyperplanes = self._search_forest[0].hyperplanes
         tree_offsets = self._search_forest[0].offsets
