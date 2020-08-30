@@ -51,12 +51,21 @@ def arr_intersect(ar1, ar2):
 
 
 @numba.njit(
+    [
+        numba.types.Tuple(
+            (
+                numba.types.Array(numba.types.int32, 1, "C"),
+                numba.types.Array(numba.types.float32, 1, "C"),
+            )
+        )(
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
     fastmath=True,
     locals={
-        "ind1": numba.types.int32[::1],
-        "data1": numba.types.float32[::1],
-        "ind2": numba.types.int32[::1],
-        "data2": numba.types.float32[::1],
         "result_ind": numba.types.int32[::1],
         "result_data": numba.types.float32[::1],
         "val": numba.types.float32,
@@ -135,12 +144,22 @@ def sparse_diff(ind1, data1, ind2, data2):
 
 
 @numba.njit(
+    [
+        # "Tuple((i4[::1],f4[::1]))(i4[::1],f4[::1],i4[::1],f4[::1])",
+        numba.types.Tuple(
+            (
+                numba.types.ListType(numba.types.int32),
+                numba.types.ListType(numba.types.float32),
+            )
+        )(
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
     fastmath=True,
     locals={
-        "ind1": numba.types.int32[::1],
-        "data1": numba.types.float32[::1],
-        "ind2": numba.types.int32[::1],
-        "data2": numba.types.float32[::1],
         "val": numba.types.float32,
         "i1": numba.types.int32,
         "i2": numba.types.int32,
@@ -175,40 +194,6 @@ def sparse_mul(ind1, data1, ind2, data2):
     return result_ind, result_data
 
 
-# @numba.njit()
-# def sparse_mul(ind1, data1, ind2, data2):
-#     result_ind = arr_intersect(ind1, ind2)
-#     result_data = np.zeros(result_ind.shape[0], dtype=np.float32)
-#
-#     i1 = 0
-#     i2 = 0
-#     nnz = 0
-#
-#     # pass through both index lists
-#     while i1 < ind1.shape[0] and i2 < ind2.shape[0]:
-#         j1 = ind1[i1]
-#         j2 = ind2[i2]
-#
-#         if j1 == j2:
-#             val = data1[i1] * data2[i2]
-#             if val != 0:
-#                 result_ind[nnz] = j1
-#                 result_data[nnz] = val
-#                 nnz += 1
-#             i1 += 1
-#             i2 += 1
-#         elif j1 < j2:
-#             i1 += 1
-#         else:
-#             i2 += 1
-#
-#     # truncate to the correct length in case there were zeros created
-#     result_ind = result_ind[:nnz]
-#     result_data = result_data[:nnz]
-#
-#     return result_ind, result_data
-
-
 @numba.njit()
 def sparse_euclidean(ind1, data1, ind2, data2):
     _, aux_data = sparse_diff(ind1, data1, ind2, data2)
@@ -219,7 +204,15 @@ def sparse_euclidean(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+    [
+        "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
     fastmath=True,
     locals={
         "aux_data": numba.types.float32[::1],
@@ -614,9 +607,7 @@ def create_ground_metric(ground_vectors, metric):
 
 
 @numba.njit()
-def sparse_kantorovich(
-    ind1, data1, ind2, data2, ground_metric=dummy_ground_metric
-):
+def sparse_kantorovich(ind1, data1, ind2, data2, ground_metric=dummy_ground_metric):
 
     cost_matrix = np.empty((ind1.shape[0], ind2.shape[0]))
     for i in range(ind1.shape[0]):
@@ -626,10 +617,16 @@ def sparse_kantorovich(
     return kantorovich(data1, data2, cost_matrix)
 
 
-
 @numba.njit(parallel=True)
 def diversify(
-    indices, distances, data_indices, data_indptr, data_data, dist, rng_state, prune_probability=1.0,
+    indices,
+    distances,
+    data_indices,
+    data_indptr,
+    data_data,
+    dist,
+    rng_state,
+    prune_probability=1.0,
 ):
 
     for i in numba.prange(indices.shape[0]):
@@ -684,7 +681,8 @@ def diversify_csr(
     data_indices,
     data_data,
     dist,
-    rng_state, prune_probability=1.0,
+    rng_state,
+    prune_probability=1.0,
 ):
 
     n_nodes = graph_indptr.shape[0] - 1

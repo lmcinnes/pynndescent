@@ -526,7 +526,7 @@ def nn_descent(
 
     n_samples = indptr.shape[0] - 1
 
-    if init_graph.indices.shape[0] == 1:  # EMPTY_GRAPH
+    if init_graph[0].shape[0] == 1:  # EMPTY_GRAPH
         current_graph = make_heap(n_samples, n_neighbors)
 
         if rp_tree_init:
@@ -534,8 +534,8 @@ def nn_descent(
 
         init_random(n_neighbors, inds, indptr, data, current_graph, dist, rng_state)
     elif (
-        init_graph.indices.shape[0] == n_samples
-        and init_graph.indices.shape[1] == n_neighbors
+        init_graph[0].shape[0] == n_samples
+        and init_graph[0].shape[1] == n_neighbors
     ):
         current_graph = init_graph
     else:

@@ -199,7 +199,7 @@ def test_mark_candidate_results():
     pynndescent_.nn_descent_internal_low_memory_parallel(
         current_graph, data, n_neighbors, new_rng_state(), n_iters=2, seed_per_row=True
     )
-    current_graph_threaded = utils.Heap(
+    current_graph_threaded = (
         current_graph[0].copy(), current_graph[1].copy(), current_graph[2].copy(),
     )
     new_candidate_neighbors, old_candidate_neighbors = utils.new_build_candidates(
