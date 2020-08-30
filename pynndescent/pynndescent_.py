@@ -895,8 +895,15 @@ class NNDescent(object):
         else:
             self._distance_func = _distance_func
 
-        if metric in ("cosine", "dot", "correlation", "dice", "jaccard", "hellinger",
-                      "hamming"):
+        if metric in (
+            "cosine",
+            "dot",
+            "correlation",
+            "dice",
+            "jaccard",
+            "hellinger",
+            "hamming",
+        ):
             self._angular_trees = True
         else:
             self._angular_trees = False
@@ -1069,6 +1076,11 @@ class NNDescent(object):
 
     def _init_search_graph(self):
 
+        # Set threading constraints
+        self._original_num_threads = numba.get_num_threads()
+        if self.n_jobs != -1 and self.n_jobs is not None:
+            numba.set_num_threads(self.n_jobs)
+
         if not hasattr(self, "_search_forest"):
             tree_scores = [
                 score_linked_tree(tree, self._neighbor_graph[0])
@@ -1216,6 +1228,8 @@ class NNDescent(object):
                 print(ts(), "Compressing index by removing unneeded attributes")
             del self._rp_forest
             del self._neighbor_graph
+
+        numba.set_num_threads(self._original_num_threads)
 
     def _init_search_function(self):
 
