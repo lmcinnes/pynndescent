@@ -1298,17 +1298,21 @@ def convert_tree_format(tree, data_size):
     return FlatTree(hyperplanes, offsets, children, indices, tree.leaf_size)
 
 
-def denumbaify_tree(tree):
-    result_hyperplanes = list(tree.hyperplanes)
-    result_offsets = list(tree.offsets)
-    result_children = list(tree.children)
-    result_indices = list(tree.indices)
+# Indices for tuple version of flat tree for pickle serialization
+FLAT_TREE_HYPERPLANES = 0
+FLAT_TREE_OFFSETS = 1
+FLAT_TREE_CHILDREN = 2
+FLAT_TREE_INDICES = 3
+FLAT_TREE_LEAF_SIZE = 4
 
-    result = FlatTree(
-        result_hyperplanes,
-        result_offsets,
-        result_children,
-        result_indices,
+
+def denumbaify_tree(tree):
+
+    result = (
+        tree.hyperplanes,
+        tree.offsets,
+        tree.children,
+        tree.indices,
         tree.leaf_size,
     )
 
@@ -1317,17 +1321,13 @@ def denumbaify_tree(tree):
 
 def renumbaify_tree(tree):
 
-    hyperplanes = numba.typed.List.empty_list(sparse_hyperplane_type)
-    offsets = numba.typed.List.empty_list(offset_type)
-    children = numba.typed.List.empty_list(children_type)
-    point_indices = numba.typed.List.empty_list(point_indices_type)
-
-    hyperplanes.extend(tree.hyperplanes)
-    offsets.extend(tree.offsets)
-    children.extend(tree.children)
-    point_indices.extend(tree.indices)
-
-    result = FlatTree(hyperplanes, offsets, children, point_indices, tree.leaf_size,)
+    result = FlatTree(
+        tree[FLAT_TREE_HYPERPLANES],
+        tree[FLAT_TREE_OFFSETS],
+        tree[FLAT_TREE_CHILDREN],
+        tree[FLAT_TREE_INDICES],
+        tree[FLAT_TREE_LEAF_SIZE],
+    )
 
     return result
 
@@ -1356,13 +1356,17 @@ def score_tree(tree, neighbor_indices, data, rng_state):
     return result / numba.float32(neighbor_indices.shape[0])
 
 
-@numba.njit(nogil=True, parallel=True)
+@numba.njit(nogil=True, parallel=True, locals={"node": numba.int32})
 def score_linked_tree(tree, neighbor_indices):
     result = 0.0
-    for i in numba.prange(len(tree.children)):
-        if tree.children[i][0] == -1 and tree.children[i][1] == -1:
-            for j in range(tree.indices[i].shape[0]):
-                idx = tree.indices[i][j]
-                intersection = arr_intersect(neighbor_indices[idx], tree.indices[i])
+    n_nodes = len(tree.children)
+    for i in numba.prange(n_nodes):
+        node = numba.int32(i)
+        left_child = tree.children[node][0]
+        right_child = tree.children[node][1]
+        if left_child == -1 and right_child == -1:
+            for j in range(tree.indices[node].shape[0]):
+                idx = tree.indices[node][j]
+                intersection = arr_intersect(neighbor_indices[idx], tree.indices[node])
                 result += numba.float32(intersection.shape[0] > 1)
     return result / numba.float32(neighbor_indices.shape[0])

@@ -10,6 +10,8 @@ import numpy as np
 from scipy import sparse
 from sklearn.neighbors import KDTree
 from sklearn.preprocessing import normalize
+import pickle
+import joblib
 
 from pynndescent import NNDescent, PyNNDescentTransformer
 
@@ -342,3 +344,44 @@ def test_transformer_output_when_verbose_is_false():
         ).fit_transform(spatial_data)
     output = out.getvalue().strip()
     assert_equal(len(output), 0)
+
+
+def test_pickle_unpickle():
+    seed = np.random.RandomState(42)
+
+    x1 = seed.normal(0, 100, (1000, 50))
+    x2 = seed.normal(0, 100, (1000, 50))
+
+    index1 = NNDescent(
+        x1, "euclidean", {}, 10, random_state=None,
+    )
+    neighbors1, distances1 = index1.query(x2)
+
+    pickle.dump(index1, open("test_tmp.pkl", "wb"))
+    index2 = pickle.load(open("test_tmp.pkl", "rb"))
+    os.remove("test_tmp.pkl")
+
+    neighbors2, distances2 = index2.query(x2)
+
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_equal(distances1, distances2)
+
+def test_joblib_dump():
+    seed = np.random.RandomState(42)
+
+    x1 = seed.normal(0, 100, (1000, 50))
+    x2 = seed.normal(0, 100, (1000, 50))
+
+    index1 = NNDescent(
+        x1, "euclidean", {}, 10, random_state=None,
+    )
+    neighbors1, distances1 = index1.query(x2)
+
+    joblib.dump(index1, "test_tmp.dump")
+    index2 = joblib.load("test_tmp.dump")
+    os.remove("test_tmp.dump")
+
+    neighbors2, distances2 = index2.query(x2)
+
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_equal(distances1, distances2)

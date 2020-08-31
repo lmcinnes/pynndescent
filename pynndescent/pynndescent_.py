@@ -878,9 +878,13 @@ class NNDescent(object):
         numba.set_num_threads(self._original_num_threads)
 
     def __getstate__(self):
-        self._init_search_graph()
-        self._init_search_function()
+        if not hasattr(self, "_search_graph"):
+            self._init_search_graph()
+        if not hasattr(self, "_search_function"):
+            self._init_search_function()
         result = self.__dict__.copy()
+        if hasattr(self, "_rp_forest"):
+            del result["_rp_forest"]
         result["_search_forest"] = tuple(
             [denumbaify_tree(tree) for tree in self._search_forest]
         )
@@ -891,6 +895,7 @@ class NNDescent(object):
         self._search_forest = tuple(
             [renumbaify_tree(tree) for tree in d["_search_forest"]]
         )
+        self._init_search_function()
 
     def _init_search_graph(self):
 
