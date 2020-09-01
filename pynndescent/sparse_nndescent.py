@@ -230,6 +230,8 @@ def nn_descent_internal_low_memory_parallel(
             c += apply_graph_updates_low_memory(current_graph, updates)
 
         if c <= delta * n_neighbors * n_vertices:
+            if verbose:
+                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
             return
 
 
@@ -292,6 +294,8 @@ def nn_descent_internal_high_memory_parallel(
             c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
 
         if c <= delta * n_neighbors * n_vertices:
+            if verbose:
+                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
             return
 
 

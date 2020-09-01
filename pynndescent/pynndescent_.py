@@ -9,7 +9,13 @@ import numpy as np
 from sklearn.utils import check_random_state, check_array
 from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
-from scipy.sparse import lil_matrix, csr_matrix, coo_matrix, isspmatrix_csr, vstack as sparse_vstack
+from scipy.sparse import (
+    lil_matrix,
+    csr_matrix,
+    coo_matrix,
+    isspmatrix_csr,
+    vstack as sparse_vstack,
+)
 
 import heapq
 
@@ -58,6 +64,7 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 FLOAT32_EPS = np.finfo(np.float32).eps
 
 EMPTY_GRAPH = make_heap(1, 1)
+
 
 @numba.njit(parallel=True)
 def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
@@ -212,7 +219,7 @@ def nn_descent_internal_low_memory_parallel(
 
     for n in range(n_iters):
         if verbose:
-            print("\t", n, " / ", n_iters)
+            print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
             current_graph,
@@ -239,6 +246,8 @@ def nn_descent_internal_low_memory_parallel(
             c += apply_graph_updates_low_memory(current_graph, updates)
 
         if c <= delta * n_neighbors * data.shape[0]:
+            if verbose:
+                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
             return
 
 
@@ -266,7 +275,7 @@ def nn_descent_internal_high_memory_parallel(
 
     for n in range(n_iters):
         if verbose:
-            print("\t", n, " / ", n_iters)
+            print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
             current_graph,
@@ -293,6 +302,8 @@ def nn_descent_internal_high_memory_parallel(
             c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
 
         if c <= delta * n_neighbors * data.shape[0]:
+            if verbose:
+                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
             return
 
 
@@ -324,7 +335,6 @@ def nn_descent(
         init_graph[0].shape[0] == data.shape[0]
         and init_graph[0].shape[1] == n_neighbors
     ):
-        print("Using given init_graph")
         current_graph = init_graph
     else:
         raise ValueError("Invalid initial graph specified!")
@@ -949,7 +959,10 @@ class NNDescent(object):
         # Preserve any distance 0 points
         diversified_data[diversified_data == 0.0] = FLOAT32_EPS
 
-        self._search_graph.row = np.repeat(np.arange(diversified_rows.shape[0], dtype=np.int32), diversified_rows.shape[1])
+        self._search_graph.row = np.repeat(
+            np.arange(diversified_rows.shape[0], dtype=np.int32),
+            diversified_rows.shape[1],
+        )
         self._search_graph.col = diversified_rows.ravel()
         self._search_graph.data = diversified_data.ravel()
 
@@ -1424,8 +1437,15 @@ class NNDescent(object):
         return
 
     def prepare(self):
-        self._init_search_graph()
-        self._init_search_function()
+        if not hasattr(self, "_search_graph"):
+            self._init_search_graph()
+        if not hasattr(self, "_search_function"):
+            self._init_search_function()
+            # Force compilation of the search function (hardcoded k, epsilon)
+            query_data = self._raw_data[:1]
+            _ = self._search_function(
+                query_data, 5, 0.0, self._visited, self.search_rng_state.copy(),
+            )
         return
 
     def query(self, query_data, k=10, epsilon=0.1):
@@ -1459,14 +1479,14 @@ class NNDescent(object):
             from the ith query point to its jth nearest neighbor in the
             training graph_data.
         """
+        if not hasattr(self, "_search_graph"):
+            self._init_search_graph()
+        if not hasattr(self, "_search_function"):
+            self._init_search_function()
+
         if not self._is_sparse:
             # Standard case
             query_data = np.asarray(query_data).astype(np.float32, order="C")
-            if not hasattr(self, "_search_graph"):
-                self._init_search_graph()
-            if not hasattr(self, "_search_function"):
-                self._init_search_function()
-
             result = self._search_function(
                 query_data, k, epsilon, self._visited, self.search_rng_state.copy(),
             )
@@ -1477,10 +1497,6 @@ class NNDescent(object):
                 query_data = csr_matrix(query_data, dtype=np.float32)
             if not query_data.has_sorted_indices:
                 query_data.sort_indices()
-            if not hasattr(self, "_search_graph"):
-                self._init_search_graph()
-            if not hasattr(self, "_search_function"):
-                self._init_sparse_search_function()
 
             current_random_state = check_random_state(self.random_state)
             self.rng_state = current_random_state.randint(
