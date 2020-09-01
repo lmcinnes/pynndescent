@@ -48,7 +48,7 @@ configuration = {
     "test_suite": "nose.collector",
     "tests_require": ["nose"],
     "data_files": (),
-    "zip_safe": True,
+    "zip_safe": False,
 }
 
 setup(**configuration)
