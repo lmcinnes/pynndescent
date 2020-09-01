@@ -1423,6 +1423,11 @@ class NNDescent(object):
         gc.collect()
         return
 
+    def prepare(self):
+        self._init_search_graph()
+        self._init_search_function()
+        return
+
     def query(self, query_data, k=10, epsilon=0.1):
         """Query the training graph_data for the k nearest neighbors
 
@@ -1440,18 +1445,6 @@ class NNDescent(object):
             produce more accurate nearest neighbor results at larger computational
             cost for the search. Values should be in the range 0.0 to 0.5, but
             should probably not exceed 0.3 without good reason.
-
-        n_search_trees: int (default 1)
-            The number of random projection trees to use in initializing the
-            search. More trees will tend to produce more accurate results,
-            but cost runtime performance.
-
-        queue_size: float (default 1.0)
-            The multiplier of the internal search queue. This controls the
-            speed/accuracy tradeoff. Low values will search faster but with
-            more approximate results. High values will search more
-            accurately, but will require more computation to do so. Values
-            should generally be in the range 1.0 to 10.0.
 
         Returns
         -------
