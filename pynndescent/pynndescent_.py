@@ -9,7 +9,7 @@ import numpy as np
 from sklearn.utils import check_random_state, check_array
 from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
-from scipy.sparse import lil_matrix, csr_matrix, isspmatrix_csr, vstack as sparse_vstack
+from scipy.sparse import lil_matrix, csr_matrix, coo_matrix, isspmatrix_csr, vstack as sparse_vstack
 
 import heapq
 
@@ -914,9 +914,11 @@ class NNDescent(object):
                 print(ts(), "Mean tree score: {:.8f}".format(np.mean(tree_scores)))
                 print(ts(), "Best tree score: {:.8f}".format(np.max(tree_scores)))
             best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
+            best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
+            del self._rp_forest
             self._search_forest = [
-                convert_tree_format(self._rp_forest[idx], self._raw_data.shape[0])
-                for idx in best_tree_indices
+                convert_tree_format(tree, self._raw_data.shape[0])
+                for tree in best_trees
             ]
 
         if self._is_sparse:
@@ -940,15 +942,16 @@ class NNDescent(object):
                 self.diversify_prob,
             )
 
-        self._search_graph = lil_matrix(
+        self._search_graph = coo_matrix(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
         )
 
         # Preserve any distance 0 points
         diversified_data[diversified_data == 0.0] = FLOAT32_EPS
 
-        self._search_graph.rows[:] = diversified_rows.tolist()
-        self._search_graph.data[:] = diversified_data.tolist()
+        self._search_graph.row = np.repeat(np.arange(diversified_rows.shape[0], dtype=np.int32), diversified_rows.shape[1])
+        self._search_graph.col = diversified_rows.ravel()
+        self._search_graph.data = diversified_data.ravel()
 
         # Get rid of any -1 index entries
         self._search_graph = self._search_graph.tocsr()
@@ -997,13 +1000,10 @@ class NNDescent(object):
                     pre_reverse_diversify_nnz, reverse_graph.nnz
                 ),
             )
+        self._search_graph += reverse_graph
 
-        self._search_graph = self._search_graph.maximum(reverse_graph).tocsr()
-
-        # Eliminate the diagonal
-        n_vertices = self._search_graph.shape[0]
-        self._search_graph[np.arange(n_vertices), np.arange(n_vertices)] = 0.0
-
+        # Eliminate the diagonal0]
+        self._search_graph.setdiag(0.0)
         self._search_graph.eliminate_zeros()
 
         pre_prune_nnz = self._search_graph.nnz
@@ -1049,7 +1049,8 @@ class NNDescent(object):
         if self.compressed:
             if self.verbose:
                 print(ts(), "Compressing index by removing unneeded attributes")
-            del self._rp_forest
+            if hasattr(self, "_rp_forest"):
+                del self._rp_forest
             del self._neighbor_graph
 
         numba.set_num_threads(self._original_num_threads)

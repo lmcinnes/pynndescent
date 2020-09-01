@@ -1235,22 +1235,6 @@ def num_nodes_and_leaves(tree):
     return n_nodes, n_leaves
 
 
-# #@numba.njit()
-# def convert_tree_format(tree):
-#     n_nodes, n_leaves = num_nodes_and_leaves(tree)
-#     print(n_nodes, n_leaves, len(tree.children))
-#     hyperplane_dim = np.max([tree.hyperplanes[i].shape[0] for i in range(len(
-#         tree.hyperplanes))])
-#
-#     hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
-#     offsets = np.zeros(n_nodes, dtype=np.float32)
-#     children = -1 * np.ones((n_nodes, 2), dtype=np.int64)
-#     graph_indices = -1 * np.ones((n_leaves, tree.leaf_size), dtype=np.int64)
-#     recursive_convert(tree, hyperplanes, offsets, children, graph_indices, 0, 0,
-#                       len(tree.children) - 1)
-#     return FlatTree(hyperplanes, offsets, children, graph_indices, tree.leaf_size)
-
-
 @numba.njit()
 def dense_hyperplane_dim(hyperplanes):
     for i in range(len(hyperplanes)):
