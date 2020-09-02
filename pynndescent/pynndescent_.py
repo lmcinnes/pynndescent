@@ -742,6 +742,9 @@ class NNDescent(object):
         self.search_rng_state = current_random_state.randint(
             INT32_MIN, INT32_MAX, 3
         ).astype(np.int64)
+        # Warm up the rng state
+        for i in range(10):
+            _ = tau_rand_int(self.search_rng_state)
 
         if self.tree_init:
             if verbose:
@@ -1089,6 +1092,7 @@ class NNDescent(object):
         )
         def tree_search_closure(point, rng_state):
             node = 0
+            side_parity = np.zeros(1, dtype=np.uint8)
             while tree_children[node, 0] > 0:
                 side = select_side(
                     tree_hyperplanes[node], tree_offsets[node], point, rng_state
@@ -1138,6 +1142,7 @@ class NNDescent(object):
 
             result = make_heap(query_points.shape[0], k)
             distance_scale = 1.0 + epsilon
+            internal_rng_state = np.copy(rng_state)
 
             for i in range(query_points.shape[0]):
                 visited[:] = 0
@@ -1156,11 +1161,12 @@ class NNDescent(object):
                 # heapq.heapify(seed_set)
 
                 ############ Init ################
-                index_bounds = tree_search_closure(current_query, rng_state,)
+                index_bounds = tree_search_closure(current_query, internal_rng_state)
                 candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
 
                 n_initial_points = candidate_indices.shape[0]
                 n_random_samples = min(k, n_neighbors) - n_initial_points
+                candidate = 0
 
                 for j in range(n_initial_points):
                     candidate = candidate_indices[j]
@@ -1173,7 +1179,7 @@ class NNDescent(object):
                 if n_random_samples > 0:
                     for j in range(n_random_samples):
                         candidate = np.int32(
-                            np.abs(tau_rand_int(rng_state)) % data.shape[0]
+                            np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
                         if has_been_visited(visited, candidate) == 0:
                             d = dist(data[candidate], current_query)
@@ -1217,6 +1223,11 @@ class NNDescent(object):
             return result
 
         self._search_function = search_closure
+        # Force compilation of the search function (hardcoded k, epsilon)
+        query_data = self._raw_data[:1]
+        _ = self._search_function(
+            query_data, 5, 0.0, self._visited, self.search_rng_state,
+        )
 
     def _init_sparse_search_function(self):
 
@@ -1238,7 +1249,7 @@ class NNDescent(object):
             ],
             locals={"node": numba.types.uint32, "side": numba.types.boolean},
         )
-        def tree_search_closure(point_inds, point_data, rng_state):
+        def sparse_tree_search_closure(point_inds, point_data, rng_state):
             node = 0
             while tree_children[node, 0] > 0:
                 side = sparse_select_side(
@@ -1255,7 +1266,7 @@ class NNDescent(object):
 
             return -tree_children[node]
 
-        self._tree_search = tree_search_closure
+        self._tree_search = sparse_tree_search_closure
 
         from pynndescent.distances import alternative_dot, alternative_cosine
 
@@ -1293,6 +1304,7 @@ class NNDescent(object):
             n_index_points = data_indptr.shape[0] - 1
             result = make_heap(n_query_points, k)
             distance_scale = 1.0 + epsilon
+            internal_rng_state = np.copy(rng_state)
 
             for i in range(n_query_points):
                 visited[:] = 0
@@ -1313,8 +1325,8 @@ class NNDescent(object):
                 heapq.heapify(seed_set)
 
                 ############ Init ################
-                index_bounds = tree_search_closure(
-                    current_query_inds, current_query_data, rng_state,
+                index_bounds = sparse_tree_search_closure(
+                    current_query_inds, current_query_data, internal_rng_state,
                 )
                 candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
 
@@ -1342,7 +1354,7 @@ class NNDescent(object):
                 if n_random_samples > 0:
                     for i in range(n_random_samples):
                         candidate = np.int32(
-                            np.abs(tau_rand_int(rng_state)) % n_index_points
+                            np.abs(tau_rand_int(internal_rng_state)) % n_index_points
                         )
                         if has_been_visited(visited, candidate) == 0:
                             from_inds = data_inds[
@@ -1412,6 +1424,18 @@ class NNDescent(object):
 
         self._search_function = search_closure
 
+        # Force compilation of the search function (hardcoded k, epsilon)
+        query_data = self._raw_data[:1]
+        _ = self._search_function(
+            query_data.indices,
+            query_data.indptr,
+            query_data.data,
+            5,
+            0.0,
+            self._visited,
+            self.search_rng_state,
+        )
+
     @property
     def neighbor_graph(self):
         if self.compressed:
@@ -1440,12 +1464,10 @@ class NNDescent(object):
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
         if not hasattr(self, "_search_function"):
-            self._init_search_function()
-            # Force compilation of the search function (hardcoded k, epsilon)
-            query_data = self._raw_data[:1]
-            _ = self._search_function(
-                query_data, 5, 0.0, self._visited, self.search_rng_state.copy(),
-            )
+            if self._is_sparse:
+                self._init_sparse_search_function()
+            else:
+                self._init_search_function()
         return
 
     def query(self, query_data, k=10, epsilon=0.1):
@@ -1481,27 +1503,27 @@ class NNDescent(object):
         """
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
-        if not hasattr(self, "_search_function"):
-            self._init_search_function()
 
         if not self._is_sparse:
             # Standard case
+            if not hasattr(self, "_search_function"):
+                self._init_search_function()
+
             query_data = np.asarray(query_data).astype(np.float32, order="C")
             result = self._search_function(
-                query_data, k, epsilon, self._visited, self.search_rng_state.copy(),
+                query_data, k, epsilon, self._visited, self.search_rng_state,
             )
         else:
             # Sparse case
+            if not hasattr(self, "_search_function"):
+                self._init_sparse_search_function()
+
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
             if not isspmatrix_csr(query_data):
                 query_data = csr_matrix(query_data, dtype=np.float32)
             if not query_data.has_sorted_indices:
                 query_data.sort_indices()
 
-            current_random_state = check_random_state(self.random_state)
-            self.rng_state = current_random_state.randint(
-                INT32_MIN, INT32_MAX, 3
-            ).astype(np.int64)
             result = self._search_function(
                 query_data.indices,
                 query_data.indptr,
@@ -1509,7 +1531,7 @@ class NNDescent(object):
                 k,
                 epsilon,
                 self._visited,
-                self.rng_state,
+                self.search_rng_state.copy(),
             )
 
         indices, dists = deheap_sort(result)
