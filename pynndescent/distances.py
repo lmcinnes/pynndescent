@@ -215,6 +215,46 @@ def jaccard(x, y):
         return float(num_non_zero - num_equal) / num_non_zero
 
 
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "num_non_zero": numba.types.float32,
+        "num_equal": numba.types.float32,
+        "x_true": numba.types.uint8,
+        "y_true": numba.types.uint8,
+        "dim": numba.types.uint32,
+        "i": numba.types.uint16,
+    },
+)
+def alternative_jaccard(x, y):
+    num_non_zero = 0.0
+    num_equal = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        x_true = x[i] != 0
+        y_true = y[i] != 0
+        num_non_zero += x_true or y_true
+        num_equal += x_true and y_true
+
+    if num_non_zero == 0.0:
+        return 0.0
+    else:
+        return -np.log2(num_equal / num_non_zero)
+
+
+@numba.vectorize(fastmath=True)
+def correct_alternative_jaccard(v):
+    return 1.0 - pow(2.0, -v)
+
+
 @numba.njit(fastmath=True, cache=True)
 def matching(x, y):
     num_not_equal = 0.0
@@ -448,9 +488,9 @@ def alternative_dot(x, y):
         return -np.log2(result)
 
 
-@numba.vectorize(fastmath=True, cache=True)
+@numba.vectorize(fastmath=True)
 def correct_alternative_cosine(d):
-    return 1.0 - np.exp(-d)
+    return 1.0 - pow(2.0, -d)
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -542,12 +582,13 @@ def alternative_hellinger(x, y):
     elif result <= 0:
         return FLOAT32_MAX
     else:
-        return 0.5 * (np.log(l1_norm_x) + np.log(l1_norm_y)) - np.log(result)
+        result = np.sqrt(l1_norm_x * l1_norm_y) / result
+        return np.log2(result)
 
 
-@numba.vectorize(fastmath=True, cache=True)
+@numba.vectorize(fastmath=True)
 def correct_alternative_hellinger(d):
-    return np.arccos(np.exp(-d))
+    return np.sqrt(1.0 - pow(2.0, -d))
 
 
 @numba.njit()
@@ -705,4 +746,5 @@ fast_distance_alternatives = {
         "dist": alternative_hellinger,
         "correction": correct_alternative_hellinger,
     },
+    "jaccard": {"dist": alternative_jaccard, "correction": correct_alternative_jaccard},
 }

@@ -399,3 +399,23 @@ def test_spearmanr():
     scipy_expected = stats.spearmanr(x, y)
     r = dist.spearmanr(x, y)
     assert_array_equal(r, scipy_expected.correlation)
+
+
+def test_alternative_distances():
+
+    for distname in dist.fast_distance_alternatives:
+
+        true_dist = dist.named_distances[distname]
+        alt_dist = dist.fast_distance_alternatives[distname]["dist"]
+        correction = dist.fast_distance_alternatives[distname]["correction"]
+
+        for i in range(100):
+            x = np.random.random(30).astype(np.float32)
+            y = np.random.random(30).astype(np.float32)
+            x[x < 0.25] = 0.0
+            y[y < 0.25] = 0.0
+
+            true_distance = true_dist(x, y)
+            corrected_alt_distance = correction(alt_dist(x, y))
+
+            assert(np.isclose(true_distance, corrected_alt_distance))
