@@ -859,7 +859,7 @@ class NNDescent(object):
             else:
                 _init_graph = make_heap(init_graph.shape[0], init_graph.shape[1])
                 _init_graph = initalize_heap_from_graph_indices(
-                    _init_graph, init_graph, data, metric
+                    _init_graph, init_graph, data, self._distance_func
                 )
 
             if verbose:
