@@ -967,15 +967,15 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
     return n_changes
 
 
-@numba.njit(parallel=True)
+@numba.njit()
 def initalize_heap_from_graph_indices(heap, graph_indices, data, metric):
 
-    for i in numba.prange(graph_indices.shape[0]):
+    for i in range(graph_indices.shape[0]):
         for idx in range(graph_indices.shape[1]):
             j = graph_indices[i, idx]
-            d = metric(data[i], data[j])
-            # unchecked_heap_push(heap, i, d, j, 1)
-            flagged_heap_push(heap[0][i], heap[1][i], heap[2][i], j, d, 1)
+            if j >= 0:
+                d = metric(data[i], data[j])
+                flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, j, 1)
 
     return heap
 

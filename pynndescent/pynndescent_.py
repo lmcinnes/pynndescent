@@ -656,7 +656,7 @@ class NNDescent(object):
     ):
 
         if n_trees is None:
-            n_trees = 5 + int(round((data.shape[0]) ** 0.5 / 40.0))
+            n_trees = 5 + int(round((data.shape[0]) ** 0.25))
             n_trees = min(32, n_trees)  # Only so many trees are useful
         if n_iters is None:
             n_iters = max(5, int(round(np.log2(data.shape[0]))))
@@ -1092,7 +1092,6 @@ class NNDescent(object):
         )
         def tree_search_closure(point, rng_state):
             node = 0
-            side_parity = np.zeros(1, dtype=np.uint8)
             while tree_children[node, 0] > 0:
                 side = select_side(
                     tree_hyperplanes[node], tree_offsets[node], point, rng_state
@@ -1438,7 +1437,7 @@ class NNDescent(object):
 
     @property
     def neighbor_graph(self):
-        if self.compressed:
+        if self.compressed and not hasattr(self, "_neighbor_graph"):
             warn("Compressed indexes do not have neighbor graph information.")
             return None
         if self._distance_correction is not None:
