@@ -1016,7 +1016,11 @@ class NNDescent(object):
                     pre_reverse_diversify_nnz, reverse_graph.nnz
                 ),
             )
-        self._search_graph += reverse_graph
+        reverse_graph = reverse_graph.tocsr()
+        reverse_graph.sort_indices()
+        self._search_graph = self._search_graph.tocsr()
+        self._search_graph.sort_indices()
+        self._search_graph = self._search_graph.maximum(reverse_graph)
 
         # Eliminate the diagonal0]
         self._search_graph.setdiag(0.0)
@@ -1028,7 +1032,7 @@ class NNDescent(object):
             int(np.round(self.prune_degree_multiplier * self.n_neighbors)),
         )
         self._search_graph.eliminate_zeros()
-        self._search_graph = (self._search_graph != 0).astype(np.int8)
+        self._search_graph = (self._search_graph != 0).astype(np.uint8)
 
         if self.verbose:
             print(

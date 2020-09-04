@@ -159,7 +159,7 @@ def test_sparse_nn_descent_query_accuracy():
 
 def test_sparse_nn_descent_query_accuracy_angular():
     nnd = NNDescent(
-        sparse_nn_data[200:], "dot", n_neighbors=15, random_state=None
+        sparse_nn_data[200:], "cosine", n_neighbors=15, random_state=None
     )
     knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10, epsilon=0.24)
 
