@@ -136,10 +136,30 @@ def test_nn_descent_query_accuracy():
     )
 
 
-# @SkipTest
 def test_sparse_nn_descent_query_accuracy():
     nnd = NNDescent(
         sparse_nn_data[200:], "euclidean", n_neighbors=15, random_state=None
+    )
+    knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10, epsilon=0.24)
+
+    tree = KDTree(sparse_nn_data[200:].toarray())
+    true_indices = tree.query(sparse_nn_data[:200].toarray(), 10, return_distance=False)
+
+    num_correct = 0.0
+    for i in range(true_indices.shape[0]):
+        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    percent_correct = num_correct / (true_indices.shape[0] * 10)
+    assert_greater_equal(
+        percent_correct,
+        0.95,
+        "Sparse NN-descent query did not get 95% " "accuracy on nearest neighbors",
+    )
+
+
+def test_sparse_nn_descent_query_accuracy_angular():
+    nnd = NNDescent(
+        sparse_nn_data[200:], "dot", n_neighbors=15, random_state=None
     )
     knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10, epsilon=0.24)
 

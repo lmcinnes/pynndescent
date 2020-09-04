@@ -62,7 +62,12 @@ def tau_rand(state):
 
 
 @numba.njit(
-    "f4(f4[::1])",
+    [
+        "f4(f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True)
+        ),
+    ],
     locals={
         "dim": numba.types.uint32,
         "i": numba.types.uint32,
