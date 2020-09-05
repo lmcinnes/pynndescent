@@ -1020,7 +1020,7 @@ class NNDescent(object):
         reverse_graph.sort_indices()
         self._search_graph = self._search_graph.tocsr()
         self._search_graph.sort_indices()
-        self._search_graph = self._search_graph.maximum(reverse_graph)
+        self._search_graph = self._search_graph.maximum(reverse_graph).tocsr()
 
         # Eliminate the diagonal0]
         self._search_graph.setdiag(0.0)
@@ -1169,7 +1169,6 @@ class NNDescent(object):
 
                 n_initial_points = candidate_indices.shape[0]
                 n_random_samples = min(k, n_neighbors) - n_initial_points
-                candidate = 0
 
                 for j in range(n_initial_points):
                     candidate = candidate_indices[j]
@@ -1204,24 +1203,24 @@ class NNDescent(object):
 
                         candidate = indices[j]
 
-                        if has_been_visited(visited, candidate):
-                            continue
+                        if has_been_visited(visited, candidate) == 0:
+                            mark_visited(visited, candidate)
 
-                        mark_visited(visited, candidate)
-                        d = dist(data[candidate], current_query)
-                        if d < distance_bound:
-                            simple_heap_push(
-                                heap_priorities, heap_indices, d, candidate
-                            )
-                            heapq.heappush(seed_set, (d, candidate))
-                            # Update bound
-                            distance_bound = distance_scale * heap_priorities[0]
+                            d = dist(data[candidate], current_query)
 
-                    if len(seed_set) == 0:
-                        return result
+                            if d < distance_bound:
+                                simple_heap_push(
+                                    heap_priorities, heap_indices, d, candidate
+                                )
+                                heapq.heappush(seed_set, (d, candidate))
+                                # Update bound
+                                distance_bound = distance_scale * heap_priorities[0]
 
                     # find new smallest seed point
-                    d_vertex, vertex = heapq.heappop(seed_set)
+                    if len(seed_set) == 0:
+                        return result
+                    else:
+                        d_vertex, vertex = heapq.heappop(seed_set)
 
             return result
 
