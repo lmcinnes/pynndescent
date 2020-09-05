@@ -166,7 +166,25 @@ children_type = numba.typeof((np.int32(-1), np.int32(-1)))
 point_indices_type = numba.int32[::1]
 
 
-@numba.njit(fastmath=True, nogil=True, cache=True)
+@numba.njit(
+    numba.types.Tuple(
+        (numba.int32[::1], numba.int32[::1], dense_hyperplane_type, offset_type)
+    )(numba.float32[:, ::1], numba.int32[::1], numba.int64[::1]),
+    locals={
+        "n_left": numba.uint32,
+        "n_right": numba.uint32,
+        "hyperplane_vector": numba.float32[::1],
+        "hyperplane_offset": numba.float32,
+        "margin": numba.float32,
+        "d": numba.uint32,
+        "i": numba.uint32,
+        "left_index": numba.uint32,
+        "right_index": numba.uint32,
+    },
+    fastmath=True,
+    nogil=True,
+    cache=True,
+)
 def angular_random_projection_split(data, indices, rng_state):
     """Given a set of ``graph_indices`` for graph_data points from ``graph_data``, create
     a random hyperplane to split the graph_data, returning two arrays graph_indices
@@ -269,7 +287,25 @@ def angular_random_projection_split(data, indices, rng_state):
     return indices_left, indices_right, hyperplane_vector, 0.0
 
 
-@numba.njit(fastmath=True, nogil=True, cache=True)
+@numba.njit(
+    numba.types.Tuple(
+        (numba.int32[::1], numba.int32[::1], dense_hyperplane_type, offset_type)
+    )(numba.float32[:, ::1], numba.int32[::1], numba.int64[::1]),
+    locals={
+        "n_left": numba.uint32,
+        "n_right": numba.uint32,
+        "hyperplane_vector": numba.float32[::1],
+        "hyperplane_offset": numba.float32,
+        "margin": numba.float32,
+        "d": numba.uint32,
+        "i": numba.uint32,
+        "left_index": numba.uint32,
+        "right_index": numba.uint32,
+    },
+    fastmath=True,
+    nogil=True,
+    cache=True,
+)
 def euclidean_random_projection_split(data, indices, rng_state):
     """Given a set of ``graph_indices`` for graph_data points from ``graph_data``, create
     a random hyperplane to split the graph_data, returning two arrays graph_indices
