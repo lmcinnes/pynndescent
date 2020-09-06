@@ -10,12 +10,6 @@ trigger:
 # https://github.com/Microsoft/azure-pipelines-yaml/issues/20
 strategy:
   matrix:
-    mac10.13_py36:
-      imageName: 'macOS-10.13'
-      python.version: '3.6'
-    mac10.13_py37:
-      imageName: 'macOS-10.13'
-      python.version: '3.7'
     mac10.14_py36:
       imageName: 'macOS-10.14'
       python.version: '3.6'
