@@ -433,7 +433,8 @@ def sparse_alternative_cosine(ind1, data1, ind2, data2):
     elif result <= 0.0:
         return FLOAT32_MAX
     else:
-        return 0.5 * (np.log(norm_x) + np.log(norm_y)) - np.log(result)
+        result = (norm_x * norm_y) / result
+        return np.log2(result)
 
 
 @numba.vectorize(fastmath=True, cache=True)
@@ -441,7 +442,7 @@ def sparse_correct_alternative_cosine(d):
     if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
         return 0.0
     else:
-        return 1.0 - np.exp(-d)
+        return 1.0 - pow(2.0, -d)
 
 
 @numba.njit()

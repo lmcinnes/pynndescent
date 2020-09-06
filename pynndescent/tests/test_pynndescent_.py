@@ -9,6 +9,7 @@ from nose import SkipTest
 import numpy as np
 from scipy import sparse
 from sklearn.neighbors import KDTree
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 import pickle
 import joblib
@@ -136,6 +137,25 @@ def test_nn_descent_query_accuracy():
     )
 
 
+def test_nn_descent_query_accuracy_angular():
+    nnd = NNDescent(nn_data[200:], "cosine", n_neighbors=30, random_state=None)
+    knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.32)
+
+    nn = NearestNeighbors(metric="cosine").fit(nn_data[200:])
+    true_indices = nn.kneighbors(nn_data[:200], n_neighbors=10, return_distance=False)
+
+    num_correct = 0.0
+    for i in range(true_indices.shape[0]):
+        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    percent_correct = num_correct / (true_indices.shape[0] * 10)
+    assert_greater_equal(
+        percent_correct,
+        0.95,
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors",
+    )
+
+
 def test_sparse_nn_descent_query_accuracy():
     nnd = NNDescent(
         sparse_nn_data[200:], "euclidean", n_neighbors=15, random_state=None
@@ -158,13 +178,13 @@ def test_sparse_nn_descent_query_accuracy():
 
 
 def test_sparse_nn_descent_query_accuracy_angular():
-    nnd = NNDescent(
-        sparse_nn_data[200:], "cosine", n_neighbors=15, random_state=None
-    )
-    knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10, epsilon=0.24)
+    nnd = NNDescent(sparse_nn_data[200:], "cosine", n_neighbors=50, random_state=None)
+    knn_indices, _ = nnd.query(sparse_nn_data[:200], k=10, epsilon=0.36)
 
-    tree = KDTree(sparse_nn_data[200:].toarray())
-    true_indices = tree.query(sparse_nn_data[:200].toarray(), 10, return_distance=False)
+    nn = NearestNeighbors(metric="cosine").fit(sparse_nn_data[200:].toarray())
+    true_indices = nn.kneighbors(
+        sparse_nn_data[:200].toarray(), n_neighbors=10, return_distance=False
+    )
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
@@ -372,9 +392,7 @@ def test_pickle_unpickle():
     x1 = seed.normal(0, 100, (1000, 50))
     x2 = seed.normal(0, 100, (1000, 50))
 
-    index1 = NNDescent(
-        x1, "euclidean", {}, 10, random_state=None,
-    )
+    index1 = NNDescent(x1, "euclidean", {}, 10, random_state=None,)
     neighbors1, distances1 = index1.query(x2)
 
     pickle.dump(index1, open("test_tmp.pkl", "wb"))
@@ -386,15 +404,14 @@ def test_pickle_unpickle():
     np.testing.assert_equal(neighbors1, neighbors2)
     np.testing.assert_equal(distances1, distances2)
 
+
 def test_joblib_dump():
     seed = np.random.RandomState(42)
 
     x1 = seed.normal(0, 100, (1000, 50))
     x2 = seed.normal(0, 100, (1000, 50))
 
-    index1 = NNDescent(
-        x1, "euclidean", {}, 10, random_state=None,
-    )
+    index1 = NNDescent(x1, "euclidean", {}, 10, random_state=None,)
     neighbors1, distances1 = index1.query(x2)
 
     joblib.dump(index1, "test_tmp.dump")
