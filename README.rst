@@ -31,10 +31,11 @@ Proceedings of the 20th international conference on World wide web. ACM, 2011.
 This library supplements that approach with the use of random projection
 trees for initialisation. This can be particularly useful for the metrics
 that are amenable to such approaches (euclidean, minkowski, angular, cosine,
-etc.).
+etc.). Graph diversification is also performed, pruning the longest edges of any
+triangles in the graph.
 
 Currently this library targets relatively high accuracy 
-(90%-99% accuracy rate) approximate nearest neighbor searches.
+(80%-100% accuracy rate) approximate nearest neighbor searches.
 
 --------------------
 Why use PyNNDescent?
@@ -54,9 +55,9 @@ solidly in the mix of top performing ANN libraries:
 .. image:: https://camo.githubusercontent.com/6120a35a9db64104eaa1c95cb4803c2fc4cd2679/68747470733a2f2f7261772e6769746875622e636f6d2f6572696b6265726e2f616e6e2d62656e63686d61726b732f6d61737465722f726573756c74732f6e7974696d65732d3235362d616e67756c61722e706e67
     :alt: ANN benchmark performance for NYTimes 256 dataset
 
-While PyNNDescent is not the fastest ANN library, it is both easy to install (pip installable)
-with no platform or compilation issues, and very flexible, supporting a wide variety of
-distance metrics by default:
+While PyNNDescent is among fastest ANN library, it is also both easy to install (pip
+and conda installable) with no platform or compilation issues, and is very flexible,
+supporting a wide variety of distance metrics by default:
 
 **Minkowski style metrics**
 
@@ -83,6 +84,11 @@ distance metrics by default:
 - correlation
 - spearmanr
 
+**Probability metrics
+
+- hellinger
+- wasserstein
+
 **Metrics for binary data**
 
 - hamming
@@ -98,7 +104,7 @@ distance metrics by default:
 and also custom user defined distance metrics while still retaining performance.
 
 PyNNDescent also integrates well with Scikit-learn, including providing support
-for the upcoming KNeighborTransformer as a drop in replacement for algorithms
+for the KNeighborTransformer as a drop in replacement for algorithms
 that make use of nearest neighbor computations.
 
 ----------------------
@@ -126,7 +132,8 @@ set ``query_data`` you can do something like
 
     index.query(query_data, k=15)
 
-and that is pretty much all there is to it.
+and that is pretty much all there is to it. You can find more details in the
+`documentation <https://pynndescent.readthedocs.org>`_.
 
 ----------
 Installing
@@ -137,10 +144,17 @@ relatively light requirements:
 
 * numpy
 * scipy
-* scikit-learn >= 0.18
-* numba >= 0.37
+* scikit-learn >= 0.22
+* numba >= 0.51
 
-all of which should be pip installable. The easiest way to install should be
+all of which should be pip or conda installable. The easiest way to install should be
+via conda:
+
+.. code:: bash
+
+    conda install -c conda-forge pynndescent
+
+or via pip:
 
 .. code:: bash
 
@@ -160,9 +174,8 @@ To manually install this package:
 Help and Support
 ----------------
 
-This project is still very young. I am currently trying to get example
-notebooks and documentation prepared, but it may be a while before those are
-available. In the meantime please `open an issue <https://github.com/lmcinnes/pynndescent/issues/new>`_
+This project is still young. The documentation is still growing. In the meantime please
+`open an issue <https://github.com/lmcinnes/pynndescent/issues/new>`_
 and I will try to provide any help and guidance that I can. Please also check
 the docstrings on the code, which provide some descriptions of the parameters.
 
