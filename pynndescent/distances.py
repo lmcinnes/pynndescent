@@ -705,6 +705,7 @@ named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
     "l2": euclidean,
+    "sqeuclidean": squared_euclidean,
     "manhattan": manhattan,
     "taxicab": manhattan,
     "l1": manhattan,

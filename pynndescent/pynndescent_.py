@@ -1457,8 +1457,12 @@ class NNDescent(object):
         import gc
 
         self.compressed = True
-        del self._rp_forest
-        del self._neighbor_graph
+
+        if hasattr(self, "_rp_forest"):
+            del self._rp_forest
+        if hasattr(self, "_neighbor_graph"):
+            del self._neighbor_graph
+
         gc.collect()
         return
 
@@ -1808,6 +1812,9 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         else:
             metric_kwds = self.metric_kwds
 
+        if self.verbose:
+            print(ts(), "Creating index")
+
         self.index_ = NNDescent(
             X,
             metric=self.metric,
@@ -1858,9 +1865,15 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
                 X, k=self.n_neighbors, epsilon=self.search_epsilon
             )
 
-        result = lil_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
-        result.rows[:] = indices.tolist()
-        result.data[:] = distances.tolist()
+        if self.verbose:
+            print(ts(), "Constructing neighbor matrix")
+        result = coo_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
+        result.row = np.repeat(
+            np.arange(indices.shape[0], dtype=np.int32),
+            indices.shape[1],
+        )
+        result.col = indices.ravel()
+        result.data = distances.ravel()
 
         return result.tocsr()
 
@@ -1884,6 +1897,11 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             Only the neighbors have an explicit value.
             The diagonal is always explicit.
         """
-        result = self.fit(X, compress_index=False).transform(X=None)
+        self.fit(X, compress_index=False)
+        result = self.transform(X=None)
+
+        if self.verbose:
+            print(ts(), "Compressing index")
         self.index_.compress_index()
+
         return result

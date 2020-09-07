@@ -311,6 +311,34 @@ def sparse_jaccard(ind1, data1, ind2, data2):
         return float(num_non_zero - num_equal) / num_non_zero
 
 
+@numba.njit(
+    [
+        "f4(f4[::1],i4[::1],f4[::1],i4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={"num_non_zero": numba.types.float32, "num_equal": numba.types.float32,},
+)
+def sparse_alternative_jaccard(ind1, data1, ind2, data2):
+    num_non_zero = arr_union(ind1, ind2).shape[0]
+    num_equal = arr_intersect(ind1, ind2).shape[0]
+
+    if num_non_zero == 0:
+        return 0.0
+    else:
+        return -np.log2(num_equal / num_non_zero)
+
+
+@numba.vectorize(fastmath=True)
+def correct_alternative_jaccard(v):
+    return 1.0 - pow(2.0, -v)
+
+
 @numba.njit()
 def sparse_matching(ind1, data1, ind2, data2, n_features):
     num_true_true = arr_intersect(ind1, ind2).shape[0]
@@ -446,6 +474,39 @@ def sparse_correct_alternative_cosine(d):
 
 
 @numba.njit()
+def sparse_dot(ind1, data1, ind2, data2):
+    _, aux_data = sparse_mul(ind1, data1, ind2, data2)
+    result = 0.0
+
+    for val in aux_data:
+        result += val
+
+    return 1.0 - result
+
+
+@numba.njit(
+    #    "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.int32,
+        "i": numba.types.uint16,
+    },
+)
+def sparse_alternative_dot(ind1, data1, ind2, data2):
+    _, aux_data = sparse_mul(ind1, data1, ind2, data2)
+    result = 0.0
+    dim = len(aux_data)
+    for i in range(dim):
+        result += aux_data[i]
+
+    if result <= 0.0:
+        return FLOAT32_MAX
+    else:
+        return -np.log2(result)
+
+
+@numba.njit()
 def sparse_correlation(ind1, data1, ind2, data2, n_features):
 
     mu_x = 0.0
@@ -555,7 +616,8 @@ def sparse_alternative_hellinger(ind1, data1, ind2, data2):
     elif result <= 0:
         return FLOAT32_MAX
     else:
-        return 0.5 * (np.log(l1_norm_x) + np.log(l1_norm_y)) - np.log(result)
+        result = np.sqrt(l1_norm_x * l1_norm_y) / result
+        return np.log2(result)
 
 
 @numba.vectorize(fastmath=True, cache=True)
@@ -563,7 +625,7 @@ def sparse_correct_alternative_hellinger(d):
     if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
         return 0.0
     else:
-        return np.sqrt(1.0 - np.exp(-d))
+        return np.sqrt(1.0 - pow(2.0, -d))
 
 
 @numba.njit()
@@ -731,6 +793,8 @@ def diversify_csr(
 sparse_named_distances = {
     # general minkowski distances
     "euclidean": sparse_euclidean,
+    "l2": sparse_euclidean,
+    "sqeuclidean": sparse_squared_euclidean,
     "manhattan": sparse_manhattan,
     "l1": sparse_manhattan,
     "taxicab": sparse_manhattan,
@@ -784,8 +848,16 @@ sparse_fast_distance_alternatives = {
         "dist": sparse_alternative_cosine,
         "correction": sparse_correct_alternative_cosine,
     },
+    "dot": {
+        "dist": sparse_alternative_dot,
+        "correction": sparse_correct_alternative_cosine,
+    },
     "hellinger": {
         "dist": sparse_alternative_hellinger,
         "correction": sparse_correct_alternative_hellinger,
+    },
+    "jaccard": {
+        "dist": sparse_alternative_jaccard,
+        "correction": correct_alternative_jaccard,
     },
 }
