@@ -1815,11 +1815,15 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         if self.verbose:
             print(ts(), "Creating index")
 
+        # Compatibility with sklearn, which doesn't consider
+        # a point its own neighbor for these purposes.
+        effective_n_neighbors = self.n_neighbors + 1
+
         self.index_ = NNDescent(
             X,
             metric=self.metric,
             metric_kwds=metric_kwds,
-            n_neighbors=self.n_neighbors,
+            n_neighbors=effective_n_neighbors,
             n_trees=self.n_trees,
             leaf_size=self.leaf_size,
             pruning_degree_multiplier=self.pruning_degree_multiplier,

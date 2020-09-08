@@ -204,8 +204,9 @@ def test_transformer_equivalence():
     train = nn_data[:400]
     test = nn_data[:200]
 
+    # Note we shift N_NEIGHBORS to conform to sklearn's KNeighborTransformer defn
     nnd = NNDescent(
-        data=train, n_neighbors=N_NEIGHBORS, random_state=42, compressed=False
+        data=train, n_neighbors=N_NEIGHBORS + 1, random_state=42, compressed=False
     )
     indices, dists = nnd.query(test, k=N_NEIGHBORS, epsilon=EPSILON)
     sort_idx = np.argsort(indices, axis=1)
@@ -214,6 +215,7 @@ def test_transformer_equivalence():
     )
     dists_sorted = np.vstack([dists[i, sort_idx[i]] for i in range(sort_idx.shape[0])])
 
+    # Note we shift N_NEIGHBORS to conform to sklearn' KNeighborTransformer defn
     transformer = PyNNDescentTransformer(
         n_neighbors=N_NEIGHBORS, search_epsilon=EPSILON, random_state=42
     ).fit(train, compress_index=False)
