@@ -931,25 +931,47 @@ class NNDescent(object):
             ]
 
         if self._is_sparse:
-            diversified_rows, diversified_data = sparse.diversify(
-                self._neighbor_graph[0],
-                self._neighbor_graph[1],
-                self._raw_data.indices,
-                self._raw_data.indptr,
-                self._raw_data.data,
-                self._distance_func,
-                self.rng_state,
-                self.diversify_prob,
-            )
+            if self.compressed:
+                diversified_rows, diversified_data = sparse.diversify(
+                    self._neighbor_graph[0],
+                    self._neighbor_graph[1],
+                    self._raw_data.indices,
+                    self._raw_data.indptr,
+                    self._raw_data.data,
+                    self._distance_func,
+                    self.rng_state,
+                    self.diversify_prob,
+                )
+            else:
+                diversified_rows, diversified_data = sparse.diversify(
+                    self._neighbor_graph[0].copy(),
+                    self._neighbor_graph[1].copy(),
+                    self._raw_data.indices,
+                    self._raw_data.indptr,
+                    self._raw_data.data,
+                    self._distance_func,
+                    self.rng_state,
+                    self.diversify_prob,
+                )
         else:
-            diversified_rows, diversified_data = diversify(
-                self._neighbor_graph[0].copy(),
-                self._neighbor_graph[1].copy(),
-                self._raw_data,
-                self._distance_func,
-                self.rng_state,
-                self.diversify_prob,
-            )
+            if self.compressed:
+                diversified_rows, diversified_data = diversify(
+                    self._neighbor_graph[0],
+                    self._neighbor_graph[1],
+                    self._raw_data,
+                    self._distance_func,
+                    self.rng_state,
+                    self.diversify_prob,
+                )
+            else:
+                diversified_rows, diversified_data = diversify(
+                    self._neighbor_graph[0].copy(),
+                    self._neighbor_graph[1].copy(),
+                    self._raw_data,
+                    self._distance_func,
+                    self.rng_state,
+                    self.diversify_prob,
+                )
 
         self._search_graph = coo_matrix(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
