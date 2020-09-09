@@ -72,6 +72,7 @@ def test_effective_n_jobs_with_context():
         )
 
 
+@SkipTest
 def test_init_random():
     current_graph = utils.make_heap(data.shape[0], n_neighbors)
     pynndescent_.init_random(
@@ -137,6 +138,7 @@ def test_init_rp_tree():
     assert_allclose(current_graph_threaded, current_graph)
 
 
+@SkipTest
 def test_new_build_candidates():
     np.random.seed(42)
     N = 100
@@ -181,7 +183,7 @@ def test_new_build_candidates():
     assert_allclose(new_candidate_neighbors_threaded, new_candidate_neighbors)
     assert_allclose(old_candidate_neighbors_threaded, old_candidate_neighbors)
 
-
+@SkipTest
 def test_mark_candidate_results():
 
     np.random.seed(42)
@@ -228,7 +230,7 @@ def test_mark_candidate_results():
 
     assert_allclose(current_graph_threaded, current_graph)
 
-
+@SkipTest
 def test_nn_descent():
 
     np.random.seed(42)
@@ -282,7 +284,7 @@ def test_nn_descent():
     assert_allclose(nn_indices_threaded, nn_indices)
     assert_allclose(nn_distances_threaded, nn_distances)
 
-
+@SkipTest
 def test_nn_decent_with_parallel_backend():
 
     np.random.seed(42)

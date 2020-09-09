@@ -499,81 +499,9 @@ def smallest_flagged(heap, row):
         return -1
 
 
-@numba.njit(
-    parallel=True,
-    locals={
-        "d": numba.float32,
-        "i": numba.int32,
-        "idx": numba.int32,
-        "isn": numba.uint8,
-    },
-)
-def build_candidates(current_graph, n_vertices, n_neighbors, max_candidates, rng_state):
-    """Build a heap of candidate neighbors for nearest neighbor descent. For
-    each vertex the candidate neighbors are any current neighbors, and any
-    vertices that have the vertex as one of their nearest neighbors.
-
-    Parameters
-    ----------
-    current_graph: heap
-        The current state of the graph for nearest neighbor descent.
-
-    n_vertices: int
-        The total number of vertices in the graph.
-
-    n_neighbors: int
-        The number of neighbor edges per node in the current graph.
-
-    max_candidates: int
-        The maximum number of new candidate neighbors.
-
-    rng_state: array of int64, shape (3,)
-        The internal state of the rng
-
-    Returns
-    -------
-    candidate_neighbors: A heap with an array of (randomly sorted) candidate
-    neighbors for each vertex in the graph.
-    """
-    candidate_neighbors = make_heap(n_vertices, max_candidates)
-    for i in range(n_vertices):
-        for j in range(n_neighbors):
-            if current_graph[0][i, j] < 0:
-                continue
-            idx = current_graph[0][i, j]
-            isn = current_graph[2][i, j]
-            d = tau_rand(rng_state)
-            # heap_push(candidate_neighbors, i, d, idx, isn)
-            # heap_push(candidate_neighbors, idx, d, i, isn)
-            checked_flagged_heap_push(
-                candidate_neighbors[1][i],
-                candidate_neighbors[0][i],
-                candidate_neighbors[2][i],
-                d,
-                idx,
-                isn,
-            )
-            checked_flagged_heap_push(
-                candidate_neighbors[1][idx],
-                candidate_neighbors[0][idx],
-                candidate_neighbors[2][idx],
-                d,
-                i,
-                isn,
-            )
-            current_graph[2][i, j] = 0
-
-    return candidate_neighbors
-
-
 @numba.njit(parallel=True, locals={"idx": numba.types.int64})
 def new_build_candidates(
-    current_graph,
-    n_vertices,
-    n_neighbors,
-    max_candidates,
-    rng_state,
-    seed_per_row=False,
+    current_graph, max_candidates, rng_state,
 ):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
@@ -584,12 +512,6 @@ def new_build_candidates(
     current_graph: heap
         The current state of the graph for nearest neighbor descent.
 
-    n_vertices: int
-        The total number of vertices in the graph.
-
-    n_neighbors: int
-        The number of neighbor edges per node in the current graph.
-
     max_candidates: int
         The maximum number of new candidate neighbors.
 
@@ -601,84 +523,62 @@ def new_build_candidates(
     candidate_neighbors: A heap with an array of (randomly sorted) candidate
     neighbors for each vertex in the graph.
     """
-    new_candidate_neighbors = make_heap(n_vertices, max_candidates)
-    old_candidate_neighbors = make_heap(n_vertices, max_candidates)
+    current_indices = current_graph[0]
+    current_flags = current_graph[2]
 
-    # in_new_candidates = [set([-1]) for i in range(n_vertices)]
-    # in_old_candidates = [set([-1]) for i in range(n_vertices)]
+    n_vertices = current_indices.shape[0]
+    n_neighbors = current_indices.shape[1]
 
-    for i in range(n_vertices):
-        if seed_per_row:
-            seed(rng_state, i)
-        for j in range(n_neighbors):
-            if current_graph[0][i, j] < 0:
-                continue
-            idx = int(current_graph[0][i, j])
-            isn = current_graph[2][i, j]
+    new_candidate_indices = np.full((n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
 
-            d = tau_rand(rng_state)
+    old_candidate_indices = np.full((n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
 
-            if isn:
-                # heap_push(new_candidate_neighbors, i, d, idx, isn)
-                # heap_push(new_candidate_neighbors, idx, d, i, isn)
-                checked_flagged_heap_push(
-                    new_candidate_neighbors[1][i],
-                    new_candidate_neighbors[0][i],
-                    new_candidate_neighbors[2][i],
-                    d,
-                    idx,
-                    isn,
-                )
-                checked_flagged_heap_push(
-                    new_candidate_neighbors[1][idx],
-                    new_candidate_neighbors[0][idx],
-                    new_candidate_neighbors[2][idx],
-                    d,
-                    i,
-                    isn,
-                )
-                # if idx in in_new_candidates[i]:
-                #     pass
-                # else:
-                #     unchecked_heap_push(new_candidate_neighbors, i, d, idx, isn)
-                #     in_new_candidates[i].add(idx)
-                # if i in in_new_candidates[idx]:
-                #     pass
-                # else:
-                #     unchecked_heap_push(new_candidate_neighbors, idx, d, i, isn)
-                #     in_new_candidates[idx].add(i)
-            else:
-                # heap_push(old_candidate_neighbors, i, d, idx, isn)
-                # heap_push(old_candidate_neighbors, idx, d, i, isn)
-                checked_flagged_heap_push(
-                    old_candidate_neighbors[1][i],
-                    old_candidate_neighbors[0][i],
-                    old_candidate_neighbors[2][i],
-                    d,
-                    idx,
-                    isn,
-                )
-                checked_flagged_heap_push(
-                    old_candidate_neighbors[1][idx],
-                    old_candidate_neighbors[0][idx],
-                    old_candidate_neighbors[2][idx],
-                    d,
-                    i,
-                    isn,
-                )
-                # if idx in in_old_candidates[i]:
-                #     pass
-                # else:
-                #     unchecked_heap_push(old_candidate_neighbors, i, d, idx, isn)
-                #     in_old_candidates[i].add(idx)
-                # if i in in_old_candidates[idx]:
-                #     pass
-                # else:
-                #     unchecked_heap_push(old_candidate_neighbors, idx, d, i, isn)
-                #     in_old_candidates[idx].add(i)
+    n_threads = numba.get_num_threads()
+
+    for n in numba.prange(n_threads):
+        local_rng_state = rng_state + n
+        for i in range(n_vertices):
+            for j in range(n_neighbors):
+                idx = current_indices[i, j]
+                isn = current_flags[i, j]
+
+                if idx < 0:
+                    continue
+
+                d = tau_rand(local_rng_state)
+
+                if isn:
+                    if i % n_threads == n:
+                        checked_heap_push(
+                            new_candidate_priority[i], new_candidate_indices[i], d, idx,
+                        )
+                    if idx % n_threads == n:
+                        checked_heap_push(
+                            new_candidate_priority[idx],
+                            new_candidate_indices[idx],
+                            d,
+                            i,
+                        )
+                else:
+                    if i % n_threads == n:
+                        checked_heap_push(
+                            old_candidate_priority[i], old_candidate_indices[i], d, idx,
+                        )
+                    if idx % n_threads == n:
+                        checked_heap_push(
+                            old_candidate_priority[idx],
+                            old_candidate_indices[idx],
+                            d,
+                            i,
+                        )
 
     indices = current_graph[0]
-    candidate_indices = new_candidate_neighbors[0]
     flags = current_graph[2]
 
     for i in numba.prange(n_vertices):
@@ -686,11 +586,11 @@ def new_build_candidates(
             idx = indices[i, j]
 
             for k in range(max_candidates):
-                if candidate_indices[i, k] == idx:
+                if new_candidate_indices[i, k] == idx:
                     flags[i, j] = 0
                     break
 
-    return new_candidate_neighbors, old_candidate_neighbors
+    return new_candidate_indices, old_candidate_indices
 
 
 @numba.njit("b1(u1[::1],i4)")
@@ -724,6 +624,67 @@ def simple_heap_push(priorities, indices, p, n):
         return 0
 
     size = priorities.shape[0]
+
+    # insert val at position zero
+    priorities[0] = p
+    indices[0] = n
+
+    # descend the heap, swapping values until the max heap criterion is met
+    i = 0
+    while True:
+        ic1 = 2 * i + 1
+        ic2 = ic1 + 1
+
+        if ic1 >= size:
+            break
+        elif ic2 >= size:
+            if priorities[ic1] > p:
+                i_swap = ic1
+            else:
+                break
+        elif priorities[ic1] >= priorities[ic2]:
+            if p < priorities[ic1]:
+                i_swap = ic1
+            else:
+                break
+        else:
+            if p < priorities[ic2]:
+                i_swap = ic2
+            else:
+                break
+
+        priorities[i] = priorities[i_swap]
+        indices[i] = indices[i_swap]
+
+        i = i_swap
+
+    priorities[i] = p
+    indices[i] = n
+
+    return 1
+
+
+@numba.njit(
+    "i4(f4[::1],i4[::1],f4,i4)",
+    fastmath=True,
+    locals={
+        "size": numba.types.uint16,
+        "i": numba.types.uint16,
+        "ic1": numba.types.uint16,
+        "ic2": numba.types.uint16,
+        "i_swap": numba.types.uint16,
+    },
+)
+def checked_heap_push(priorities, indices, p, n):
+    if p >= priorities[0]:
+        return 0
+
+    size = priorities.shape[0]
+
+    # break if we already have this element.
+    for i in range(size):
+        if n == indices[i]:
+            return 0
 
     # insert val at position zero
     priorities[0] = p
@@ -888,35 +849,46 @@ def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
 
 
 @numba.njit(
+    parallel=True,
     locals={
         "p": numba.int32,
         "q": numba.int32,
         "d": numba.float32,
         "added": numba.uint8,
-    }
+        "n": numba.uint32,
+        "i": numba.uint32,
+        "j": numba.uint32,
+    },
 )
 def apply_graph_updates_low_memory(current_graph, updates):
 
     n_changes = 0
+    priorities = current_graph[1]
+    indices = current_graph[0]
+    flags = current_graph[2]
+    n_threads = numba.get_num_threads()
 
-    for i in range(len(updates)):
-        for j in range(len(updates[i])):
-            p, q, d = updates[i][j]
+    for n in numba.prange(n_threads):
+        for i in range(len(updates)):
+            for j in range(len(updates[i])):
+                p, q, d = updates[i][j]
 
-            if p == -1 or q == -1:
-                continue
+                if p == -1 or q == -1:
+                    continue
 
-            # added = heap_push(current_graph, p, d, q, 1)
-            added = checked_flagged_heap_push(
-                current_graph[1][p], current_graph[0][p], current_graph[2][p], d, q, 1,
-            )
-            n_changes += added
+                if p % n_threads == n:
+                    # added = heap_push(current_graph, p, d, q, 1)
+                    added = checked_flagged_heap_push(
+                        priorities[p], indices[p], flags[p], d, q, 1,
+                    )
+                    n_changes += added
 
-            # added = heap_push(current_graph, q, d, p, 1)
-            added = checked_flagged_heap_push(
-                current_graph[1][q], current_graph[0][q], current_graph[2][q], d, p, 1,
-            )
-            n_changes += added
+                if q % n_threads == n:
+                    # added = heap_push(current_graph, q, d, p, 1)
+                    added = checked_flagged_heap_push(
+                        priorities[q], indices[q], flags[q], d, p, 1,
+                    )
+                    n_changes += added
 
     return n_changes
 
