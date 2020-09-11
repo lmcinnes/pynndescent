@@ -200,8 +200,15 @@ def generate_graph_updates(
 
 
 @numba.njit()
-def process_candidates(data, dist, current_graph, new_candidate_neighbors,
-                       old_candidate_neighbors, n_blocks, block_size):
+def process_candidates(
+    data,
+    dist,
+    current_graph,
+    new_candidate_neighbors,
+    old_candidate_neighbors,
+    n_blocks,
+    block_size,
+):
     c = 0
     n_vertices = new_candidate_neighbors.shape[0]
     for i in range(n_blocks + 1):
@@ -220,6 +227,7 @@ def process_candidates(data, dist, current_graph, new_candidate_neighbors,
         c += apply_graph_updates_low_memory(current_graph, updates)
 
     return c
+
 
 @numba.njit()
 def nn_descent_internal_low_memory_parallel(
@@ -242,13 +250,18 @@ def nn_descent_internal_low_memory_parallel(
             print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph,
-            max_candidates,
-            rng_state,
+            current_graph, max_candidates, rng_state,
         )
 
-        c = process_candidates(data, dist, current_graph, new_candidate_neighbors,
-                               old_candidate_neighbors, n_blocks, block_size)
+        c = process_candidates(
+            data,
+            dist,
+            current_graph,
+            new_candidate_neighbors,
+            old_candidate_neighbors,
+            n_blocks,
+            block_size,
+        )
 
         if c <= delta * n_neighbors * data.shape[0]:
             if verbose:
@@ -282,9 +295,7 @@ def nn_descent_internal_high_memory_parallel(
             print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph,
-            max_candidates,
-            rng_state,
+            current_graph, max_candidates, rng_state,
         )
 
         c = 0
@@ -930,6 +941,7 @@ class NNDescent(object):
                 for tree in best_trees
             ]
 
+        nnz_pre_diversify = np.sum(self._neighbor_graph[0] >= 0)
         if self._is_sparse:
             if self.compressed:
                 diversified_rows, diversified_data = sparse.diversify(
@@ -996,7 +1008,7 @@ class NNDescent(object):
             print(
                 ts(),
                 "Forward diversification reduced edges from {} to {}".format(
-                    np.sum(self._neighbor_graph[0] >= 0), self._search_graph.nnz
+                    nnz_pre_diversify, self._search_graph.nnz
                 ),
             )
 
@@ -1555,7 +1567,7 @@ class NNDescent(object):
                 k,
                 epsilon,
                 self._visited,
-                self.search_rng_state.copy(),
+                self.search_rng_state,
             )
 
         indices, dists = deheap_sort(result)
@@ -1891,8 +1903,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             print(ts(), "Constructing neighbor matrix")
         result = coo_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
         result.row = np.repeat(
-            np.arange(indices.shape[0], dtype=np.int32),
-            indices.shape[1],
+            np.arange(indices.shape[0], dtype=np.int32), indices.shape[1],
         )
         result.col = indices.ravel()
         result.data = distances.ravel()
