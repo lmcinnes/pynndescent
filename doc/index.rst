@@ -1,22 +1,10 @@
-.. image:: https://travis-ci.org/lmcinnes/pynndescent.svg
-    :target: https://travis-ci.org/lmcinnes/pynndescent
-    :alt: Travis Build Status
-.. image:: https://ci.appveyor.com/api/projects/status/github/lmcinnes/pynndescent?branch=master&svg=true
-    :target: https://ci.appveyor.com/project/lmcinnes/pynndescent
-    :alt: AppVeyor Build Status
-.. image:: https://coveralls.io/repos/github/lmcinnes/pynndescent/badge.svg
-    :target: https://coveralls.io/github/lmcinnes/pynndescent
-    :alt: Test Coverage Status
-.. image:: https://img.shields.io/lgtm/alerts/g/lmcinnes/pynndescent.svg
-    :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/alerts
-    :alt: LGTM Alerts
-.. image:: https://img.shields.io/lgtm/grade/python/g/lmcinnes/pynndescent.svg
-    :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/context:python
-    :alt: LGTM Grade
+.. pynndescent documentation master file, created by
+   sphinx-quickstart on Sat Sep 12 12:01:55 2020.
+   You can adapt this file completely to your liking, but it should at least
+   contain the root `toctree` directive.
 
-===========
-PyNNDescent
-===========
+PyNNDescent for fast Approximate Nearest Neighbors
+==================================================
 
 PyNNDescent is a Python nearest neighbor descent for approximate nearest neighbors.
 It provides a python implementation of Nearest Neighbor
@@ -34,10 +22,9 @@ amenable to such approaches (euclidean, minkowski, angular, cosine, etc.). Graph
 diversification is also performed, pruning the longest edges of any triangles in the
 graph.
 
-Currently this library targets relatively high accuracy 
+Currently this library targets relatively high accuracy
 (80%-100% accuracy rate) approximate nearest neighbor searches.
 
---------------------
 Why use PyNNDescent?
 --------------------
 
@@ -107,35 +94,6 @@ PyNNDescent also integrates well with Scikit-learn, including providing support
 for the KNeighborTransformer as a drop in replacement for algorithms
 that make use of nearest neighbor computations.
 
-----------------------
-How to use PyNNDescent
-----------------------
-
-PyNNDescent aims to have a very simple interface. It is similar to (but more
-limited than) KDTrees and BallTrees in ``sklearn``. In practice there are
-only two operations -- index construction, and querying an index for nearest
-neighbors.
-
-To build a new search index on some training data ``data`` you can do something
-like
-
-.. code:: python
-
-    from pynndescent import NNDescent
-    index = NNDescent(data)
-
-You can then use the index for searching (and can pickle it to disk if you
-wish). To search a pynndescent index for the 15 nearest neighbors of a test data
-set ``query_data`` you can do something like
-
-.. code:: python
-
-    index.query(query_data, k=15)
-
-and that is pretty much all there is to it. You can find more details in the
-`documentation <https://pynndescent.readthedocs.org>`_.
-
-----------
 Installing
 ----------
 
@@ -160,41 +118,24 @@ or via pip:
 
     pip install pynndescent
 
-To manually install this package:
 
-.. code:: bash
+.. toctree::
+   :maxdepth: 2
+   :caption: User Guide / Tutorial:
 
-    wget https://github.com/lmcinnes/pynndescent/archive/master.zip
-    unzip master.zip
-    rm master.zip
-    cd pynndescent-master
-    python setup.py install
+   how_to_use_pynndescent
+   pynndescent_metrics
+   sparse_data_with_pynndescent
+   pynndescent_in_pipelines
 
-----------------
-Help and Support
-----------------
+.. toctree::
+   :caption: API Reference:
 
-This project is still young. The documentation is still growing. In the meantime please
-`open an issue <https://github.com/lmcinnes/pynndescent/issues/new>`_
-and I will try to provide any help and guidance that I can. Please also check
-the docstrings on the code, which provide some descriptions of the parameters.
+   api
 
--------
-License
--------
+Indices and tables
+==================
 
-The pynndescent package is 2-clause BSD licensed. Enjoy.
-
-------------
-Contributing
-------------
-
-Contributions are more than welcome! There are lots of opportunities
-for potential projects, so please get in touch if you would like to
-help out. Everything from code to notebooks to
-examples and documentation are all *equally valuable* so please don't feel
-you can't contribute. To contribute please `fork the project <https://github.com/lmcinnes/pynndescent/issues#fork-destination-box>`_ make your changes and
-submit a pull request. We will do our best to work through any issues with
-you and get your code merged into the main branch.
-
-
+* :ref:`genindex`
+* :ref:`modindex`
+* :ref:`search`
