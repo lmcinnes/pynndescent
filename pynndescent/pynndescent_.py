@@ -731,9 +731,9 @@ class NNDescent(object):
         elif metric in pynnd_dist.named_distances:
             if metric in pynnd_dist.fast_distance_alternatives:
                 _distance_func = pynnd_dist.fast_distance_alternatives[metric]["dist"]
-                self._distance_correction = pynnd_dist.fast_distance_alternatives[metric][
-                    "correction"
-                ]
+                self._distance_correction = pynnd_dist.fast_distance_alternatives[
+                    metric
+                ]["correction"]
             else:
                 _distance_func = pynnd_dist.named_distances[metric]
         else:
