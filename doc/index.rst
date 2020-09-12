@@ -71,7 +71,7 @@ supporting a wide variety of distance metrics by default:
 - correlation
 - spearmanr
 
-**Probability metrics
+**Probability metrics**
 
 - hellinger
 - wasserstein
