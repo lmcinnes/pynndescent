@@ -322,7 +322,10 @@ def sparse_jaccard(ind1, data1, ind2, data2):
         ),
     ],
     fastmath=True,
-    locals={"num_non_zero": numba.types.float32, "num_equal": numba.types.float32,},
+    locals={
+        "num_non_zero": numba.types.float32,
+        "num_equal": numba.types.float32,
+    },
 )
 def sparse_alternative_jaccard(ind1, data1, ind2, data2):
     num_non_zero = arr_union(ind1, ind2).shape[0]

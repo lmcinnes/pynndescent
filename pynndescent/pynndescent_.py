@@ -90,7 +90,11 @@ def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
 
 
 @numba.njit(
-    locals={"d": numba.float32, "p": numba.int32, "q": numba.int32,}
+    locals={
+        "d": numba.float32,
+        "p": numba.int32,
+        "q": numba.int32,
+    }
 )
 def init_rp_tree(data, dist, current_graph, leaf_array):
 
@@ -105,7 +109,12 @@ def init_rp_tree(data, dist, current_graph, leaf_array):
         leaf_block = leaf_array[block_start:block_end]
         dist_thresholds = current_graph[1][:, 0]
 
-        updates = generate_leaf_updates(leaf_block, dist_thresholds, data, dist,)
+        updates = generate_leaf_updates(
+            leaf_block,
+            dist_thresholds,
+            data,
+            dist,
+        )
 
         for j in range(len(updates)):
             for k in range(len(updates[j])):
@@ -165,7 +174,11 @@ def init_from_neighbor_graph(heap, indices, distances):
 
 @numba.njit(parallel=True)
 def generate_graph_updates(
-    new_candidate_block, old_candidate_block, dist_thresholds, data, dist,
+    new_candidate_block,
+    old_candidate_block,
+    dist_thresholds,
+    data,
+    dist,
 ):
 
     block_size = new_candidate_block.shape[0]
@@ -221,7 +234,11 @@ def process_candidates(
         dist_thresholds = current_graph[1][:, 0]
 
         updates = generate_graph_updates(
-            new_candidate_block, old_candidate_block, dist_thresholds, data, dist,
+            new_candidate_block,
+            old_candidate_block,
+            dist_thresholds,
+            data,
+            dist,
         )
 
         c += apply_graph_updates_low_memory(current_graph, updates)
@@ -250,7 +267,9 @@ def nn_descent_internal_low_memory_parallel(
             print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph, max_candidates, rng_state,
+            current_graph,
+            max_candidates,
+            rng_state,
         )
 
         c = process_candidates(
@@ -295,7 +314,9 @@ def nn_descent_internal_high_memory_parallel(
             print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph, max_candidates, rng_state,
+            current_graph,
+            max_candidates,
+            rng_state,
         )
 
         c = 0
@@ -308,7 +329,11 @@ def nn_descent_internal_high_memory_parallel(
             dist_thresholds = current_graph[1][:, 0]
 
             updates = generate_graph_updates(
-                new_candidate_block, old_candidate_block, dist_thresholds, data, dist,
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                dist,
             )
 
             c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
@@ -794,11 +819,9 @@ class NNDescent(object):
                     _distance_func = sparse.sparse_fast_distance_alternatives[metric][
                         "dist"
                     ]
-                    self._distance_correction = sparse.sparse_fast_distance_alternatives[
-                        metric
-                    ][
-                        "correction"
-                    ]
+                    self._distance_correction = (
+                        sparse.sparse_fast_distance_alternatives[metric]["correction"]
+                    )
                 else:
                     _distance_func = sparse.sparse_named_distances[metric]
             elif callable(metric):
@@ -819,7 +842,13 @@ class NNDescent(object):
 
                 @numba.njit()
                 def _partial_dist_func(ind1, data1, ind2, data2):
-                    return _distance_func(ind1, data1, ind2, data2, *dist_args,)
+                    return _distance_func(
+                        ind1,
+                        data1,
+                        ind2,
+                        data2,
+                        *dist_args,
+                    )
 
                 self._distance_func = _partial_dist_func
             else:
@@ -1068,7 +1097,8 @@ class NNDescent(object):
             print(
                 ts(),
                 "Degree pruning reduced edges from {} to {}".format(
-                    pre_prune_nnz, self._search_graph.nnz,
+                    pre_prune_nnz,
+                    self._search_graph.nnz,
                 ),
             )
 
@@ -1170,7 +1200,11 @@ class NNDescent(object):
             },
         )
         def search_closure(
-            query_points, k, epsilon, visited, rng_state,
+            query_points,
+            k,
+            epsilon,
+            visited,
+            rng_state,
         ):
 
             result = make_heap(query_points.shape[0], k)
@@ -1258,7 +1292,11 @@ class NNDescent(object):
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = self._raw_data[:1]
         _ = self._search_function(
-            query_data, 5, 0.0, self._visited, self.search_rng_state,
+            query_data,
+            5,
+            0.0,
+            self._visited,
+            self.search_rng_state,
         )
 
     def _init_sparse_search_function(self):
@@ -1329,7 +1367,13 @@ class NNDescent(object):
             },
         )
         def search_closure(
-            query_inds, query_indptr, query_data, k, epsilon, visited, rng_state,
+            query_inds,
+            query_indptr,
+            query_data,
+            k,
+            epsilon,
+            visited,
+            rng_state,
         ):
 
             n_query_points = query_indptr.shape[0] - 1
@@ -1358,7 +1402,9 @@ class NNDescent(object):
 
                 ############ Init ################
                 index_bounds = sparse_tree_search_closure(
-                    current_query_inds, current_query_data, internal_rng_state,
+                    current_query_inds,
+                    current_query_data,
+                    internal_rng_state,
                 )
                 candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
 
@@ -1547,7 +1593,11 @@ class NNDescent(object):
 
             query_data = np.asarray(query_data).astype(np.float32, order="C")
             result = self._search_function(
-                query_data, k, epsilon, self._visited, self.search_rng_state,
+                query_data,
+                k,
+                epsilon,
+                self._visited,
+                self.search_rng_state,
             )
         else:
             # Sparse case
@@ -1903,7 +1953,8 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             print(ts(), "Constructing neighbor matrix")
         result = coo_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
         result.row = np.repeat(
-            np.arange(indices.shape[0], dtype=np.int32), indices.shape[1],
+            np.arange(indices.shape[0], dtype=np.int32),
+            indices.shape[1],
         )
         result.col = indices.ravel()
         result.data = distances.ravel()

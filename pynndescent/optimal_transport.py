@@ -226,7 +226,10 @@ def find_join_node(source, target, succ_num, parent, in_arc):
     },
 )
 def find_leaving_arc(
-    join, in_arc, node_arc_data, spanning_tree,
+    join,
+    in_arc,
+    node_arc_data,
+    spanning_tree,
 ):
     source = node_arc_data.source
     target = node_arc_data.target
@@ -296,9 +299,19 @@ def find_leaving_arc(
 # Change _flow and _state vectors
 # locals: val, u
 # modifies: _state, _flow
-@numba.njit(locals={"u": numba.uint16, "in_arc": numba.uint32, "val": numba.float64,},)
+@numba.njit(
+    locals={
+        "u": numba.uint16,
+        "in_arc": numba.uint32,
+        "val": numba.float64,
+    },
+)
 def update_flow(
-    join, leaving_arc_data, node_arc_data, spanning_tree, in_arc,
+    join,
+    leaving_arc_data,
+    node_arc_data,
+    spanning_tree,
+    in_arc,
 ):
     source = node_arc_data.source
     target = node_arc_data.target
@@ -362,7 +375,11 @@ def update_flow(
     },
 )
 def update_spanning_tree(
-    spanning_tree, leaving_arc_data, join, in_arc, source,
+    spanning_tree,
+    leaving_arc_data,
+    join,
+    in_arc,
+    source,
 ):
 
     parent = spanning_tree.parent
@@ -847,7 +864,10 @@ def total_cost(flow, cost):
 
 @numba.njit(nogil=True)
 def network_simplex_core(
-    node_arc_data, spanning_tree, graph, max_iter,
+    node_arc_data,
+    spanning_tree,
+    graph,
+    max_iter,
 ):
 
     # pivot_block = PivotBlock(

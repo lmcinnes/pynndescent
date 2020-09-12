@@ -394,7 +394,13 @@ def test_pickle_unpickle():
     x1 = seed.normal(0, 100, (1000, 50))
     x2 = seed.normal(0, 100, (1000, 50))
 
-    index1 = NNDescent(x1, "euclidean", {}, 10, random_state=None,)
+    index1 = NNDescent(
+        x1,
+        "euclidean",
+        {},
+        10,
+        random_state=None,
+    )
     neighbors1, distances1 = index1.query(x2)
 
     pickle.dump(index1, open("test_tmp.pkl", "wb"))
@@ -413,7 +419,13 @@ def test_joblib_dump():
     x1 = seed.normal(0, 100, (1000, 50))
     x2 = seed.normal(0, 100, (1000, 50))
 
-    index1 = NNDescent(x1, "euclidean", {}, 10, random_state=None,)
+    index1 = NNDescent(
+        x1,
+        "euclidean",
+        {},
+        10,
+        random_state=None,
+    )
     neighbors1, distances1 = index1.query(x2)
 
     joblib.dump(index1, "test_tmp.dump")
