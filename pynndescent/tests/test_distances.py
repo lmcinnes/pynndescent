@@ -418,4 +418,4 @@ def test_alternative_distances():
             true_distance = true_dist(x, y)
             corrected_alt_distance = correction(alt_dist(x, y))
 
-            assert(np.isclose(true_distance, corrected_alt_distance))
+            assert np.isclose(true_distance, corrected_alt_distance)

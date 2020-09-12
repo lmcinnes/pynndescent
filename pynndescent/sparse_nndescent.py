@@ -23,6 +23,7 @@ locale.setlocale(locale.LC_NUMERIC, "C")
 
 EMPTY_GRAPH = make_heap(1, 1)
 
+
 @numba.njit(parallel=True)
 def generate_leaf_updates(
     leaf_block, dist_thresholds, inds, indptr, data, dist,
@@ -54,11 +55,9 @@ def generate_leaf_updates(
     return updates
 
 
-@numba.njit(locals={
-    "d": numba.float32,
-    "p": numba.int32,
-    "q": numba.int32,
-})
+@numba.njit(
+    locals={"d": numba.float32, "p": numba.int32, "q": numba.int32,}
+)
 def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
@@ -103,11 +102,9 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
                 )
 
 
-@numba.njit(fastmath=True, locals={
-    "d": numba.float32,
-    "i": numba.int32,
-    "idx": numba.int32,
-})
+@numba.njit(
+    fastmath=True, locals={"d": numba.float32, "i": numba.int32, "idx": numba.int32,}
+)
 def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
     n_samples = indptr.shape[0] - 1
     for i in range(n_samples):
@@ -123,8 +120,9 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
                 d = dist(from_inds, from_data, to_inds, to_data)
 
                 # heap_push(heap, i, d, idx, 1)
-                checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, idx,
-                                          np.uint8(1))
+                checked_flagged_heap_push(
+                    heap[1][i], heap[0][i], heap[2][i], d, idx, np.uint8(1)
+                )
 
     return
 
@@ -199,9 +197,7 @@ def nn_descent_internal_low_memory_parallel(
             print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph,
-            max_candidates,
-            rng_state,
+            current_graph, max_candidates, rng_state,
         )
 
         c = 0
@@ -259,9 +255,7 @@ def nn_descent_internal_high_memory_parallel(
             print("\t", n + 1, " / ", n_iters)
 
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph,
-            max_candidates,
-            rng_state,
+            current_graph, max_candidates, rng_state,
         )
 
         c = 0
@@ -318,14 +312,10 @@ def nn_descent(
             init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array)
 
         init_random(n_neighbors, inds, indptr, data, current_graph, dist, rng_state)
-    elif (
-        init_graph[0].shape[0] == n_samples
-        and init_graph[0].shape[1] == n_neighbors
-    ):
+    elif init_graph[0].shape[0] == n_samples and init_graph[0].shape[1] == n_neighbors:
         current_graph = init_graph
     else:
         raise ValueError("Invalid initial graph specified!")
-
 
     if low_memory:
         nn_descent_internal_low_memory_parallel(

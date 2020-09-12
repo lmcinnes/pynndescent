@@ -13,6 +13,9 @@
 .. image:: https://img.shields.io/lgtm/grade/python/g/lmcinnes/pynndescent.svg
     :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/context:python
     :alt: LGTM Grade
+.. image:: https://readthedocs.org/projects/pynndescent/badge/?version=latest
+    :target: https://pynndescent.readthedocs.io/en/latest/?badge=latest
+    :alt: Documentation Status
 
 ===========
 PyNNDescent
@@ -84,7 +87,7 @@ supporting a wide variety of distance metrics by default:
 - correlation
 - spearmanr
 
-**Probability metrics
+**Probability metrics**
 
 - hellinger
 - wasserstein

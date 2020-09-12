@@ -929,5 +929,3 @@ def network_simplex_core(
             pi[i] -= max_pot
 
     return solution_status
-
-
