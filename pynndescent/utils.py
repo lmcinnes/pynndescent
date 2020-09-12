@@ -9,9 +9,6 @@ from numba.core import types
 from numba.experimental import structref
 import numpy as np
 
-from collections import namedtuple
-
-
 @numba.njit("void(i8[:], i8)")
 def seed(rng_state, seed):
     """Seed the random number generator with a given seed."""

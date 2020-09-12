@@ -4,9 +4,6 @@
 .. image:: https://ci.appveyor.com/api/projects/status/github/lmcinnes/pynndescent?branch=master&svg=true
     :target: https://ci.appveyor.com/project/lmcinnes/pynndescent
     :alt: AppVeyor Build Status
-.. image:: https://coveralls.io/repos/github/lmcinnes/pynndescent/badge.svg
-    :target: https://coveralls.io/github/lmcinnes/pynndescent
-    :alt: Test Coverage Status
 .. image:: https://img.shields.io/lgtm/alerts/g/lmcinnes/pynndescent.svg
     :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/alerts
     :alt: LGTM Alerts

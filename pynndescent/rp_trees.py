@@ -1,8 +1,6 @@
 # Author: Leland McInnes <leland.mcinnes@gmail.com>
 #
 # License: BSD 2 clause
-from __future__ import print_function
-from collections import namedtuple
 from warnings import warn
 
 import locale
@@ -1276,8 +1274,8 @@ def dense_hyperplane_dim(hyperplanes):
     for i in range(len(hyperplanes)):
         if hyperplanes[i].shape[0] > 1:
             return hyperplanes[i].shape[0]
-    else:
-        raise ValueError("No hyperplanes of adequate size were found!")
+
+    raise ValueError("No hyperplanes of adequate size were found!")
 
 
 @numba.njit()

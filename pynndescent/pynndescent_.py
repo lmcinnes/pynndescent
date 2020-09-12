@@ -10,7 +10,6 @@ from sklearn.utils import check_random_state, check_array
 from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import (
-    lil_matrix,
     csr_matrix,
     coo_matrix,
     isspmatrix_csr,
@@ -21,13 +20,12 @@ import heapq
 
 import pynndescent.sparse as sparse
 import pynndescent.sparse_nndescent as sparse_nnd
-import pynndescent.distances as dist
+import pynndescent.distances as pynnd_dist
 
 from pynndescent.utils import (
     tau_rand_int,
     tau_rand,
     make_heap,
-    seed,
     deheap_sort,
     new_build_candidates,
     ts,
@@ -253,7 +251,7 @@ def nn_descent_internal_low_memory_parallel(
     n_neighbors,
     rng_state,
     max_candidates=50,
-    dist=dist.euclidean,
+    dist=pynnd_dist.euclidean,
     n_iters=10,
     delta=0.001,
     verbose=False,
@@ -295,7 +293,7 @@ def nn_descent_internal_high_memory_parallel(
     n_neighbors,
     rng_state,
     max_candidates=50,
-    dist=dist.euclidean,
+    dist=pynnd_dist.euclidean,
     n_iters=10,
     delta=0.001,
     verbose=False,
@@ -350,7 +348,7 @@ def nn_descent(
     n_neighbors,
     rng_state,
     max_candidates=50,
-    dist=dist.euclidean,
+    dist=pynnd_dist.euclidean,
     n_iters=10,
     delta=0.001,
     init_graph=EMPTY_GRAPH,
@@ -730,14 +728,14 @@ class NNDescent(object):
 
         if callable(metric):
             _distance_func = metric
-        elif metric in dist.named_distances:
-            if metric in dist.fast_distance_alternatives:
-                _distance_func = dist.fast_distance_alternatives[metric]["dist"]
-                self._distance_correction = dist.fast_distance_alternatives[metric][
+        elif metric in pynnd_dist.named_distances:
+            if metric in pynnd_dist.fast_distance_alternatives:
+                _distance_func = pynnd_dist.fast_distance_alternatives[metric]["dist"]
+                self._distance_correction = pynnd_dist.fast_distance_alternatives[metric][
                     "correction"
                 ]
             else:
-                _distance_func = dist.named_distances[metric]
+                _distance_func = pynnd_dist.named_distances[metric]
         else:
             raise ValueError("Metric is neither callable, " + "nor a recognised string")
 
@@ -1169,7 +1167,8 @@ class NNDescent(object):
 
         self._tree_search = tree_search_closure
 
-        from pynndescent.distances import alternative_dot, alternative_cosine
+        alternative_dot = pynnd_dist.alternative_dot
+        alternative_cosine = pynnd_dist.alternative_cosine
 
         data = self._raw_data
         indptr = self._search_graph.indptr
@@ -1430,7 +1429,7 @@ class NNDescent(object):
                     mark_visited(visited, candidate)
 
                 if n_random_samples > 0:
-                    for i in range(n_random_samples):
+                    for j in range(n_random_samples):
                         candidate = np.int32(
                             np.abs(tau_rand_int(internal_rng_state)) % n_index_points
                         )
