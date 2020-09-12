@@ -25,6 +25,7 @@ author = "Leland McInnes"
 # The full version, including alpha/beta/rc tags
 release = "0.5.0"
 
+master_doc = 'index'
 
 # -- General configuration ---------------------------------------------------
 
