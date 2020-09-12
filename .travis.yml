@@ -9,11 +9,11 @@ env:
     - MODULE=pynndescent
   matrix:
     - COVERAGE="false"
-    - COVERAGE="true"
-matrix:
-  exclude:
-    - python: "3.6"
-      env: COVERAGE="true"
+#    - COVERAGE="true"
+#matrix:
+#  exclude:
+#    - python: "3.6"
+#      env: COVERAGE="true"
 install: source ci/install.sh
 script: bash ci/test.sh
 after_success: source ci/success.sh
