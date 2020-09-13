@@ -1281,7 +1281,7 @@ class NNDescent(object):
 
                     # find new smallest seed point
                     if len(seed_set) == 0:
-                        return result
+                        break
                     else:
                         d_vertex, vertex = heapq.heappop(seed_set)
 
