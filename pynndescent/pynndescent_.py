@@ -1620,7 +1620,6 @@ class NNDescent(object):
             )
 
         indices, dists = deheap_sort(result)
-        indices, dists = indices[:, :k], dists[:, :k]
         # Sort to input graph_data order
         indices = self._vertex_order[indices]
 
