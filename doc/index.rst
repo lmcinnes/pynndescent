@@ -133,6 +133,7 @@ or via pip:
    :caption: Background
 
    how_pynndescent_works
+   performance
 
 .. toctree::
    :caption: API Reference:
