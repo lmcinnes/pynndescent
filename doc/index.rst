@@ -129,6 +129,12 @@ or via pip:
    pynndescent_in_pipelines
 
 .. toctree::
+   :maxdepth: 2
+   :caption: Background
+
+   how_pynndescent_works
+
+.. toctree::
    :caption: API Reference:
 
    api
