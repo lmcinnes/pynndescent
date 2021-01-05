@@ -1531,6 +1531,7 @@ class NNDescent(object):
     def compress_index(self):
         import gc
 
+        self.prepare()
         self.compressed = True
 
         if hasattr(self, "_rp_forest"):
