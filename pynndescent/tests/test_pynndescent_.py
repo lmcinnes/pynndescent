@@ -413,6 +413,49 @@ def test_pickle_unpickle():
     np.testing.assert_equal(distances1, distances2)
 
 
+def test_compressed_pickle_unpickle():
+    seed = np.random.RandomState(42)
+
+    x1 = seed.normal(0, 100, (1000, 50))
+    x2 = seed.normal(0, 100, (1000, 50))
+
+    index1 = NNDescent(
+        x1,
+        "euclidean",
+        {},
+        10,
+        random_state=None,
+        compressed=True,
+    )
+    neighbors1, distances1 = index1.query(x2)
+
+    pickle.dump(index1, open("test_tmp.pkl", "wb"))
+    index2 = pickle.load(open("test_tmp.pkl", "rb"))
+    os.remove("test_tmp.pkl")
+
+    neighbors2, distances2 = index2.query(x2)
+
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_equal(distances1, distances2)
+
+def test_transformer_pickle_unpickle():
+    seed = np.random.RandomState(42)
+
+    x1 = seed.normal(0, 100, (1000, 50))
+    x2 = seed.normal(0, 100, (1000, 50))
+
+    index1 = PyNNDescentTransformer(n_neighbors=10).fit(x1)
+    result1 = index1.transform(x2)
+
+    pickle.dump(index1, open("test_tmp.pkl", "wb"))
+    index2 = pickle.load(open("test_tmp.pkl", "rb"))
+    os.remove("test_tmp.pkl")
+
+    result2 = index2.transform(x2)
+
+    np.testing.assert_equal(result1.indices, result2.indices)
+    np.testing.assert_equal(result1.data, result2.data)
+
 def test_joblib_dump():
     seed = np.random.RandomState(42)
 
