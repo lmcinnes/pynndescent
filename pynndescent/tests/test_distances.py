@@ -1,11 +1,10 @@
 import numpy as np
-from numpy.testing import assert_array_equal
+from numpy.testing import assert_array_equal, assert_array_almost_equal
 import pynndescent.distances as dist
 import pynndescent.sparse as spdist
 from scipy import sparse, stats
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import BallTree
-from sklearn.utils.testing import assert_array_almost_equal
 
 np.random.seed(42)
 spatial_data = np.random.randn(10, 20)
