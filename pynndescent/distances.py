@@ -493,6 +493,59 @@ def correct_alternative_cosine(d):
     return 1.0 - pow(2.0, -d)
 
 
+@numba.njit(fastmath=True)
+def tsss(x, y):
+    d_euc_squared = 0.0
+    d_cos = 0.0
+    norm_x = 0.0
+    norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        diff = x[i] - y[i]
+        d_euc_squared += diff * diff
+        d_cos += x[i] * y[i]
+        norm_x += x[i] * x[i]
+        norm_y += y[i] * y[i]
+
+    norm_x = np.sqrt(norm_x)
+    norm_y = np.sqrt(norm_y)
+    magnitude_difference = np.abs(norm_x - norm_y)
+    d_cos /= norm_x * norm_y
+    theta = np.arccos(d_cos) + np.radians(10) # Add 10 degrees as an "epsilon" to
+    # avoid problems
+    sector = ((np.sqrt(d_euc_squared) + magnitude_difference)**2) * theta
+    triangle = norm_x * norm_y * np.sin(theta) / 2.0
+    return triangle * sector
+
+
+@numba.njit(fastmath=True)
+def true_angular(x, y):
+    result = 0.0
+    norm_x = 0.0
+    norm_y = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        result += x[i] * y[i]
+        norm_x += x[i] * x[i]
+        norm_y += y[i] * y[i]
+
+    if norm_x == 0.0 and norm_y == 0.0:
+        return 0.0
+    elif norm_x == 0.0 or norm_y == 0.0:
+        return FLOAT32_MAX
+    elif result <= 0.0:
+        return FLOAT32_MAX
+    else:
+        result = result / np.sqrt(norm_x * norm_y)
+        return 1.0 - (np.arccos(result) / np.pi)
+
+
+@numba.vectorize(fastmath=True)
+def true_angular_from_alt_cosine(d):
+    return 1.0 - np.arccos(pow(2.0, -d) / np.pi)
+
+
 @numba.njit(fastmath=True, cache=True)
 def correlation(x, y):
     mu_x = 0.0
@@ -738,6 +791,8 @@ named_distances = {
     "spearmanr": spearmanr,
     "kantorovich": kantorovich,
     "wasserstein": kantorovich,
+    "tsss": tsss,
+    "true_angular": true_angular,
     # Binary distances
     "hamming": hamming,
     "jaccard": jaccard,
@@ -762,6 +817,8 @@ fast_distance_alternatives = {
     "l2": {"dist": squared_euclidean, "correction": np.sqrt},
     "cosine": {"dist": alternative_cosine, "correction": correct_alternative_cosine},
     "dot": {"dist": alternative_dot, "correction": correct_alternative_cosine},
+    "true_angular": {"dist": alternative_cosine, "correction":
+        true_angular_from_alt_cosine},
     "hellinger": {
         "dist": alternative_hellinger,
         "correction": correct_alternative_hellinger,
