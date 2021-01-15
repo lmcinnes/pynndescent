@@ -543,7 +543,7 @@ def true_angular(x, y):
 
 @numba.vectorize(fastmath=True)
 def true_angular_from_alt_cosine(d):
-    return 1.0 - np.arccos(pow(2.0, -d) / np.pi)
+    return 1.0 - (np.arccos(pow(2.0, -d)) / np.pi)
 
 
 @numba.njit(fastmath=True, cache=True)
