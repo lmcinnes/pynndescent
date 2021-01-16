@@ -68,8 +68,11 @@ supporting a wide variety of distance metrics by default:
 **Angular and correlation metrics**
 
 - cosine
+- dot
 - correlation
 - spearmanr
+- tsss
+- true_angular
 
 **Probability metrics**
 
