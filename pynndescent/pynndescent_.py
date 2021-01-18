@@ -855,7 +855,9 @@ class NNDescent(object):
             if init_graph is None:
                 _init_graph = EMPTY_GRAPH
             else:
-                _init_graph = make_heap(init_graph.shape[0], init_graph.shape[1])
+                if init_graph.shape[0] != self._raw_data.shape[0]:
+                    raise ValueError("Init graph size does not match dataset size!")
+                _init_graph = make_heap(init_graph.shape[0], self.n_neighbors)
                 _init_graph = sparse_initalize_heap_from_graph_indices(
                     _init_graph,
                     init_graph,
@@ -892,7 +894,9 @@ class NNDescent(object):
             if init_graph is None:
                 _init_graph = EMPTY_GRAPH
             else:
-                _init_graph = make_heap(init_graph.shape[0], init_graph.shape[1])
+                if init_graph.shape[0] != self._raw_data.shape[0]:
+                    raise ValueError("Init graph size does not match dataset size!")
+                _init_graph = make_heap(init_graph.shape[0], self.n_neighbors)
                 _init_graph = initalize_heap_from_graph_indices(
                     _init_graph, init_graph, data, self._distance_func
                 )
