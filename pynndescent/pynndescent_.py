@@ -952,21 +952,40 @@ class NNDescent(object):
             numba.set_num_threads(self.n_jobs)
 
         if not hasattr(self, "_search_forest"):
-            tree_scores = [
-                score_linked_tree(tree, self._neighbor_graph[0])
-                for tree in self._rp_forest
-            ]
-            if self.verbose:
-                print(ts(), "Worst tree score: {:.8f}".format(np.min(tree_scores)))
-                print(ts(), "Mean tree score: {:.8f}".format(np.mean(tree_scores)))
-                print(ts(), "Best tree score: {:.8f}".format(np.max(tree_scores)))
-            best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
-            best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
-            del self._rp_forest
-            self._search_forest = [
-                convert_tree_format(tree, self._raw_data.shape[0])
-                for tree in best_trees
-            ]
+            if self._rp_forest is None:
+                # We don't have a forest, so make a small search forest
+                current_random_state = check_random_state(self.random_state)
+                rp_forest = make_forest(
+                    self._raw_data,
+                    self.n_neighbors,
+                    self.n_search_trees,
+                    self.leaf_size,
+                    self.rng_state,
+                    current_random_state,
+                    self.n_jobs,
+                    self._angular_trees,
+                )
+                self._search_forest = [
+                    convert_tree_format(tree, self._raw_data.shape[0])
+                    for tree in rp_forest
+                ]
+            else:
+                # convert the best trees into a search forest
+                tree_scores = [
+                    score_linked_tree(tree, self._neighbor_graph[0])
+                    for tree in self._rp_forest
+                ]
+                if self.verbose:
+                    print(ts(), "Worst tree score: {:.8f}".format(np.min(tree_scores)))
+                    print(ts(), "Mean tree score: {:.8f}".format(np.mean(tree_scores)))
+                    print(ts(), "Best tree score: {:.8f}".format(np.max(tree_scores)))
+                best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
+                best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
+                del self._rp_forest
+                self._search_forest = [
+                    convert_tree_format(tree, self._raw_data.shape[0])
+                    for tree in best_trees
+                ]
 
         nnz_pre_diversify = np.sum(self._neighbor_graph[0] >= 0)
         if self._is_sparse:
