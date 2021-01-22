@@ -1102,7 +1102,7 @@ class NNDescent(object):
         self._search_graph.sort_indices()
         self._search_graph = self._search_graph.maximum(reverse_graph).tocsr()
 
-        # Eliminate the diagonal0]
+        # Eliminate the diagonal
         self._search_graph.setdiag(0.0)
         self._search_graph.eliminate_zeros()
 
