@@ -314,6 +314,10 @@ def test_sparse_sokalsneath():
     sparse_binary_check("sokalsneath")
 
 
+def test_sparse_braycurtis():
+    sparse_spatial_check("braycurtis")
+
+
 def test_seuclidean():
     v = np.abs(np.random.randn(spatial_data.shape[1]))
     dist_matrix = pairwise_distances(spatial_data, metric="seuclidean", V=v)
