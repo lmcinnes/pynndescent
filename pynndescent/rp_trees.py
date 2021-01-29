@@ -984,7 +984,7 @@ def make_forest(
     )
     try:
         if scipy.sparse.isspmatrix_csr(data):
-            result = joblib.Parallel(n_jobs=n_jobs, prefer="threads")(
+            result = joblib.Parallel(n_jobs=n_jobs, require="sharedmem")(
                 joblib.delayed(make_sparse_tree)(
                     data.indices,
                     data.indptr,
@@ -996,7 +996,7 @@ def make_forest(
                 for i in range(n_trees)
             )
         else:
-            result = joblib.Parallel(n_jobs=n_jobs, prefer="threads")(
+            result = joblib.Parallel(n_jobs=n_jobs, require="sharedmem")(
                 joblib.delayed(make_dense_tree)(data, rng_states[i], leaf_size, angular)
                 for i in range(n_trees)
             )
@@ -1029,10 +1029,9 @@ def get_leaves_from_tree(tree):
 
 
 def rptree_leaf_array_parallel(rp_forest):
-    result = joblib.Parallel(n_jobs=-1, prefer="threads")(
+    result = joblib.Parallel(n_jobs=-1, require="sharedmem")(
         joblib.delayed(get_leaves_from_tree)(rp_tree) for rp_tree in rp_forest
     )
-    # result = [get_leaves_from_tree(rp_tree) for rp_tree in rp_forest]
     return result
 
 
