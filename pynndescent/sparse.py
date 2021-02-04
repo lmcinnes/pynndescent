@@ -218,7 +218,7 @@ def sparse_euclidean(ind1, data1, ind2, data2):
         "aux_data": numba.types.float32[::1],
         "result": numba.types.float32,
         "diff": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -336,8 +336,8 @@ def sparse_jaccard(ind1, data1, ind2, data2):
     ],
     fastmath=True,
     locals={
-        "num_non_zero": numba.types.float32,
-        "num_equal": numba.types.float32,
+        "num_non_zero": numba.types.int64,
+        "num_equal": numba.types.int64,
     },
 )
 def sparse_alternative_jaccard(ind1, data1, ind2, data2):
@@ -458,7 +458,7 @@ def sparse_cosine(ind1, data1, ind2, data2):
         "result": numba.types.float32,
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
-        "dim": numba.types.int32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -505,7 +505,7 @@ def sparse_dot(ind1, data1, ind2, data2):
     fastmath=True,
     locals={
         "result": numba.types.float32,
-        "dim": numba.types.int32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -611,7 +611,7 @@ def sparse_hellinger(ind1, data1, ind2, data2):
         "result": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
