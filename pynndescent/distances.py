@@ -47,7 +47,7 @@ def euclidean(x, y):
     locals={
         "result": numba.types.float32,
         "diff": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -230,7 +230,7 @@ def jaccard(x, y):
         "num_equal": numba.types.float32,
         "x_true": numba.types.uint8,
         "y_true": numba.types.uint8,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -415,7 +415,7 @@ def cosine(x, y):
         "result": numba.types.float32,
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -445,7 +445,7 @@ def alternative_cosine(x, y):
     fastmath=True,
     locals={
         "result": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -472,7 +472,7 @@ def dot(x, y):
     fastmath=True,
     locals={
         "result": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -589,7 +589,7 @@ def correlation(x, y):
         "result": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )
@@ -625,7 +625,7 @@ def hellinger(x, y):
         "result": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
-        "dim": numba.types.uint32,
+        "dim": numba.types.int64,
         "i": numba.types.uint16,
     },
 )

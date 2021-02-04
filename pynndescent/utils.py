@@ -67,7 +67,7 @@ def tau_rand(state):
         ),
     ],
     locals={
-        "dim": numba.types.uint32,
+        "dim": numba.types.uint64,
         "i": numba.types.uint32,
         "result": numba.types.float32,
     },
@@ -620,7 +620,7 @@ def mark_visited(table, candidate):
     "i4(f4[::1],i4[::1],f4,i4)",
     fastmath=True,
     locals={
-        "size": numba.types.uint16,
+        "size": numba.types.int64,
         "i": numba.types.uint16,
         "ic1": numba.types.uint16,
         "ic2": numba.types.uint16,
@@ -676,7 +676,7 @@ def simple_heap_push(priorities, indices, p, n):
     "i4(f4[::1],i4[::1],f4,i4)",
     fastmath=True,
     locals={
-        "size": numba.types.uint16,
+        "size": numba.types.int64,
         "i": numba.types.uint16,
         "ic1": numba.types.uint16,
         "ic2": numba.types.uint16,
@@ -737,7 +737,7 @@ def checked_heap_push(priorities, indices, p, n):
     "i4(f4[::1],i4[::1],u1[::1],f4,i4,u1)",
     fastmath=True,
     locals={
-        "size": numba.types.uint16,
+        "size": numba.types.int64,
         "i": numba.types.uint16,
         "ic1": numba.types.uint16,
         "ic2": numba.types.uint16,
@@ -796,7 +796,7 @@ def flagged_heap_push(priorities, indices, flags, p, n, f):
     "i4(f4[::1],i4[::1],u1[::1],f4,i4,u1)",
     fastmath=True,
     locals={
-        "size": numba.types.uint16,
+        "size": numba.types.int64,
         "i": numba.types.uint16,
         "ic1": numba.types.uint16,
         "ic2": numba.types.uint16,
