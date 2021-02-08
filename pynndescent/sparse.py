@@ -823,7 +823,7 @@ sparse_named_distances = {
     "canberra": sparse_canberra,
     "kantorovich": sparse_kantorovich,
     "wasserstein": sparse_kantorovich,
-    'braycurtis': sparse_bray_curtis,
+    "braycurtis": sparse_bray_curtis,
     # Binary distances
     "hamming": sparse_hamming,
     "jaccard": sparse_jaccard,

@@ -54,7 +54,11 @@ def create_component_search(index):
         },
     )
     def custom_search_closure(
-        query_points, candidate_indices, k, epsilon, visited,
+        query_points,
+        candidate_indices,
+        k,
+        epsilon,
+        visited,
     ):
         result = make_heap(query_points.shape[0], k)
         distance_scale = 1.0 + epsilon
@@ -176,7 +180,8 @@ def adjacency_matrix_representation(neighbor_indices, neighbor_distances):
     neighbor_distances[neighbor_distances == 0.0] = FLOAT32_EPS
 
     result.row = np.repeat(
-        np.arange(neighbor_indices.shape[0], dtype=np.int32), neighbor_indices.shape[1],
+        np.arange(neighbor_indices.shape[0], dtype=np.int32),
+        neighbor_indices.shape[1],
     )
     result.col = neighbor_indices.ravel()
     result.data = neighbor_distances.ravel()
@@ -190,6 +195,7 @@ def adjacency_matrix_representation(neighbor_indices, neighbor_distances):
     result = result.maximum(result.T)
 
     return result
+
 
 def connect_graph(graph, index, search_size=10, n_jobs=None):
 
@@ -225,7 +231,8 @@ def connect_graph(graph, index, search_size=10, n_jobs=None):
         return i, j, d
 
     new_edges = joblib.Parallel(n_jobs=n_jobs, prefer="threads")(
-        joblib.delayed(new_edge)(c1, c2) for c1, c2 in combinations(range(n_components), 2)
+        joblib.delayed(new_edge)(c1, c2)
+        for c1, c2 in combinations(range(n_components), 2)
     )
 
     for i, j, d in new_edges:

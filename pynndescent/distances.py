@@ -512,9 +512,9 @@ def tsss(x, y):
     norm_y = np.sqrt(norm_y)
     magnitude_difference = np.abs(norm_x - norm_y)
     d_cos /= norm_x * norm_y
-    theta = np.arccos(d_cos) + np.radians(10) # Add 10 degrees as an "epsilon" to
+    theta = np.arccos(d_cos) + np.radians(10)  # Add 10 degrees as an "epsilon" to
     # avoid problems
-    sector = ((np.sqrt(d_euc_squared) + magnitude_difference)**2) * theta
+    sector = ((np.sqrt(d_euc_squared) + magnitude_difference) ** 2) * theta
     triangle = norm_x * norm_y * np.sin(theta) / 2.0
     return triangle * sector
 
@@ -817,8 +817,10 @@ fast_distance_alternatives = {
     "l2": {"dist": squared_euclidean, "correction": np.sqrt},
     "cosine": {"dist": alternative_cosine, "correction": correct_alternative_cosine},
     "dot": {"dist": alternative_dot, "correction": correct_alternative_cosine},
-    "true_angular": {"dist": alternative_cosine, "correction":
-        true_angular_from_alt_cosine},
+    "true_angular": {
+        "dist": alternative_cosine,
+        "correction": true_angular_from_alt_cosine,
+    },
     "hellinger": {
         "dist": alternative_hellinger,
         "correction": correct_alternative_hellinger,

@@ -438,6 +438,7 @@ def test_compressed_pickle_unpickle():
     np.testing.assert_equal(neighbors1, neighbors2)
     np.testing.assert_equal(distances1, distances2)
 
+
 def test_transformer_pickle_unpickle():
     seed = np.random.RandomState(42)
 
@@ -455,6 +456,7 @@ def test_transformer_pickle_unpickle():
 
     np.testing.assert_equal(result1.indices, result2.indices)
     np.testing.assert_equal(result1.data, result2.data)
+
 
 def test_joblib_dump():
     seed = np.random.RandomState(42)
