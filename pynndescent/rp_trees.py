@@ -853,7 +853,7 @@ def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=Fals
     fastmath=True,
     locals={
         "margin": numba.types.float32,
-        "dim": numba.types.int64,
+        "dim": numba.types.intp,
         "d": numba.types.uint16,
     },
 )
