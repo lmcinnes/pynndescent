@@ -68,21 +68,61 @@ EMPTY_GRAPH = make_heap(1, 1)
 def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
 
     updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
+    chunk_size = 4
+    size = leaf_block.shape[1]
 
-    for n in numba.prange(leaf_block.shape[0]):
-        for i in range(leaf_block.shape[1]):
-            p = leaf_block[n, i]
-            if p < 0:
-                break
+    # for n in numba.prange(leaf_block.shape[0]):
+    #     for i in range(leaf_block.shape[1]):
+    #         p = leaf_block[n, i]
+    #         if p < 0:
+    #             break
+    #
+    #         for j in range(i + 1, leaf_block.shape[1]):
+    #             q = leaf_block[n, j]
+    #             if q < 0:
+    #                 break
+    #
+    #             d = dist(data[p], data[q])
+    #             if d < dist_thresholds[p] or d < dist_thresholds[q]:
+    #                 updates[n].append((p, q, d))
 
-            for j in range(i + 1, leaf_block.shape[1]):
-                q = leaf_block[n, j]
-                if q < 0:
-                    break
+    for row in numba.prange(leaf_block.shape[0]):
+        for n in range(0, size, chunk_size):
+            chunk_end_n = min(n + chunk_size, size)
+            for m in range(n, size, chunk_size):
+                chunk_end_m = min(m + chunk_size, size)
 
-                d = dist(data[p], data[q])
-                if d < dist_thresholds[p] or d < dist_thresholds[q]:
-                    updates[n].append((p, q, d))
+                if n == m:
+
+                    for i in range(n, chunk_end_n):
+                        p = leaf_block[row, i]
+                        if p < 0:
+                            break
+
+                        for j in range(m, chunk_end_m):
+                            if j > i:
+                                q = leaf_block[row, j]
+                                if q < 0:
+                                    break
+
+                                d = dist(data[p], data[q])
+                                if d < dist_thresholds[p] or d < dist_thresholds[q]:
+                                    updates[row].append((p, q, d))
+                else:
+
+                    for i in range(n, chunk_end_n):
+                        p = leaf_block[row, i]
+                        if p < 0:
+                            break
+
+                        for j in range(m, chunk_end_m):
+                            q = leaf_block[row, j]
+                            if q < 0:
+                                break
+
+                            d = dist(data[p], data[q])
+                            if d < dist_thresholds[p] or d < dist_thresholds[q]:
+                                updates[row].append((p, q, d))
 
     return updates
 
@@ -170,6 +210,45 @@ def init_from_neighbor_graph(heap, indices, distances):
     return
 
 
+# @numba.njit(parallel=True)
+# def generate_graph_updates(
+#     new_candidate_block,
+#     old_candidate_block,
+#     dist_thresholds,
+#     data,
+#     dist,
+# ):
+#
+#     block_size = new_candidate_block.shape[0]
+#     updates = [[(-1, -1, np.inf)] for i in range(block_size)]
+#     max_candidates = new_candidate_block.shape[1]
+#
+#     for i in numba.prange(block_size):
+#         for j in range(max_candidates):
+#             p = int(new_candidate_block[i, j])
+#             if p < 0:
+#                 continue
+#
+#             for k in range(j, max_candidates):
+#                 q = int(new_candidate_block[i, k])
+#                 if q < 0:
+#                     continue
+#
+#                 d = dist(data[p], data[q])
+#                 if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
+#                     updates[i].append((p, q, d))
+#
+#             for k in range(max_candidates):
+#                 q = int(old_candidate_block[i, k])
+#                 if q < 0:
+#                     continue
+#
+#                 d = dist(data[p], data[q])
+#                 if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
+#                     updates[i].append((p, q, d))
+#
+#     return updates
+
 @numba.njit(parallel=True)
 def generate_graph_updates(
     new_candidate_block,
@@ -182,30 +261,60 @@ def generate_graph_updates(
     block_size = new_candidate_block.shape[0]
     updates = [[(-1, -1, np.inf)] for i in range(block_size)]
     max_candidates = new_candidate_block.shape[1]
+    chunk_size = 4
 
-    for i in numba.prange(block_size):
-        for j in range(max_candidates):
-            p = int(new_candidate_block[i, j])
+    for row in numba.prange(block_size):
+
+        # chunked all pairs among new candidates
+        for n in range(0, max_candidates, chunk_size):
+            chunk_end_n = min(n + chunk_size, max_candidates)
+            for m in range(n, max_candidates, chunk_size):
+                chunk_end_m = min(m + chunk_size, max_candidates)
+                if n == m:
+                    for i in range(n, chunk_end_n):
+                        p = int(new_candidate_block[row, i])
+                        if p < 0:
+                            continue
+
+                        for j in range(m, chunk_end_m):
+                            if j > i:
+                                q = int(new_candidate_block[row, j])
+                                if q < 0:
+                                    continue
+
+                                d = dist(data[p], data[q])
+                                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
+                                    updates[row].append((p, q, d))
+                else:
+                    for i in range(n, chunk_end_n):
+                        p = int(new_candidate_block[row, i])
+                        if p < 0:
+                            continue
+
+                        for j in range(m, chunk_end_m):
+                            q = int(new_candidate_block[row, j])
+                            if q < 0:
+                                continue
+
+                            d = dist(data[p], data[q])
+                            if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
+                                updates[row].append((p, q, d))
+
+        # cross pairs between old and new candidates
+        for i in range(max_candidates):
+            p = int(old_candidate_block[row, i])
             if p < 0:
                 continue
 
-            for k in range(j, max_candidates):
-                q = int(new_candidate_block[i, k])
+            for j in range(max_candidates):
+                q = int(new_candidate_block[row, j])
                 if q < 0:
                     continue
 
                 d = dist(data[p], data[q])
                 if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                    updates[i].append((p, q, d))
+                    updates[row].append((p, q, d))
 
-            for k in range(max_candidates):
-                q = int(old_candidate_block[i, k])
-                if q < 0:
-                    continue
-
-                d = dist(data[p], data[q])
-                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                    updates[i].append((p, q, d))
 
     return updates
 
