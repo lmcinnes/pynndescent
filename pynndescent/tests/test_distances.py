@@ -1,27 +1,28 @@
+import pytest
 import numpy as np
 from numpy.testing import assert_array_equal, assert_array_almost_equal
 import pynndescent.distances as dist
 import pynndescent.sparse as spdist
-from scipy import sparse, stats
+from scipy import stats
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import BallTree
 
-np.random.seed(42)
-spatial_data = np.random.randn(10, 20)
-spatial_data = np.vstack([spatial_data, np.zeros((2, 20))]).astype(
-    np.float32, order="C"
-)  # Add some all zero graph_data for corner case test
-binary_data = np.random.choice(a=[False, True], size=(10, 20), p=[0.66, 1 - 0.66])
-binary_data = np.vstack(
-    [binary_data, np.zeros((2, 20), dtype="bool")]
-)  # Add some all zero graph_data for corner case test
-sparse_spatial_data = sparse.csr_matrix(spatial_data * binary_data, dtype=np.float32)
-sparse_spatial_data.sort_indices()
-sparse_binary_data = sparse.csr_matrix(binary_data)
-sparse_binary_data.sort_indices()
 
-
-def spatial_check(metric):
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "euclidean",
+        "manhattan",
+        "chebyshev",
+        "minkowski",
+        "hamming",
+        "canberra",
+        "braycurtis",
+        "cosine",
+        "correlation",
+    ],
+)
+def test_spatial_check(spatial_data, metric):
     dist_matrix = pairwise_distances(spatial_data, metric=metric)
     # scipy is bad sometimes
     if metric == "braycurtis":
@@ -48,7 +49,21 @@ def spatial_check(metric):
     )
 
 
-def binary_check(metric):
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "jaccard",
+        "matching",
+        "dice",
+        "kulsinski",
+        "rogerstanimoto",
+        "russellrao",
+        "sokalmichener",
+        "sokalsneath",
+        "yule",
+    ],
+)
+def test_binary_check(binary_data, metric):
     dist_matrix = pairwise_distances(binary_data, metric=metric)
     if metric in ("jaccard", "dice", "sokalsneath", "yule"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
@@ -74,7 +89,21 @@ def binary_check(metric):
     )
 
 
-def sparse_spatial_check(metric, decimal=6):
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "euclidean",
+        "manhattan",
+        "chebyshev",
+        "minkowski",
+        "hamming",
+        "canberra",
+        "cosine",
+        "braycurtis",
+        "correlation",
+    ],
+)
+def test_sparse_spatial_check(sparse_spatial_data, metric, decimal=6):
     if metric in spdist.sparse_named_distances:
         dist_matrix = pairwise_distances(
             sparse_spatial_data.todense().astype(np.float32), metric=metric
@@ -127,10 +156,23 @@ def sparse_spatial_check(metric, decimal=6):
     )
 
 
-def sparse_binary_check(metric):
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "jaccard",
+        "matching",
+        "dice",
+        "kulsinski",
+        "rogerstanimoto",
+        "russellrao",
+        "sokalmichener",
+        "sokalsneath",
+    ],
+)
+def test_sparse_binary_check(sparse_binary_data, metric):
     if metric in spdist.sparse_named_distances:
         dist_matrix = pairwise_distances(sparse_binary_data.todense(), metric=metric)
-    if metric in ("jaccard", "dice", "sokalsneath", "yule"):
+    if metric in ("jaccard", "dice", "sokalsneath"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
     if metric in ("kulsinski", "russellrao"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 1.0
@@ -178,147 +220,7 @@ def sparse_binary_check(metric):
     )
 
 
-def test_euclidean():
-    spatial_check("euclidean")
-
-
-def test_manhattan():
-    spatial_check("manhattan")
-
-
-def test_chebyshev():
-    spatial_check("chebyshev")
-
-
-def test_minkowski():
-    spatial_check("minkowski")
-
-
-def test_hamming():
-    spatial_check("hamming")
-
-
-def test_canberra():
-    spatial_check("canberra")
-
-
-def test_braycurtis():
-    spatial_check("braycurtis")
-
-
-def test_cosine():
-    spatial_check("cosine")
-
-
-def test_correlation():
-    spatial_check("correlation")
-
-
-def test_jaccard():
-    binary_check("jaccard")
-
-
-def test_matching():
-    binary_check("matching")
-
-
-def test_dice():
-    binary_check("dice")
-
-
-def test_kulsinski():
-    binary_check("kulsinski")
-
-
-def test_rogerstanimoto():
-    binary_check("rogerstanimoto")
-
-
-def test_russellrao():
-    binary_check("russellrao")
-
-
-def test_sokalmichener():
-    binary_check("sokalmichener")
-
-
-def test_sokalsneath():
-    binary_check("sokalsneath")
-
-
-def test_yule():
-    binary_check("yule")
-
-
-def test_sparse_euclidean():
-    sparse_spatial_check("euclidean")
-
-
-def test_sparse_manhattan():
-    sparse_spatial_check("manhattan")
-
-
-def test_sparse_chebyshev():
-    sparse_spatial_check("chebyshev")
-
-
-def test_sparse_minkowski():
-    sparse_spatial_check("minkowski")
-
-
-def test_sparse_hamming():
-    sparse_spatial_check("hamming")
-
-
-def test_sparse_canberra():
-    sparse_spatial_check("canberra")  # Be a little forgiving
-
-
-def test_sparse_cosine():
-    sparse_spatial_check("cosine")
-
-
-def test_sparse_correlation():
-    sparse_spatial_check("correlation")
-
-
-def test_sparse_jaccard():
-    sparse_binary_check("jaccard")
-
-
-def test_sparse_matching():
-    sparse_binary_check("matching")
-
-
-def test_sparse_dice():
-    sparse_binary_check("dice")
-
-
-def test_sparse_kulsinski():
-    sparse_binary_check("kulsinski")
-
-
-def test_sparse_rogerstanimoto():
-    sparse_binary_check("rogerstanimoto")
-
-
-def test_sparse_russellrao():
-    sparse_binary_check("russellrao")
-
-
-def test_sparse_sokalmichener():
-    sparse_binary_check("sokalmichener")
-
-
-def test_sparse_sokalsneath():
-    sparse_binary_check("sokalsneath")
-
-
-def test_sparse_braycurtis():
-    sparse_spatial_check("braycurtis")
-
-
-def test_seuclidean():
+def test_seuclidean(spatial_data):
     v = np.abs(np.random.randn(spatial_data.shape[1]))
     dist_matrix = pairwise_distances(spatial_data, metric="seuclidean", V=v)
     test_matrix = np.array(
@@ -337,7 +239,7 @@ def test_seuclidean():
     )
 
 
-def test_weighted_minkowski():
+def test_weighted_minkowski(spatial_data):
     v = np.abs(np.random.randn(spatial_data.shape[1]))
     dist_matrix = pairwise_distances(spatial_data, metric="wminkowski", w=v, p=3)
     test_matrix = np.array(
@@ -356,7 +258,7 @@ def test_weighted_minkowski():
     )
 
 
-def test_mahalanobis():
+def test_mahalanobis(spatial_data):
     v = np.cov(np.transpose(spatial_data))
     dist_matrix = pairwise_distances(spatial_data, metric="mahalanobis", VI=v)
     test_matrix = np.array(
@@ -375,7 +277,7 @@ def test_mahalanobis():
     )
 
 
-def test_haversine():
+def test_haversine(spatial_data):
     tree = BallTree(spatial_data[:, :2], metric="haversine")
     dist_matrix, _ = tree.query(spatial_data[:, :2], k=spatial_data.shape[0])
     test_matrix = np.array(
