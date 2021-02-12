@@ -47,6 +47,6 @@ steps:
 
 - task: PublishTestResults@2
   inputs:
-    testResultsFiles: 'pytest.xml'
+    testResultsFiles: 'coverage.xml'
     testRunTitle: '$(Agent.OS) - $(Build.BuildNumber)[$(Agent.JobName)] - Python $(python.version)'
   condition: succeededOrFailed()
