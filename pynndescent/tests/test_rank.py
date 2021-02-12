@@ -1,5 +1,6 @@
+import pytest
 import numpy as np
-from numpy.testing import assert_equal, assert_array_equal
+from numpy.testing import assert_array_equal
 
 from pynndescent.distances import rankdata
 
@@ -94,51 +95,132 @@ def test_big_tie():
         assert_array_equal(r, expected_rank * data, "test failed with n=%d" % n)
 
 
-# fmt: off
-_cases = (
-    # values, method, expected
-    (np.array([], np.float64), 'average', np.array([], np.float64)),
-    (np.array([], np.float64), 'min', np.array([], np.float64)),
-    (np.array([], np.float64), 'max', np.array([], np.float64)),
-    (np.array([], np.float64), 'dense', np.array([], np.float64)),
-    (np.array([], np.float64), 'ordinal', np.array([], np.float64)),
-    #
-    (np.array([100], np.float64), 'average', np.array([1.0], np.float64)),
-    (np.array([100], np.float64), 'min', np.array([1.0], np.float64)),
-    (np.array([100], np.float64), 'max', np.array([1.0], np.float64)),
-    (np.array([100], np.float64), 'dense', np.array([1.0], np.float64)),
-    (np.array([100], np.float64), 'ordinal', np.array([1.0], np.float64)),
-    # #
-    (np.array([100, 100, 100], np.float64), 'average', np.array([2.0, 2.0, 2.0], np.float64)),
-    (np.array([100, 100, 100], np.float64), 'min', np.array([1.0, 1.0, 1.0], np.float64)),
-    (np.array([100, 100, 100], np.float64), 'max', np.array([3.0, 3.0, 3.0], np.float64)),
-    (np.array([100, 100, 100], np.float64), 'dense', np.array([1.0, 1.0, 1.0], np.float64)),
-    (np.array([100, 100, 100], np.float64), 'ordinal', np.array([1.0, 2.0, 3.0], np.float64)),
-    #
-    (np.array([100, 300, 200], np.float64), 'average', np.array([1.0, 3.0, 2.0], np.float64)),
-    (np.array([100, 300, 200], np.float64), 'min', np.array([1.0, 3.0, 2.0], np.float64)),
-    (np.array([100, 300, 200], np.float64), 'max', np.array([1.0, 3.0, 2.0], np.float64)),
-    (np.array([100, 300, 200], np.float64), 'dense', np.array([1.0, 3.0, 2.0], np.float64)),
-    (np.array([100, 300, 200], np.float64), 'ordinal', np.array([1.0, 3.0, 2.0], np.float64)),
-    #
-    (np.array([100, 200, 300, 200], np.float64), 'average', np.array([1.0, 2.5, 4.0, 2.5], np.float64)),
-    (np.array([100, 200, 300, 200], np.float64), 'min', np.array([1.0, 2.0, 4.0, 2.0], np.float64)),
-    (np.array([100, 200, 300, 200], np.float64), 'max', np.array([1.0, 3.0, 4.0, 3.0], np.float64)),
-    (np.array([100, 200, 300, 200], np.float64), 'dense', np.array([1.0, 2.0, 3.0, 2.0], np.float64)),
-    (np.array([100, 200, 300, 200], np.float64), 'ordinal', np.array([1.0, 2.0, 4.0, 3.0], np.float64)),
-    #
-    (np.array([100, 200, 300, 200, 100], np.float64), 'average', np.array([1.5, 3.5, 5.0, 3.5, 1.5], np.float64)),
-    (np.array([100, 200, 300, 200, 100], np.float64), 'min', np.array([1.0, 3.0, 5.0, 3.0, 1.0], np.float64)),
-    (np.array([100, 200, 300, 200, 100], np.float64), 'max', np.array([2.0, 4.0, 5.0, 4.0, 2.0], np.float64)),
-    (np.array([100, 200, 300, 200, 100], np.float64), 'dense', np.array([1.0, 2.0, 3.0, 2.0, 1.0], np.float64)),
-    (np.array([100, 200, 300, 200, 100], np.float64), 'ordinal', np.array([1.0, 3.0, 5.0, 4.0, 2.0], np.float64)),
-    #
-    (np.array([10] * 30, np.float64), 'ordinal', np.arange(1.0, 31.0, dtype=np.float64)),
+@pytest.mark.parametrize(
+    "values,method,expected",
+    [  # values, method, expected
+        (np.array([], np.float64), "average", np.array([], np.float64)),
+        (np.array([], np.float64), "min", np.array([], np.float64)),
+        (np.array([], np.float64), "max", np.array([], np.float64)),
+        (np.array([], np.float64), "dense", np.array([], np.float64)),
+        (np.array([], np.float64), "ordinal", np.array([], np.float64)),
+        #
+        (np.array([100], np.float64), "average", np.array([1.0], np.float64)),
+        (np.array([100], np.float64), "min", np.array([1.0], np.float64)),
+        (np.array([100], np.float64), "max", np.array([1.0], np.float64)),
+        (np.array([100], np.float64), "dense", np.array([1.0], np.float64)),
+        (np.array([100], np.float64), "ordinal", np.array([1.0], np.float64)),
+        # #
+        (
+            np.array([100, 100, 100], np.float64),
+            "average",
+            np.array([2.0, 2.0, 2.0], np.float64),
+        ),
+        (
+            np.array([100, 100, 100], np.float64),
+            "min",
+            np.array([1.0, 1.0, 1.0], np.float64),
+        ),
+        (
+            np.array([100, 100, 100], np.float64),
+            "max",
+            np.array([3.0, 3.0, 3.0], np.float64),
+        ),
+        (
+            np.array([100, 100, 100], np.float64),
+            "dense",
+            np.array([1.0, 1.0, 1.0], np.float64),
+        ),
+        (
+            np.array([100, 100, 100], np.float64),
+            "ordinal",
+            np.array([1.0, 2.0, 3.0], np.float64),
+        ),
+        #
+        (
+            np.array([100, 300, 200], np.float64),
+            "average",
+            np.array([1.0, 3.0, 2.0], np.float64),
+        ),
+        (
+            np.array([100, 300, 200], np.float64),
+            "min",
+            np.array([1.0, 3.0, 2.0], np.float64),
+        ),
+        (
+            np.array([100, 300, 200], np.float64),
+            "max",
+            np.array([1.0, 3.0, 2.0], np.float64),
+        ),
+        (
+            np.array([100, 300, 200], np.float64),
+            "dense",
+            np.array([1.0, 3.0, 2.0], np.float64),
+        ),
+        (
+            np.array([100, 300, 200], np.float64),
+            "ordinal",
+            np.array([1.0, 3.0, 2.0], np.float64),
+        ),
+        #
+        (
+            np.array([100, 200, 300, 200], np.float64),
+            "average",
+            np.array([1.0, 2.5, 4.0, 2.5], np.float64),
+        ),
+        (
+            np.array([100, 200, 300, 200], np.float64),
+            "min",
+            np.array([1.0, 2.0, 4.0, 2.0], np.float64),
+        ),
+        (
+            np.array([100, 200, 300, 200], np.float64),
+            "max",
+            np.array([1.0, 3.0, 4.0, 3.0], np.float64),
+        ),
+        (
+            np.array([100, 200, 300, 200], np.float64),
+            "dense",
+            np.array([1.0, 2.0, 3.0, 2.0], np.float64),
+        ),
+        (
+            np.array([100, 200, 300, 200], np.float64),
+            "ordinal",
+            np.array([1.0, 2.0, 4.0, 3.0], np.float64),
+        ),
+        #
+        (
+            np.array([100, 200, 300, 200, 100], np.float64),
+            "average",
+            np.array([1.5, 3.5, 5.0, 3.5, 1.5], np.float64),
+        ),
+        (
+            np.array([100, 200, 300, 200, 100], np.float64),
+            "min",
+            np.array([1.0, 3.0, 5.0, 3.0, 1.0], np.float64),
+        ),
+        (
+            np.array([100, 200, 300, 200, 100], np.float64),
+            "max",
+            np.array([2.0, 4.0, 5.0, 4.0, 2.0], np.float64),
+        ),
+        (
+            np.array([100, 200, 300, 200, 100], np.float64),
+            "dense",
+            np.array([1.0, 2.0, 3.0, 2.0, 1.0], np.float64),
+        ),
+        (
+            np.array([100, 200, 300, 200, 100], np.float64),
+            "ordinal",
+            np.array([1.0, 3.0, 5.0, 4.0, 2.0], np.float64),
+        ),
+        #
+        (
+            np.array([10] * 30, np.float64),
+            "ordinal",
+            np.arange(1.0, 31.0, dtype=np.float64),
+        ),
+    ],
 )
-# fmt: on
-
-
-def test_cases():
-    for values, method, expected in _cases:
-        r = rankdata(values, method=method)
-        assert_array_equal(r, expected)
+def test_cases(values, method, expected):
+    r = rankdata(values, method=method)
+    assert_array_equal(r, expected)

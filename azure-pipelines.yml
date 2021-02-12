@@ -16,6 +16,9 @@ strategy:
     mac10.14_py37:
       imageName: 'macOS-10.14'
       python.version: '3.7'
+    mac10.14_py38:
+      imageName: 'macOS-10.14'
+      python.version: '3.8'
 
 pool:
   vmImage: $(imageName)
@@ -33,15 +36,17 @@ steps:
 
 - script: |
     pip install -e .
+    pip install pytest
+    pip install pytest-cov
+    pip install coveralls
   displayName: 'Install package'
 
 - script: |
-    pip install nose
-    nosetests -s -v --with-xunit
+    pytest pynndescent/tests --show-capture=no -v --disable-warnings --junitxml=junit/test-results.xml --cov=pynndescent/ --cov-report=xml --cov-report=html
   displayName: 'Run tests'
 
 - task: PublishTestResults@2
   inputs:
-    testResultsFiles: 'nosetests.xml'
+    testResultsFiles: 'coverage.xml'
     testRunTitle: '$(Agent.OS) - $(Build.BuildNumber)[$(Agent.JobName)] - Python $(python.version)'
   condition: succeededOrFailed()
