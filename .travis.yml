@@ -4,12 +4,13 @@ sudo: false
 python:
   - "3.6"
   - "3.7"
+  - "3.8"
 env:
   global:
     - MODULE=pynndescent
   matrix:
     - COVERAGE="false"
-#    - COVERAGE="true"
+    - COVERAGE="true"
 #matrix:
 #  exclude:
 #    - python: "3.6"
