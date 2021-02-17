@@ -705,6 +705,56 @@ def spearmanr(x, y):
     return rs[1, 0]
 
 
+@numba.njit(fastmath=True, nogil=True)
+def rel_entr(x, y):
+    if np.isnan(x) or np.isnan(y):
+        return np.nan
+    elif x > 0 and y > 0:
+        return x * np.log(x / y)
+    elif x == 0 and y >= 0:
+        return 0.0
+    else:
+        return np.inf
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    nogil=True,
+    fastmath=True,
+    locals={
+        "pnorm": numba.float32,
+        "qnorm": numba.float32,
+        "mnorm": numba.float32,
+        "pi": numba.float32,
+        "qi": numba.float32,
+        "m": numba.float32,
+        "result": numba.float32,
+    }
+)
+def jensen_shannon(p, q):
+    result = 0.0
+    pnorm = 0.0
+    qnorm = 0.0
+    for i in range(p.shape[0]):
+        pnorm += p[i]
+        qnorm += q[i]
+    mnorm = pnorm + qnorm
+    for i in range(p.shape[0]):
+        pi = p[i] / pnorm
+        qi = q[i] / qnorm
+        m = (pi + qi) / mnorm
+        result += rel_entr(pi, m)
+        result += rel_entr(qi, m)
+
+    return np.sqrt(result / 2.0)
+
+
 @numba.njit(nogil=True)
 def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
 
@@ -789,6 +839,7 @@ named_distances = {
     "haversine": haversine,
     "braycurtis": bray_curtis,
     "spearmanr": spearmanr,
+    "jensen_shannon": jensen_shannon,
     "kantorovich": kantorovich,
     "wasserstein": kantorovich,
     "tsss": tsss,
