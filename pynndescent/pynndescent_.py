@@ -932,7 +932,10 @@ class NNDescent(object):
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
         if not hasattr(self, "_search_function"):
-            self._init_search_function()
+            if self._is_sparse:
+                self._init_sparse_search_function()
+            else:
+                self._init_search_function()
         result = self.__dict__.copy()
         if hasattr(self, "_rp_forest"):
             del result["_rp_forest"]
