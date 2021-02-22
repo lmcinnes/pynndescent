@@ -949,7 +949,10 @@ class NNDescent(object):
         self._search_forest = tuple(
             [renumbaify_tree(tree) for tree in d["_search_forest"]]
         )
-        self._init_search_function()
+        if self._is_sparse:
+            self._init_sparse_search_function()
+        else:
+            self._init_search_function()
 
     def _init_search_graph(self):
 
