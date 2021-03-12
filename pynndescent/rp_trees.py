@@ -6,8 +6,6 @@ from warnings import warn
 import locale
 import numpy as np
 import numba
-from numba.core import types
-from numba.experimental import structref
 import scipy.sparse
 
 from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_intersect

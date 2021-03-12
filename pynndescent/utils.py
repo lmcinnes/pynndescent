@@ -6,7 +6,7 @@ import time
 
 import numba
 from numba.core import types
-from numba.experimental import structref
+import numba.experimental.structref as structref
 import numpy as np
 
 
