@@ -32,14 +32,14 @@ PyNNDescent provides fast approximate nearest neighbor queries. The
 `ann-benchmarks <https://github.com/erikbern/ann-benchmarks>`_ system puts it
 solidly in the mix of top performing ANN libraries:
 
-**GIST-960 Euclidean**
+**SIFT-128 Euclidean**
 
-.. image:: https://camo.githubusercontent.com/142a48c992ba689b8ea9e62636b5281a97322f74/68747470733a2f2f7261772e6769746875622e636f6d2f6572696b6265726e2f616e6e2d62656e63686d61726b732f6d61737465722f726573756c74732f676973742d3936302d6575636c696465616e2e706e67
-    :alt: ANN benchmark performance for GIST 960 dataset
+.. image:: https://pynndescent.readthedocs.io/en/latest/_images/sift.png
+    :alt: ANN benchmark performance for SIFT 128 dataset
 
 **NYTimes-256 Angular**
 
-.. image:: https://camo.githubusercontent.com/6120a35a9db64104eaa1c95cb4803c2fc4cd2679/68747470733a2f2f7261772e6769746875622e636f6d2f6572696b6265726e2f616e6e2d62656e63686d61726b732f6d61737465722f726573756c74732f6e7974696d65732d3235362d616e67756c61722e706e67
+.. image:: https://pynndescent.readthedocs.io/en/latest/_images/nytimes.png
     :alt: ANN benchmark performance for NYTimes 256 dataset
 
 While PyNNDescent is among fastest ANN library, it is also both easy to install (pip
