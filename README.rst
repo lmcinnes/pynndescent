@@ -1,3 +1,8 @@
+.. image:: doc/pynndescent_logo.png
+  :width: 600
+  :align: center
+  :alt: PyNNDescent Logo
+
 .. image:: https://travis-ci.org/lmcinnes/pynndescent.svg
     :target: https://travis-ci.org/lmcinnes/pynndescent
     :alt: Travis Build Status

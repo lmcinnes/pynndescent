@@ -546,13 +546,11 @@ def make_euclidean_tree(
         offsets.append(offset)
         children.append((np.int32(left_node_num), np.int32(right_node_num)))
         point_indices.append(np.array([-1], dtype=np.int32))
-        # print("Made a node in tree with", len(point_indices), "nodes")
     else:
         hyperplanes.append(np.array([-1.0], dtype=np.float32))
         offsets.append(-np.inf)
         children.append((np.int32(-1), np.int32(-1)))
         point_indices.append(indices)
-        # print("Made a leaf in tree with", len(point_indices), "nodes")
 
     return
 
