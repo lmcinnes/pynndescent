@@ -3,7 +3,7 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-.. image:: doc/pynndescent_logo.png
+.. image:: pynndescent_logo.png
   :width: 600
   :align: center
   :alt: PyNNDescent Logo
