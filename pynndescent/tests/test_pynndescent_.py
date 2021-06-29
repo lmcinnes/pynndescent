@@ -10,6 +10,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 import pickle
 import joblib
+import scipy
 
 from pynndescent import NNDescent, PyNNDescentTransformer
 
@@ -51,6 +52,7 @@ def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
     )
 
 
+@pytest.mark.skipif(list(map(int, scipy.version.version.split('.'))) < [1,3,0], reason="requires scipy >= 1.3.0")
 def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "euclidean", n_neighbors=20, random_state=None
@@ -69,6 +71,7 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     )
 
 
+@pytest.mark.skipif(list(map(int, scipy.version.version.split('.'))) < [1,3,0], reason="requires scipy >= 1.3.0")
 def test_sparse_angular_nn_descent_neighbor_accuracy(sparse_nn_data):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "cosine", {}, 20, random_state=None
@@ -363,9 +366,10 @@ def test_pickle_unpickle():
     )
     neighbors1, distances1 = index1.query(x2)
 
-    pickle.dump(index1, open("test_tmp.pkl", "wb"))
-    index2 = pickle.load(open("test_tmp.pkl", "rb"))
-    os.remove("test_tmp.pkl")
+    mem_temp = io.BytesIO()
+    pickle.dump(index1, mem_temp)
+    mem_temp.seek(0)
+    index2 = pickle.load(mem_temp)
 
     neighbors2, distances2 = index2.query(x2)
 
@@ -389,9 +393,10 @@ def test_compressed_pickle_unpickle():
     )
     neighbors1, distances1 = index1.query(x2)
 
-    pickle.dump(index1, open("test_tmp.pkl", "wb"))
-    index2 = pickle.load(open("test_tmp.pkl", "rb"))
-    os.remove("test_tmp.pkl")
+    mem_temp = io.BytesIO()
+    pickle.dump(index1, mem_temp)
+    mem_temp.seek(0)
+    index2 = pickle.load(mem_temp)
 
     neighbors2, distances2 = index2.query(x2)
 
@@ -408,9 +413,10 @@ def test_transformer_pickle_unpickle():
     index1 = PyNNDescentTransformer(n_neighbors=10).fit(x1)
     result1 = index1.transform(x2)
 
-    pickle.dump(index1, open("test_tmp.pkl", "wb"))
-    index2 = pickle.load(open("test_tmp.pkl", "rb"))
-    os.remove("test_tmp.pkl")
+    mem_temp = io.BytesIO()
+    pickle.dump(index1, mem_temp)
+    mem_temp.seek(0)
+    index2 = pickle.load(mem_temp)
 
     result2 = index2.transform(x2)
 
@@ -433,9 +439,10 @@ def test_joblib_dump():
     )
     neighbors1, distances1 = index1.query(x2)
 
-    joblib.dump(index1, "test_tmp.dump")
-    index2 = joblib.load("test_tmp.dump")
-    os.remove("test_tmp.dump")
+    mem_temp = io.BytesIO()
+    joblib.dump(index1, mem_temp)
+    mem_temp.seek(0)
+    index2 = joblib.load(mem_temp)
 
     neighbors2, distances2 = index2.query(x2)
 
