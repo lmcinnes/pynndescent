@@ -363,9 +363,10 @@ def test_pickle_unpickle():
     )
     neighbors1, distances1 = index1.query(x2)
 
-    pickle.dump(index1, open("test_tmp.pkl", "wb"))
-    index2 = pickle.load(open("test_tmp.pkl", "rb"))
-    os.remove("test_tmp.pkl")
+    mem_temp = io.BytesIO()
+    pickle.dump(index1, mem_temp)
+    mem_temp.seek(0)
+    index2 = pickle.load(mem_temp)
 
     neighbors2, distances2 = index2.query(x2)
 
@@ -389,9 +390,10 @@ def test_compressed_pickle_unpickle():
     )
     neighbors1, distances1 = index1.query(x2)
 
-    pickle.dump(index1, open("test_tmp.pkl", "wb"))
-    index2 = pickle.load(open("test_tmp.pkl", "rb"))
-    os.remove("test_tmp.pkl")
+    mem_temp = io.BytesIO()
+    pickle.dump(index1, mem_temp)
+    mem_temp.seek(0)
+    index2 = pickle.load(mem_temp)
 
     neighbors2, distances2 = index2.query(x2)
 
@@ -408,9 +410,10 @@ def test_transformer_pickle_unpickle():
     index1 = PyNNDescentTransformer(n_neighbors=10).fit(x1)
     result1 = index1.transform(x2)
 
-    pickle.dump(index1, open("test_tmp.pkl", "wb"))
-    index2 = pickle.load(open("test_tmp.pkl", "rb"))
-    os.remove("test_tmp.pkl")
+    mem_temp = io.BytesIO()
+    pickle.dump(index1, mem_temp)
+    mem_temp.seek(0)
+    index2 = pickle.load(mem_temp)
 
     result2 = index2.transform(x2)
 
@@ -433,9 +436,10 @@ def test_joblib_dump():
     )
     neighbors1, distances1 = index1.query(x2)
 
-    joblib.dump(index1, "test_tmp.dump")
-    index2 = joblib.load("test_tmp.dump")
-    os.remove("test_tmp.dump")
+    mem_temp = io.BytesIO()
+    joblib.dump(index1, mem_temp)
+    mem_temp.seek(0)
+    index2 = joblib.load(mem_temp)
 
     neighbors2, distances2 = index2.query(x2)
 
