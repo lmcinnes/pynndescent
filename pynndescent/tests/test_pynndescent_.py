@@ -52,7 +52,10 @@ def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
     )
 
 
-@pytest.mark.skipif(list(map(int, scipy.version.version.split('.'))) < [1,3,0], reason="requires scipy >= 1.3.0")
+@pytest.mark.skipif(
+    list(map(int, scipy.version.version.split("."))) < [1, 3, 0],
+    reason="requires scipy >= 1.3.0",
+)
 def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "euclidean", n_neighbors=20, random_state=None
@@ -71,7 +74,10 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     )
 
 
-@pytest.mark.skipif(list(map(int, scipy.version.version.split('.'))) < [1,3,0], reason="requires scipy >= 1.3.0")
+@pytest.mark.skipif(
+    list(map(int, scipy.version.version.split("."))) < [1, 3, 0],
+    reason="requires scipy >= 1.3.0",
+)
 def test_sparse_angular_nn_descent_neighbor_accuracy(sparse_nn_data):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "cosine", {}, 20, random_state=None
@@ -357,13 +363,7 @@ def test_pickle_unpickle():
     x1 = seed.normal(0, 100, (1000, 50))
     x2 = seed.normal(0, 100, (1000, 50))
 
-    index1 = NNDescent(
-        x1,
-        "euclidean",
-        {},
-        10,
-        random_state=None,
-    )
+    index1 = NNDescent(x1, "euclidean", {}, 10, random_state=None)
     neighbors1, distances1 = index1.query(x2)
 
     mem_temp = io.BytesIO()
@@ -383,14 +383,7 @@ def test_compressed_pickle_unpickle():
     x1 = seed.normal(0, 100, (1000, 50))
     x2 = seed.normal(0, 100, (1000, 50))
 
-    index1 = NNDescent(
-        x1,
-        "euclidean",
-        {},
-        10,
-        random_state=None,
-        compressed=True,
-    )
+    index1 = NNDescent(x1, "euclidean", {}, 10, random_state=None, compressed=True)
     neighbors1, distances1 = index1.query(x2)
 
     mem_temp = io.BytesIO()
@@ -430,13 +423,7 @@ def test_joblib_dump():
     x1 = seed.normal(0, 100, (1000, 50))
     x2 = seed.normal(0, 100, (1000, 50))
 
-    index1 = NNDescent(
-        x1,
-        "euclidean",
-        {},
-        10,
-        random_state=None,
-    )
+    index1 = NNDescent(x1, "euclidean", {}, 10, random_state=None)
     neighbors1, distances1 = index1.query(x2)
 
     mem_temp = io.BytesIO()

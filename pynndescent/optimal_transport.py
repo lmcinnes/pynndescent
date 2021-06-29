@@ -226,14 +226,9 @@ def find_join_node(source, target, succ_num, parent, in_arc):
         "second": numba.uint16,
         "result": numba.uint8,
         "in_arc": numba.uint32,
-    },
+    }
 )
-def find_leaving_arc(
-    join,
-    in_arc,
-    node_arc_data,
-    spanning_tree,
-):
+def find_leaving_arc(join, in_arc, node_arc_data, spanning_tree):
     source = node_arc_data.source
     target = node_arc_data.target
     flow = node_arc_data.flow
@@ -302,20 +297,8 @@ def find_leaving_arc(
 # Change _flow and _state vectors
 # locals: val, u
 # modifies: _state, _flow
-@numba.njit(
-    locals={
-        "u": numba.uint16,
-        "in_arc": numba.uint32,
-        "val": numba.float64,
-    },
-)
-def update_flow(
-    join,
-    leaving_arc_data,
-    node_arc_data,
-    spanning_tree,
-    in_arc,
-):
+@numba.njit(locals={"u": numba.uint16, "in_arc": numba.uint32, "val": numba.float64})
+def update_flow(join, leaving_arc_data, node_arc_data, spanning_tree, in_arc):
     source = node_arc_data.source
     target = node_arc_data.target
     flow = node_arc_data.flow
@@ -375,15 +358,9 @@ def update_flow(
         "new_stem": numba.uint16,
         "par_stem": numba.uint16,
         "in_arc": numba.uint32,
-    },
+    }
 )
-def update_spanning_tree(
-    spanning_tree,
-    leaving_arc_data,
-    join,
-    in_arc,
-    source,
-):
+def update_spanning_tree(spanning_tree, leaving_arc_data, join, in_arc, source):
 
     parent = spanning_tree.parent
     thread = spanning_tree.thread
@@ -866,12 +843,7 @@ def total_cost(flow, cost):
 
 
 @numba.njit(nogil=True)
-def network_simplex_core(
-    node_arc_data,
-    spanning_tree,
-    graph,
-    max_iter,
-):
+def network_simplex_core(node_arc_data, spanning_tree, graph, max_iter):
 
     # pivot_block = PivotBlock(
     #     max(np.int32(np.sqrt(graph.n_arcs)), 10),
@@ -997,20 +969,24 @@ def sinkhorn(x, y, regularization, cost=_dummy_cost, max_iter=1000, tolerance=1e
     Kp = (1 / x).reshape(-1, 1) * K
     iteration = 0
     err = 1
-    while (err > tolerance and iteration < max_iter):
+    while err > tolerance and iteration < max_iter:
         uprev = u
         vprev = v
 
         KtransposeU = np.dot(K.T, u)
         v = y / KtransposeU
-        u = 1. / np.dot(Kp, v)
+        u = 1.0 / np.dot(Kp, v)
 
-        if (np.any(KtransposeU == 0)
-                or np.any(np.isnan(u)) or np.any(np.isnan(v))
-                or np.any(np.isinf(u)) or np.any(np.isinf(v))):
+        if (
+            np.any(KtransposeU == 0)
+            or np.any(np.isnan(u))
+            or np.any(np.isnan(v))
+            or np.any(np.isinf(u))
+            or np.any(np.isinf(v))
+        ):
             # we have reached the machine precision
             # come back to previous solution and quit loop
-            print('Warning: numerical errors at iteration', iteration)
+            print("Warning: numerical errors at iteration", iteration)
             u = uprev
             v = vprev
             break
@@ -1018,16 +994,16 @@ def sinkhorn(x, y, regularization, cost=_dummy_cost, max_iter=1000, tolerance=1e
             # we can speed up the process by checking for the error only all
             # the 10th iterations
             if n_hists:
-                tmp2 = np.einsum('ik,ij,jk->jk', u, K, v)
+                tmp2 = np.einsum("ik,ij,jk->jk", u, K, v)
             else:
                 # compute right marginal tmp2= (diag(u)Kdiag(v))^T1
-                tmp2 = np.einsum('i,ij,j->j', u, K, v)
+                tmp2 = np.einsum("i,ij,j->j", u, K, v)
             err = np.sqrt(np.sum(np.square(tmp2 - y)))  # violation of marginal
 
         iteration = iteration + 1
 
     if n_hists:  # return only loss
-        res = np.einsum('ik,ij,jk,ij->k', u, K, v, cost)
+        res = np.einsum("ik,ij,jk,ij->k", u, K, v, cost)
         return res
 
     else:  # return OT matrix

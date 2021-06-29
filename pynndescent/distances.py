@@ -735,9 +735,7 @@ def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
     sub_cost = cost[row_mask, :][:, col_mask]
 
     node_arc_data, spanning_tree, graph = allocate_graph_structures(
-        a.shape[0],
-        b.shape[0],
-        False,
+        a.shape[0], b.shape[0], False
     )
     initialize_supply(a, -b, graph, node_arc_data.supply)
     initialize_cost(sub_cost, graph, node_arc_data.cost)
@@ -747,12 +745,7 @@ def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
         raise ValueError(
             "Kantorovich distance inputs must be valid probability distributions."
         )
-    solve_status = network_simplex_core(
-        node_arc_data,
-        spanning_tree,
-        graph,
-        max_iter,
-    )
+    solve_status = network_simplex_core(node_arc_data, spanning_tree, graph, max_iter)
     # if solve_status == ProblemStatus.MAX_ITER_REACHED:
     #     print("WARNING: RESULT MIGHT BE INACCURATE\nMax number of iteration reached!")
     if solve_status == ProblemStatus.INFEASIBLE:

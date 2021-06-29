@@ -62,7 +62,7 @@ def arr_intersect(ar1, ar2):
             numba.types.Array(numba.types.float32, 1, "C", readonly=True),
             numba.types.Array(numba.types.int32, 1, "C", readonly=True),
             numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
+        )
     ],
     fastmath=True,
     locals={
@@ -157,7 +157,7 @@ def sparse_diff(ind1, data1, ind2, data2):
             numba.types.Array(numba.types.float32, 1, "C", readonly=True),
             numba.types.Array(numba.types.int32, 1, "C", readonly=True),
             numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
+        )
     ],
     fastmath=True,
     locals={
@@ -339,10 +339,7 @@ def sparse_jaccard(ind1, data1, ind2, data2):
         ),
     ],
     fastmath=True,
-    locals={
-        "num_non_zero": numba.types.intp,
-        "num_equal": numba.types.intp,
-    },
+    locals={"num_non_zero": numba.types.intp, "num_equal": numba.types.intp},
     cache=True,
 )
 def sparse_alternative_jaccard(ind1, data1, ind2, data2):

@@ -12,8 +12,9 @@
 #
 import os
 import sys
-sys.path.insert(0, os.path.abspath('..'))
-sys.path.insert(0, os.path.abspath('.'))
+
+sys.path.insert(0, os.path.abspath(".."))
+sys.path.insert(0, os.path.abspath("."))
 
 
 # -- Project information -----------------------------------------------------
@@ -25,7 +26,7 @@ author = "Leland McInnes"
 # The full version, including alpha/beta/rc tags
 release = "0.5.0"
 
-master_doc = 'index'
+master_doc = "index"
 
 # -- General configuration ---------------------------------------------------
 
@@ -60,10 +61,7 @@ html_theme = "sphinx_rtd_theme"
 # further.  For a list of options available for each theme, see the
 # documentation.
 #
-html_theme_options = {
-    "navigation_depth": 3,
-    "logo_only": True,
-}
+html_theme_options = {"navigation_depth": 3, "logo_only": True}
 
 html_logo = "pynndescent_logo_no_text.png"
 

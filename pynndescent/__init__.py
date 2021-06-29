@@ -5,6 +5,7 @@ from .pynndescent_ import NNDescent, PyNNDescentTransformer
 # Workaround: https://github.com/numba/numba/issues/3341
 try:
     from numba.np.ufunc import tbbpool
+
     numba.config.THREADING_LAYER = "tbb"
 except ImportError as e:
     # might be a missing symbol due to e.g. tbb libraries missing
