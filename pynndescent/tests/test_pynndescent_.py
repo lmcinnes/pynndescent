@@ -10,6 +10,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 import pickle
 import joblib
+import scipy
 
 from pynndescent import NNDescent, PyNNDescentTransformer
 
@@ -51,6 +52,7 @@ def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
     )
 
 
+@pytest.mark.skipif(list(map(int, scipy.version.version.split('.'))) < [1,3,0], reason="requires scipy >= 1.3.0")
 def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "euclidean", n_neighbors=20, random_state=None
@@ -69,6 +71,7 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     )
 
 
+@pytest.mark.skipif(list(map(int, scipy.version.version.split('.'))) < [1,3,0], reason="requires scipy >= 1.3.0")
 def test_sparse_angular_nn_descent_neighbor_accuracy(sparse_nn_data):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "cosine", {}, 20, random_state=None
