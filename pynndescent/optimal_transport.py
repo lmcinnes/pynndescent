@@ -31,6 +31,9 @@ import numba
 from collections import namedtuple
 from enum import Enum, IntEnum
 
+_mock_identity = np.eye(2, dtype=np.float32)
+_mock_ones = np.ones(2, dtype=np.float32)
+_dummy_cost = np.zeros((2, 2), dtype=np.float64)
 
 # Accuracy tolerance and net supply tolerance
 EPSILON = 2.2204460492503131e-15
@@ -949,3 +952,83 @@ def network_simplex_core(
             pi[i] -= max_pot
 
     return solution_status
+
+
+# Based on sinkhorn_knopp implementation in Python Optimal Transport library
+# https://github.com/PythonOT/POT/blob/master/ot/bregman.py
+# Authored by: Remi Flamary <remi.flamary@unice.fr>
+#              Nicolas Courty <ncourty@irisa.fr>
+#              Kilian Fatras <kilian.fatras@irisa.fr>
+#              Titouan Vayer <titouan.vayer@irisa.fr>
+#              Hicham Janati <hicham.janati@inria.fr>
+#              Mokhtar Z. Alaya <mokhtarzahdi.alaya@gmail.com>
+#              Alexander Tong <alexander.tong@yale.edu>
+#              Ievgen Redko <ievgen.redko@univ-st-etienne.fr>
+#              Quang Huy Tran <quang-huy.tran@univ-ubs.fr>
+# License: MIT License
+@numba.njit()
+def sinkhorn(x, y, regularization, cost=_dummy_cost, max_iter=1000, tolerance=1e-9):
+
+    if len(x) == 0:
+        x = np.full((cost.shape[0],), 1.0 / cost.shape[0], dtype=cost.dtype)
+    if len(y) == 0:
+        y = np.full((cost.shape[1],), 1.0 / cost.shape[1], dtype=cost.dtype)
+
+    # init data
+    dim_a = len(x)
+    dim_b = len(y)
+
+    if len(y.shape) > 1:
+        n_hists = y.shape[1]
+    else:
+        n_hists = 0
+
+    # we assume that no distances are null except those of the diagonal of
+    # distances
+    if n_hists:
+        u = np.ones((dim_a, n_hists), dtype=cost.dtype) / dim_a
+        v = np.ones((dim_b, n_hists), dtype=cost.dtype) / dim_b
+    else:
+        u = np.ones(dim_a, dtype=cost.dtype) / dim_a
+        v = np.ones(dim_b, dtype=cost.dtype) / dim_b
+
+    K = np.exp(cost / (-regularization))
+
+    Kp = (1 / x).reshape(-1, 1) * K
+    iteration = 0
+    err = 1
+    while (err > tolerance and iteration < max_iter):
+        uprev = u
+        vprev = v
+
+        KtransposeU = np.dot(K.T, u)
+        v = y / KtransposeU
+        u = 1. / np.dot(Kp, v)
+
+        if (np.any(KtransposeU == 0)
+                or np.any(np.isnan(u)) or np.any(np.isnan(v))
+                or np.any(np.isinf(u)) or np.any(np.isinf(v))):
+            # we have reached the machine precision
+            # come back to previous solution and quit loop
+            print('Warning: numerical errors at iteration', iteration)
+            u = uprev
+            v = vprev
+            break
+        if iteration % 10 == 0:
+            # we can speed up the process by checking for the error only all
+            # the 10th iterations
+            if n_hists:
+                tmp2 = np.einsum('ik,ij,jk->jk', u, K, v)
+            else:
+                # compute right marginal tmp2= (diag(u)Kdiag(v))^T1
+                tmp2 = np.einsum('i,ij,j->j', u, K, v)
+            err = np.sqrt(np.sum(np.square(tmp2 - y)))  # violation of marginal
+
+        iteration = iteration + 1
+
+    if n_hists:  # return only loss
+        res = np.einsum('ik,ij,jk,ij->k', u, K, v, cost)
+        return res
+
+    else:  # return OT matrix
+        return u.reshape((-1, 1)) * K * v.reshape((1, -1))

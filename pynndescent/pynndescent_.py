@@ -64,7 +64,7 @@ FLOAT32_EPS = np.finfo(np.float32).eps
 EMPTY_GRAPH = make_heap(1, 1)
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
 
     updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
@@ -92,7 +92,8 @@ def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
         "d": numba.float32,
         "p": numba.int32,
         "q": numba.int32,
-    }
+    },
+    cache=True,
 )
 def init_rp_tree(data, dist, current_graph, leaf_array):
 
@@ -142,7 +143,7 @@ def init_rp_tree(data, dist, current_graph, leaf_array):
 
 
 @numba.njit(
-    fastmath=True, locals={"d": numba.float32, "idx": numba.int32, "i": numba.int32}
+    fastmath=True, locals={"d": numba.float32, "idx": numba.int32, "i": numba.int32}, cache=True,
 )
 def init_random(n_neighbors, data, heap, dist, rng_state):
     for i in range(data.shape[0]):
@@ -158,7 +159,7 @@ def init_random(n_neighbors, data, heap, dist, rng_state):
     return
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def init_from_neighbor_graph(heap, indices, distances):
     for p in range(indices.shape[0]):
         for k in range(indices.shape[1]):
@@ -170,7 +171,7 @@ def init_from_neighbor_graph(heap, indices, distances):
     return
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def generate_graph_updates(
     new_candidate_block,
     old_candidate_block,
@@ -210,7 +211,7 @@ def generate_graph_updates(
     return updates
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def process_candidates(
     data,
     dist,
@@ -219,6 +220,7 @@ def process_candidates(
     old_candidate_neighbors,
     n_blocks,
     block_size,
+    n_threads,
 ):
     c = 0
     n_vertices = new_candidate_neighbors.shape[0]
@@ -239,7 +241,7 @@ def process_candidates(
             dist,
         )
 
-        c += apply_graph_updates_low_memory(current_graph, updates)
+        c += apply_graph_updates_low_memory(current_graph, updates, n_threads)
 
     return c
 
@@ -259,6 +261,7 @@ def nn_descent_internal_low_memory_parallel(
     n_vertices = data.shape[0]
     block_size = 16384
     n_blocks = n_vertices // block_size
+    n_threads = numba.get_num_threads()
 
     for n in range(n_iters):
         if verbose:
@@ -268,6 +271,7 @@ def nn_descent_internal_low_memory_parallel(
             current_graph,
             max_candidates,
             rng_state,
+            n_threads,
         )
 
         c = process_candidates(
@@ -278,6 +282,7 @@ def nn_descent_internal_low_memory_parallel(
             old_candidate_neighbors,
             n_blocks,
             block_size,
+            n_threads,
         )
 
         if c <= delta * n_neighbors * data.shape[0]:
@@ -301,6 +306,7 @@ def nn_descent_internal_high_memory_parallel(
     n_vertices = data.shape[0]
     block_size = 16384
     n_blocks = n_vertices // block_size
+    n_threads = numba.get_num_threads()
 
     in_graph = [
         set(current_graph[0][i].astype(np.int64))
@@ -315,6 +321,7 @@ def nn_descent_internal_high_memory_parallel(
             current_graph,
             max_candidates,
             rng_state,
+            n_threads,
         )
 
         c = 0
@@ -401,7 +408,7 @@ def nn_descent(
     return deheap_sort(current_graph)
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
 
     for i in numba.prange(indices.shape[0]):
@@ -438,7 +445,7 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
     return indices, distances
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def diversify_csr(
     graph_indptr,
     graph_indices,
@@ -481,7 +488,7 @@ def diversify_csr(
     return
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def degree_prune_internal(indptr, data, max_degree=20):
     for i in numba.prange(indptr.shape[0] - 1):
         row_data = data[indptr[i] : indptr[i + 1]]

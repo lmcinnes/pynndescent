@@ -50,6 +50,7 @@ def euclidean(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def squared_euclidean(x, y):
     r"""Squared euclidean distance.
@@ -233,6 +234,7 @@ def jaccard(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_jaccard(x, y):
     num_non_zero = 0.0
@@ -250,7 +252,7 @@ def alternative_jaccard(x, y):
         return -np.log2(num_equal / num_non_zero)
 
 
-@numba.vectorize(fastmath=True)
+@numba.vectorize(fastmath=True, cache=True)
 def correct_alternative_jaccard(v):
     return 1.0 - pow(2.0, -v)
 
@@ -418,6 +420,7 @@ def cosine(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_cosine(x, y):
     result = 0.0
@@ -448,6 +451,7 @@ def alternative_cosine(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def dot(x, y):
     result = 0.0
@@ -475,6 +479,7 @@ def dot(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_dot(x, y):
     result = 0.0
@@ -488,12 +493,12 @@ def alternative_dot(x, y):
         return -np.log2(result)
 
 
-@numba.vectorize(fastmath=True)
+@numba.vectorize(fastmath=True, cache=True)
 def correct_alternative_cosine(d):
     return 1.0 - pow(2.0, -d)
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, cache=True)
 def tsss(x, y):
     d_euc_squared = 0.0
     d_cos = 0.0
@@ -519,7 +524,7 @@ def tsss(x, y):
     return triangle * sector
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, cache=True)
 def true_angular(x, y):
     result = 0.0
     norm_x = 0.0
@@ -541,7 +546,7 @@ def true_angular(x, y):
         return 1.0 - (np.arccos(result) / np.pi)
 
 
-@numba.vectorize(fastmath=True)
+@numba.vectorize(fastmath=True, cache=True)
 def true_angular_from_alt_cosine(d):
     return 1.0 - (np.arccos(pow(2.0, -d)) / np.pi)
 
@@ -592,6 +597,7 @@ def correlation(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def hellinger(x, y):
     result = 0.0
@@ -628,6 +634,7 @@ def hellinger(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_hellinger(x, y):
     result = 0.0
@@ -651,12 +658,12 @@ def alternative_hellinger(x, y):
         return np.log2(result)
 
 
-@numba.vectorize(fastmath=True)
+@numba.vectorize(fastmath=True, cache=True)
 def correct_alternative_hellinger(d):
     return np.sqrt(1.0 - pow(2.0, -d))
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def rankdata(a, method="average"):
     arr = np.ravel(np.asarray(a))
     if method == "ordinal":
@@ -692,7 +699,7 @@ def rankdata(a, method="average"):
     return 0.5 * (count[dense] + count[dense - 1] + 1)
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, cache=True)
 def spearmanr(x, y):
     a = np.column_stack((x, y))
 
@@ -705,7 +712,7 @@ def spearmanr(x, y):
     return rs[1, 0]
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
 
     row_mask = x != 0
