@@ -24,7 +24,7 @@ locale.setlocale(locale.LC_NUMERIC, "C")
 EMPTY_GRAPH = make_heap(1, 1)
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def generate_leaf_updates(
     leaf_block,
     dist_thresholds,
@@ -65,7 +65,8 @@ def generate_leaf_updates(
         "d": numba.float32,
         "p": numba.int32,
         "q": numba.int32,
-    }
+    },
+    cache=True,
 )
 def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
 
@@ -123,6 +124,7 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
         "i": numba.int32,
         "idx": numba.int32,
     },
+    cache=True,
 )
 def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
     n_samples = indptr.shape[0] - 1
@@ -146,7 +148,7 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
     return
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def generate_graph_updates(
     new_candidate_block,
     old_candidate_block,
@@ -216,6 +218,7 @@ def nn_descent_internal_low_memory_parallel(
     n_vertices = indptr.shape[0] - 1
     block_size = 16384
     n_blocks = n_vertices // block_size
+    n_threads = numba.get_num_threads()
 
     for n in range(n_iters):
         if verbose:
@@ -225,6 +228,7 @@ def nn_descent_internal_low_memory_parallel(
             current_graph,
             max_candidates,
             rng_state,
+            n_threads,
         )
 
         c = 0
@@ -246,7 +250,7 @@ def nn_descent_internal_low_memory_parallel(
                 dist,
             )
 
-            c += apply_graph_updates_low_memory(current_graph, updates)
+            c += apply_graph_updates_low_memory(current_graph, updates, n_threads)
 
         if c <= delta * n_neighbors * n_vertices:
             if verbose:
@@ -271,6 +275,7 @@ def nn_descent_internal_high_memory_parallel(
     n_vertices = indptr.shape[0] - 1
     block_size = 16384
     n_blocks = n_vertices // block_size
+    n_threads = numba.get_num_threads()
 
     in_graph = [
         set(current_graph[0][i].astype(np.int64))
@@ -285,6 +290,7 @@ def nn_descent_internal_high_memory_parallel(
             current_graph,
             max_candidates,
             rng_state,
+            n_threads,
         )
 
         c = 0
