@@ -3,7 +3,7 @@ import numba
 from .pynndescent_ import NNDescent, PyNNDescentTransformer
 
 # Workaround: https://github.com/numba/numba/issues/3341
-if numba.config.THREADING_LAYER == 'omp':
+if numba.config.THREADING_LAYER == "omp":
     try:
         from numba.np.ufunc import tbbpool
 
