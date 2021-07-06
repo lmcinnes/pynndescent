@@ -926,85 +926,234 @@ def network_simplex_core(node_arc_data, spanning_tree, graph, max_iter):
     return solution_status
 
 
-# Based on sinkhorn_knopp implementation in Python Optimal Transport library
-# https://github.com/PythonOT/POT/blob/master/ot/bregman.py
-# Authored by: Remi Flamary <remi.flamary@unice.fr>
-#              Nicolas Courty <ncourty@irisa.fr>
-#              Kilian Fatras <kilian.fatras@irisa.fr>
-#              Titouan Vayer <titouan.vayer@irisa.fr>
-#              Hicham Janati <hicham.janati@inria.fr>
-#              Mokhtar Z. Alaya <mokhtarzahdi.alaya@gmail.com>
-#              Alexander Tong <alexander.tong@yale.edu>
-#              Ievgen Redko <ievgen.redko@univ-st-etienne.fr>
-#              Quang Huy Tran <quang-huy.tran@univ-ubs.fr>
-# License: MIT License
-@numba.njit()
-def sinkhorn(x, y, regularization, cost=_dummy_cost, max_iter=1000, tolerance=1e-9):
+#######################################################
+# SINKHORN distances in various variations
+#######################################################
 
-    if len(x) == 0:
-        x = np.full((cost.shape[0],), 1.0 / cost.shape[0], dtype=cost.dtype)
-    if len(y) == 0:
-        y = np.full((cost.shape[1],), 1.0 / cost.shape[1], dtype=cost.dtype)
 
-    # init data
-    dim_a = len(x)
-    dim_b = len(y)
+@numba.njit(
+    fastmath=True,
+    parallel=True,
+    locals={"diff": numba.float32, "result": numba.float32},
+)
+def right_marginal_error(u, K, v, y):
+    uK = u @ K
+    result = 0.0
+    for i in numba.prange(uK.shape[0]):
+        diff = y[i] - uK[i] * v[i]
+        result += diff * diff
+    return np.sqrt(result)
 
-    if len(y.shape) > 1:
-        n_hists = y.shape[1]
-    else:
-        n_hists = 0
 
-    # we assume that no distances are null except those of the diagonal of
-    # distances
-    if n_hists:
-        u = np.ones((dim_a, n_hists), dtype=cost.dtype) / dim_a
-        v = np.ones((dim_b, n_hists), dtype=cost.dtype) / dim_b
-    else:
-        u = np.ones(dim_a, dtype=cost.dtype) / dim_a
-        v = np.ones(dim_b, dtype=cost.dtype) / dim_b
+@numba.njit(
+    fastmath=True,
+    parallel=True,
+    locals={"diff": numba.float32, "result": numba.float32},
+)
+def right_marginal_error_batch(u, K, v, y):
+    uK = K.T @ u
+    result = 0.0
+    for i in numba.prange(uK.shape[0]):
+        for j in range(uK.shape[1]):
+            diff = y[i, j] - uK[i, j] * v[i, j]
+            result += diff * diff
+    return np.sqrt(result)
 
-    K = np.exp(cost / (-regularization))
 
-    Kp = (1 / x).reshape(-1, 1) * K
-    iteration = 0
-    err = 1
-    while err > tolerance and iteration < max_iter:
-        uprev = u
-        vprev = v
+@numba.njit(fastmath=True, parallel=True)
+def transport_plan(K, u, v):
+    i_dim = K.shape[0]
+    j_dim = K.shape[1]
+    result = np.empty_like(K)
+    for i in numba.prange(i_dim):
+        for j in range(j_dim):
+            result[i, j] = u[i] * K[i, j] * v[j]
 
-        KtransposeU = np.dot(K.T, u)
-        v = y / KtransposeU
-        u = 1.0 / np.dot(Kp, v)
+    return result
 
-        if (
-            np.any(KtransposeU == 0)
-            or np.any(np.isnan(u))
-            or np.any(np.isnan(v))
-            or np.any(np.isinf(u))
-            or np.any(np.isinf(v))
-        ):
-            # we have reached the machine precision
-            # come back to previous solution and quit loop
-            print("Warning: numerical errors at iteration", iteration)
-            u = uprev
-            v = vprev
+
+@numba.njit(fastmath=True, parallel=True, locals={"result": numba.float32})
+def relative_change_in_plan(old_u, old_v, new_u, new_v):
+    i_dim = old_u.shape[0]
+    j_dim = old_v.shape[0]
+    result = 0.0
+    for i in numba.prange(i_dim):
+        for j in range(j_dim):
+            old_uv = old_u[i] * old_v[j]
+            result += np.float32(np.abs(old_uv - new_u[i] * new_v[j]) / old_uv)
+
+    return result / (i_dim * j_dim)
+
+
+@numba.njit(fastmath=True, parallel=True)
+def precompute_K_prime(K, x):
+    i_dim = K.shape[0]
+    j_dim = K.shape[1]
+    result = np.empty_like(K)
+    for i in numba.prange(i_dim):
+        x_i_inverse = 1.0 / x[i]
+        for j in range(j_dim):
+            result[i, j] = x_i_inverse * K[i, j]
+
+    return result
+
+
+@numba.njit(fastmath=True, parallel=True)
+def K_from_cost(cost, regularization):
+    i_dim = cost.shape[0]
+    j_dim = cost.shape[1]
+    result = np.empty_like(cost)
+    for i in numba.prange(i_dim):
+        for j in range(j_dim):
+            scaled_cost = cost[i, j] / regularization
+            result[i, j] = np.exp(-scaled_cost)
+
+    return result
+
+
+@numba.njit(fastmath=True)
+def sinkhorn_iterations(
+        x, y, u, v, K, max_iter=1000, error_tolerance=1e-9, change_tolerance=1e-9
+):
+    K_prime = precompute_K_prime(K, x)
+
+    prev_u = u
+    prev_v = v
+
+    for iteration in range(max_iter):
+
+        next_v = y / (K.T @ u)
+
+        if np.any(~np.isfinite(next_v)):
             break
+
+        next_u = 1.0 / (K_prime @ next_v)
+
+        if np.any(~np.isfinite(next_u)):
+            break
+
+        u = next_u
+        v = next_v
+
+        if iteration % 20 == 0:
+            # Check if values in plan have changed significantly since last 20 iterations
+            relative_change = relative_change_in_plan(prev_u, prev_v, next_u, next_v)
+            if relative_change <= change_tolerance:
+                break
+
+            prev_u = u
+            prev_v = v
+
         if iteration % 10 == 0:
-            # we can speed up the process by checking for the error only all
-            # the 10th iterations
-            if n_hists:
-                tmp2 = np.einsum("ik,ij,jk->jk", u, K, v)
-            else:
-                # compute right marginal tmp2= (diag(u)Kdiag(v))^T1
-                tmp2 = np.einsum("i,ij,j->j", u, K, v)
-            err = np.sqrt(np.sum(np.square(tmp2 - y)))  # violation of marginal
+            # Check if right marginal error is less than tolerance every 10 iterations
+            err = right_marginal_error(u, K, v, y)
+            if err <= error_tolerance:
+                break
 
-        iteration = iteration + 1
+    return u, v
 
-    if n_hists:  # return only loss
-        res = np.einsum("ik,ij,jk,ij->k", u, K, v, cost)
-        return res
 
-    else:  # return OT matrix
-        return u.reshape((-1, 1)) * K * v.reshape((1, -1))
+@numba.njit(fastmath=True)
+def sinkhorn_iterations_batch(
+        x, y, u, v, K, max_iter=1000, error_tolerance=1e-9
+):
+    K_prime = precompute_K_prime(K, x)
+
+    for iteration in range(max_iter):
+
+        next_v = y / (K.T @ u)
+
+        if np.any(~np.isfinite(next_v)):
+            break
+
+        next_u = 1.0 / (K_prime @ next_v)
+
+        if np.any(~np.isfinite(next_u)):
+            break
+
+        u = next_u
+        v = next_v
+
+        if iteration % 10 == 0:
+            # Check if right marginal error is less than tolerance every 10 iterations
+            err = right_marginal_error_batch(u, K, v, y)
+            if err <= error_tolerance:
+                break
+
+    return u, v
+
+
+@numba.njit(fastmath=True)
+def sinkhorn_transport_plan(
+        x,
+        y,
+        cost=_dummy_cost,
+        regularization=1.0,
+        max_iter=1000,
+        error_tolerance=1e-9,
+        change_tolerance=1e-9,
+):
+    dim_x = x.shape[0]
+    dim_y = y.shape[0]
+    u = np.full(dim_x, 1.0 / dim_x, dtype=cost.dtype)
+    v = np.full(dim_y, 1.0 / dim_y, dtype=cost.dtype)
+
+    K = K_from_cost(cost, regularization)
+    u, v = sinkhorn_iterations(
+        x,
+        y,
+        u,
+        v,
+        K,
+        max_iter=max_iter,
+        error_tolerance=error_tolerance,
+        change_tolerance=change_tolerance,
+    )
+
+    return transport_plan(K, u, v)
+
+
+@numba.njit(fastmath=True, parallel=True)
+def sinkhorn_distance(x, y, cost=_dummy_cost, regularization=1.0):
+    transport_plan = sinkhorn_transport_plan(
+        x, y, cost=cost, regularization=regularization
+    )
+    dim_i = transport_plan.shape[0]
+    dim_j = transport_plan.shape[1]
+    result = 0.0
+    for i in numba.prange(dim_i):
+        for j in range(dim_j):
+            result += transport_plan[i, j] * cost[i, j]
+
+    return result
+
+
+@numba.njit(fastmath=True, parallel=True)
+def sinkhorn_distance_batch(x, y, cost=_dummy_cost, regularization=1.0):
+    dim_x = x.shape[0]
+    dim_y = y.shape[0]
+
+    batch_size = y.shape[1]
+
+    u = np.full((dim_x, batch_size), 1.0 / dim_x, dtype=cost.dtype)
+    v = np.full((dim_y, batch_size), 1.0 / dim_y, dtype=cost.dtype)
+
+    K = K_from_cost(cost, regularization)
+    u, v = sinkhorn_iterations_batch(
+        x,
+        y,
+        u,
+        v,
+        K,
+    )
+
+    i_dim = K.shape[0]
+    j_dim = K.shape[1]
+    result = np.zeros(batch_size)
+    for i in range(i_dim):
+        for j in range(j_dim):
+            K_times_cost = K[i, j] * cost[i, j]
+            for batch in range(batch_size):
+                result[batch] += u[i, batch] * K_times_cost * v[j, batch]
+
+    return result
