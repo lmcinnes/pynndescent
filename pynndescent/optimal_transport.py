@@ -935,6 +935,7 @@ def network_simplex_core(node_arc_data, spanning_tree, graph, max_iter):
     fastmath=True,
     parallel=True,
     locals={"diff": numba.float32, "result": numba.float32},
+    cache=True,
 )
 def right_marginal_error(u, K, v, y):
     uK = u @ K
@@ -949,18 +950,19 @@ def right_marginal_error(u, K, v, y):
     fastmath=True,
     parallel=True,
     locals={"diff": numba.float32, "result": numba.float32},
+    cache=True,
 )
 def right_marginal_error_batch(u, K, v, y):
     uK = K.T @ u
     result = 0.0
     for i in numba.prange(uK.shape[0]):
         for j in range(uK.shape[1]):
-            diff = y[i, j] - uK[i, j] * v[i, j]
+            diff = y[j, i] - uK[i, j] * v[i, j]
             result += diff * diff
     return np.sqrt(result)
 
 
-@numba.njit(fastmath=True, parallel=True)
+@numba.njit(fastmath=True, parallel=True, cache=True)
 def transport_plan(K, u, v):
     i_dim = K.shape[0]
     j_dim = K.shape[1]
@@ -972,7 +974,7 @@ def transport_plan(K, u, v):
     return result
 
 
-@numba.njit(fastmath=True, parallel=True, locals={"result": numba.float32})
+@numba.njit(fastmath=True, parallel=True, locals={"result": numba.float32}, cache=True)
 def relative_change_in_plan(old_u, old_v, new_u, new_v):
     i_dim = old_u.shape[0]
     j_dim = old_v.shape[0]
@@ -985,20 +987,23 @@ def relative_change_in_plan(old_u, old_v, new_u, new_v):
     return result / (i_dim * j_dim)
 
 
-@numba.njit(fastmath=True, parallel=True)
+@numba.njit(fastmath=True, parallel=True, cache=True)
 def precompute_K_prime(K, x):
     i_dim = K.shape[0]
     j_dim = K.shape[1]
     result = np.empty_like(K)
     for i in numba.prange(i_dim):
-        x_i_inverse = 1.0 / x[i]
+        if x[i] > 0.0:
+            x_i_inverse = 1.0 / x[i]
+        else:
+            x_i_inverse = INFINITY
         for j in range(j_dim):
             result[i, j] = x_i_inverse * K[i, j]
 
     return result
 
 
-@numba.njit(fastmath=True, parallel=True)
+@numba.njit(fastmath=True, parallel=True, cache=True)
 def K_from_cost(cost, regularization):
     i_dim = cost.shape[0]
     j_dim = cost.shape[1]
@@ -1011,7 +1016,7 @@ def K_from_cost(cost, regularization):
     return result
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, cache=True)
 def sinkhorn_iterations(
         x, y, u, v, K, max_iter=1000, error_tolerance=1e-9, change_tolerance=1e-9
 ):
@@ -1053,15 +1058,15 @@ def sinkhorn_iterations(
     return u, v
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, cache=True)
 def sinkhorn_iterations_batch(
-        x, y, u, v, K, max_iter=1000, error_tolerance=1e-9
+    x, y, u, v, K, max_iter=1000, error_tolerance=1e-9
 ):
     K_prime = precompute_K_prime(K, x)
 
     for iteration in range(max_iter):
 
-        next_v = y / (K.T @ u)
+        next_v = y.T / (K.T @ u)
 
         if np.any(~np.isfinite(next_v)):
             break
@@ -1083,7 +1088,7 @@ def sinkhorn_iterations_batch(
     return u, v
 
 
-@numba.njit(fastmath=True)
+@numba.njit(fastmath=True, cache=True)
 def sinkhorn_transport_plan(
         x,
         y,
@@ -1113,7 +1118,7 @@ def sinkhorn_transport_plan(
     return transport_plan(K, u, v)
 
 
-@numba.njit(fastmath=True, parallel=True)
+@numba.njit(fastmath=True, cache=True)
 def sinkhorn_distance(x, y, cost=_dummy_cost, regularization=1.0):
     transport_plan = sinkhorn_transport_plan(
         x, y, cost=cost, regularization=regularization
@@ -1121,14 +1126,14 @@ def sinkhorn_distance(x, y, cost=_dummy_cost, regularization=1.0):
     dim_i = transport_plan.shape[0]
     dim_j = transport_plan.shape[1]
     result = 0.0
-    for i in numba.prange(dim_i):
+    for i in range(dim_i):
         for j in range(dim_j):
             result += transport_plan[i, j] * cost[i, j]
 
     return result
 
 
-@numba.njit(fastmath=True, parallel=True)
+@numba.njit(fastmath=True, parallel=True, cache=True)
 def sinkhorn_distance_batch(x, y, cost=_dummy_cost, regularization=1.0):
     dim_x = x.shape[0]
     dim_y = y.shape[0]
@@ -1157,3 +1162,35 @@ def sinkhorn_distance_batch(x, y, cost=_dummy_cost, regularization=1.0):
                 result[batch] += u[i, batch] * K_times_cost * v[j, batch]
 
     return result
+
+
+def make_fixed_cost_sinkhorn_distance(cost, regularization=1.0):
+
+    K = K_from_cost(cost, regularization)
+    dim_x = K.shape[0]
+    dim_y = K.shape[1]
+
+    @numba.njit(fastmath=True)
+    def closure(x, y):
+        u = np.full(dim_x, 1.0 / dim_x, dtype=cost.dtype)
+        v = np.full(dim_y, 1.0 / dim_y, dtype=cost.dtype)
+
+        K = K_from_cost(cost, regularization)
+        u, v = sinkhorn_iterations(
+            x,
+            y,
+            u,
+            v,
+            K,
+        )
+
+        current_plan = transport_plan(K, u, v)
+
+        result = 0.0
+        for i in range(dim_x):
+            for j in range(dim_y):
+                result += current_plan[i, j] * cost[i, j]
+
+        return result
+
+    return closure
