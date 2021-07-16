@@ -1013,7 +1013,7 @@ def K_from_cost(cost, regularization):
 
 @numba.njit(fastmath=True)
 def sinkhorn_iterations(
-        x, y, u, v, K, max_iter=1000, error_tolerance=1e-9, change_tolerance=1e-9
+    x, y, u, v, K, max_iter=1000, error_tolerance=1e-9, change_tolerance=1e-9
 ):
     K_prime = precompute_K_prime(K, x)
 
@@ -1054,9 +1054,7 @@ def sinkhorn_iterations(
 
 
 @numba.njit(fastmath=True)
-def sinkhorn_iterations_batch(
-        x, y, u, v, K, max_iter=1000, error_tolerance=1e-9
-):
+def sinkhorn_iterations_batch(x, y, u, v, K, max_iter=1000, error_tolerance=1e-9):
     K_prime = precompute_K_prime(K, x)
 
     for iteration in range(max_iter):
@@ -1085,13 +1083,13 @@ def sinkhorn_iterations_batch(
 
 @numba.njit(fastmath=True)
 def sinkhorn_transport_plan(
-        x,
-        y,
-        cost=_dummy_cost,
-        regularization=1.0,
-        max_iter=1000,
-        error_tolerance=1e-9,
-        change_tolerance=1e-9,
+    x,
+    y,
+    cost=_dummy_cost,
+    regularization=1.0,
+    max_iter=1000,
+    error_tolerance=1e-9,
+    change_tolerance=1e-9,
 ):
     dim_x = x.shape[0]
     dim_y = y.shape[0]
