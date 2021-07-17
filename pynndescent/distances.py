@@ -12,6 +12,7 @@ from pynndescent.optimal_transport import (
     network_simplex_core,
     total_cost,
     ProblemStatus,
+    sinkhorn_transport_plan,
 )
 
 _mock_identity = np.eye(2, dtype=np.float32)
@@ -761,6 +762,35 @@ def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
     return result
 
 
+@numba.njit(fastmath=True, cache=True)
+def sinkhorn(x, y, cost=_dummy_cost, regularization=1.0):
+    row_mask = x != 0
+    col_mask = y != 0
+
+    a = x[row_mask].astype(np.float64)
+    b = y[col_mask].astype(np.float64)
+
+    a_sum = a.sum()
+    b_sum = b.sum()
+
+    a /= a_sum
+    b /= b_sum
+
+    sub_cost = cost[row_mask, :][:, col_mask]
+
+    transport_plan = sinkhorn_transport_plan(
+        x, y, cost=sub_cost, regularization=regularization
+    )
+    dim_i = transport_plan.shape[0]
+    dim_j = transport_plan.shape[1]
+    result = 0.0
+    for i in range(dim_i):
+        for j in range(dim_j):
+            result += transport_plan[i, j] * cost[i, j]
+
+    return result
+
+
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
@@ -791,6 +821,7 @@ named_distances = {
     "spearmanr": spearmanr,
     "kantorovich": kantorovich,
     "wasserstein": kantorovich,
+    "sinkhorn": sinkhorn,
     "tsss": tsss,
     "true_angular": true_angular,
     # Binary distances
