@@ -791,9 +791,7 @@ def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
             leaf_size,
         )
 
-    # print("Completed a tree")
     result = FlatTree(hyperplanes, offsets, children, point_indices, leaf_size)
-    # print("Tree type is:", numba.typeof(result))
     return result
 
 
@@ -973,7 +971,7 @@ def make_forest(
     # print(ts(), "Started forest construction")
     result = []
     if leaf_size is None:
-        leaf_size = max(10, n_neighbors)
+        leaf_size = max(10, np.int32(n_neighbors))
     if n_jobs is None:
         n_jobs = -1
 
