@@ -375,7 +375,7 @@ def nn_descent(
     return deheap_sort(current_graph)
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True)
 def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
 
     for i in numba.prange(indices.shape[0]):
@@ -412,7 +412,7 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
     return indices, distances
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True)
 def diversify_csr(
     graph_indptr,
     graph_indices,
@@ -454,7 +454,7 @@ def diversify_csr(
     return
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True)
 def degree_prune_internal(indptr, data, max_degree=20):
     for i in numba.prange(indptr.shape[0] - 1):
         row_data = data[indptr[i] : indptr[i + 1]]
