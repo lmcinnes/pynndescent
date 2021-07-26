@@ -791,6 +791,57 @@ def sinkhorn(x, y, cost=_dummy_cost, regularization=1.0):
     return result
 
 
+@numba.njit()
+def jensen_shannon_divergence(x, y):
+    result = 0.0
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    l1_norm_x += FLOAT32_EPS * dim
+    l1_norm_y += FLOAT32_EPS * dim
+
+    pdf_x = (x + FLOAT32_EPS) / l1_norm_x
+    pdf_y = (y + FLOAT32_EPS) / l1_norm_y
+    m = 0.5 * (pdf_x + pdf_y)
+
+    for i in range(dim):
+        result += 0.5 * (
+            pdf_x[i] * np.log(pdf_x[i] / m[i]) + pdf_y[i] * np.log(pdf_y[i] / m[i])
+        )
+
+    return result
+
+
+@numba.njit()
+def symmetric_kl_divergence(x, y):
+    result = 0.0
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    l1_norm_x += FLOAT32_EPS * dim
+    l1_norm_y += FLOAT32_EPS * dim
+
+    pdf_x = (x + FLOAT32_EPS) / l1_norm_x
+    pdf_y = (y + FLOAT32_EPS) / l1_norm_y
+
+    for i in range(dim):
+        result += pdf_x[i] * np.log(pdf_x[i] / pdf_y[i]) + pdf_y[i] * np.log(
+            pdf_y[i] / pdf_x[i]
+        )
+
+    return result
+
+
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
@@ -815,15 +866,21 @@ named_distances = {
     "cosine": cosine,
     "dot": dot,
     "correlation": correlation,
-    "hellinger": hellinger,
     "haversine": haversine,
     "braycurtis": bray_curtis,
     "spearmanr": spearmanr,
+    "tsss": tsss,
+    "true_angular": true_angular,
+    # Distribution distances
+    "hellinger": hellinger,
     "kantorovich": kantorovich,
     "wasserstein": kantorovich,
     "sinkhorn": sinkhorn,
-    "tsss": tsss,
-    "true_angular": true_angular,
+    "jensen-shannon": jensen_shannon_divergence,
+    "jensen_shannon": jensen_shannon_divergence,
+    "symmetric-kl": symmetric_kl_divergence,
+    "symmetric_kl": symmetric_kl_divergence,
+    "symmetric_kullback_liebler": symmetric_kl_divergence,
     # Binary distances
     "hamming": hamming,
     "jaccard": jaccard,

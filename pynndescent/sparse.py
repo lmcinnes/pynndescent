@@ -8,7 +8,11 @@ import numpy as np
 import numba
 
 from pynndescent.utils import norm, tau_rand
-from pynndescent.distances import kantorovich
+from pynndescent.distances import (
+    kantorovich,
+    jensen_shannon_divergence,
+    symmetric_kl_divergence,
+)
 
 locale.setlocale(locale.LC_NUMERIC, "C")
 
@@ -194,6 +198,65 @@ def sparse_mul(ind1, data1, ind2, data2):
             i2 += 1
 
     return result_ind, result_data
+
+
+# Return dense vectors supported on the union of the non-zero valued indices
+@numba.njit()
+def dense_union(ind1, data1, ind2, data2):
+    result_ind = arr_union(ind1, ind2)
+    result_data1 = np.zeros(result_ind.shape[0], dtype=np.float32)
+    result_data2 = np.zeros(result_ind.shape[0], dtype=np.float32)
+
+    i1 = 0
+    i2 = 0
+    nnz = 0
+
+    # pass through both index lists
+    while i1 < ind1.shape[0] and i2 < ind2.shape[0]:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+
+        if j1 == j2:
+            val = data1[i1] + data2[i2]
+            if val != 0:
+                result_data1[nnz] = data1[i1]
+                result_data2[nnz] = data2[i2]
+                nnz += 1
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            val = data1[i1]
+            if val != 0:
+                result_data1[nnz] = data1[i1]
+                nnz += 1
+            i1 += 1
+        else:
+            val = data2[i2]
+            if val != 0:
+                result_data2[nnz] = data2[i2]
+                nnz += 1
+            i2 += 1
+
+    # pass over the tails
+    while i1 < ind1.shape[0]:
+        val = data1[i1]
+        if val != 0:
+            result_data1[nnz] = data1[i1]
+            nnz += 1
+        i1 += 1
+
+    while i2 < ind2.shape[0]:
+        val = data2[i2]
+        if val != 0:
+            result_data2[nnz] = data2[i2]
+            nnz += 1
+        i2 += 1
+
+    # truncate to the correct length in case there were zeros
+    result_data1 = result_data1[:nnz]
+    result_data2 = result_data2[:nnz]
+
+    return result_data1, result_data2
 
 
 @numba.njit(cache=True)
@@ -701,6 +764,23 @@ def sparse_kantorovich(ind1, data1, ind2, data2, ground_metric=dummy_ground_metr
     return kantorovich(data1, data2, cost_matrix)
 
 
+# Because of the EPS values and the need to normalize after adding them (and then average those for jensen_shannon)
+# it seems like we might as well just take the dense union (dense vectors supported on the union of indices)
+# and call the dense distance functions
+
+
+@numba.njit()
+def sparse_jensen_shannon_divergence(ind1, data1, ind2, data2):
+    dense_data1, dense_data2 = dense_union(ind1, data1, ind2, data2)
+    return jensen_shannon_divergence(dense_data1, dense_data2)
+
+
+@numba.njit()
+def sparse_symmetric_kl_divergence(ind1, data1, ind2, data2):
+    dense_data1, dense_data2 = dense_union(ind1, data1, ind2, data2)
+    return symmetric_kl_divergence(dense_data1, dense_data2)
+
+
 @numba.njit(parallel=True, cache=True)
 def diversify(
     indices,
@@ -826,8 +906,6 @@ sparse_named_distances = {
     "minkowski": sparse_minkowski,
     # Other distances
     "canberra": sparse_canberra,
-    "kantorovich": sparse_kantorovich,
-    "wasserstein": sparse_kantorovich,
     "braycurtis": sparse_bray_curtis,
     # Binary distances
     "hamming": sparse_hamming,
@@ -842,7 +920,15 @@ sparse_named_distances = {
     # Angular distances
     "cosine": sparse_cosine,
     "correlation": sparse_correlation,
+    # Distribution distances
+    "kantorovich": sparse_kantorovich,
+    "wasserstein": sparse_kantorovich,
     "hellinger": sparse_hellinger,
+    "jensen-shannon": sparse_jensen_shannon_divergence,
+    "jensen_shannon": sparse_jensen_shannon_divergence,
+    "symmetric-kl": sparse_symmetric_kl_divergence,
+    "symmetric_kl": sparse_symmetric_kl_divergence,
+    "symmetric_kullback_liebler": sparse_symmetric_kl_divergence,
 }
 
 sparse_need_n_features = (

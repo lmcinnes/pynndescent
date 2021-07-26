@@ -4,8 +4,10 @@ from numpy.testing import assert_array_equal, assert_array_almost_equal
 import pynndescent.distances as dist
 import pynndescent.sparse as spdist
 from scipy import stats
+from scipy.sparse import csr_matrix
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import BallTree
+from sklearn.preprocessing import normalize
 
 
 @pytest.mark.parametrize(
@@ -324,3 +326,49 @@ def test_alternative_distances():
             corrected_alt_distance = correction(alt_dist(x, y))
 
             assert np.isclose(true_distance, corrected_alt_distance)
+
+
+def test_jensen_shannon():
+    test_data = np.random.random(size=(10, 50))
+    test_data = normalize(test_data, norm="l1")
+    for i in range(test_data.shape[0]):
+        for j in range(i + 1, test_data.shape[0]):
+            m = (test_data[i] + test_data[j]) / 2.0
+            p = test_data[i]
+            q = test_data[j]
+            d1 = (
+                -np.sum(m * np.log(m))
+                + (np.sum(p * np.log(p)) + np.sum(q * np.log(q))) / 2.0
+            )
+            d2 = dist.jensen_shannon_divergence(p, q)
+            assert np.isclose(d1, d2, rtol=1e-4)
+
+
+def test_sparse_jensen_shannon():
+    test_data = np.random.random(size=(10, 100))
+    # sparsify
+    test_data[test_data <= 0.5] = 0.0
+    sparse_test_data = csr_matrix(test_data)
+    sparse_test_data = normalize(sparse_test_data, norm="l1")
+    test_data = normalize(test_data, norm="l1")
+
+    for i in range(test_data.shape[0]):
+        for j in range(i + 1, test_data.shape[0]):
+            m = (test_data[i] + test_data[j]) / 2.0
+            p = test_data[i]
+            q = test_data[j]
+            d1 = (
+                -np.sum(m[m > 0] * np.log(m[m > 0]))
+                + (
+                    np.sum(p[p > 0] * np.log(p[p > 0]))
+                    + np.sum(q[q > 0] * np.log(q[q > 0]))
+                )
+                / 2.0
+            )
+            d2 = spdist.sparse_jensen_shannon_divergence(
+                    sparse_test_data[i].indices,
+                    sparse_test_data[i].data,
+                    sparse_test_data[j].indices,
+                    sparse_test_data[j].data,
+                )
+            assert np.isclose(d1, d2, rtol=1e-3)
