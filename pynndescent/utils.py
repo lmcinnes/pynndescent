@@ -69,7 +69,7 @@ def tau_rand(state):
     locals={
         "dim": numba.types.intp,
         "i": numba.types.uint32,
-        "result": numba.types.float32,
+        # "result": numba.types.float32, # This provides speed, but causes errors in corner cases
     },
     fastmath=True,
     cache=True,
