@@ -104,8 +104,6 @@ def init_rp_tree(data, dist, current_graph, leaf_array):
                 if p == -1 or q == -1:
                     continue
 
-                # heap_push(current_graph, p, d, q, 1)
-                # heap_push(current_graph, q, d, p, 1)
                 checked_flagged_heap_push(
                     current_graph[1][p],
                     current_graph[0][p],
@@ -135,7 +133,6 @@ def init_random(n_neighbors, data, heap, dist, rng_state):
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], data[i])
-                # heap_push(heap, i, d, idx, 1)
                 checked_flagged_heap_push(
                     heap[1][i], heap[0][i], heap[2][i], d, idx, np.uint8(1)
                 )
@@ -149,7 +146,6 @@ def init_from_neighbor_graph(heap, indices, distances):
         for k in range(indices.shape[1]):
             q = indices[p, k]
             d = distances[p, k]
-            # unchecked_heap_push(heap, p, d, q, 0)
             checked_flagged_heap_push(heap[1][p], heap[0][p], heap[2][p], d, q, 0)
 
     return
