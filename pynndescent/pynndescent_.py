@@ -25,7 +25,6 @@ from pynndescent.utils import (
     new_build_candidates,
     ts,
     simple_heap_push,
-    flagged_heap_push,
     checked_flagged_heap_push,
     has_been_visited,
     mark_visited,
@@ -151,7 +150,7 @@ def init_from_neighbor_graph(heap, indices, distances):
             q = indices[p, k]
             d = distances[p, k]
             # unchecked_heap_push(heap, p, d, q, 0)
-            flagged_heap_push(heap[0][p], heap[1][p], heap[2][p], q, d, 0)
+            checked_flagged_heap_push(heap[1][p], heap[0][p], heap[2][p], d, q, 0)
 
     return
 

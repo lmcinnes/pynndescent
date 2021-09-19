@@ -734,66 +734,6 @@ def checked_heap_push(priorities, indices, p, n):
     },
     cache=True,
 )
-def flagged_heap_push(priorities, indices, flags, p, n, f):
-    if p >= priorities[0]:
-        return 0
-
-    size = priorities.shape[0]
-
-    # insert val at position zero
-    priorities[0] = p
-    indices[0] = n
-    flags[0] = f
-
-    # descend the heap, swapping values until the max heap criterion is met
-    i = 0
-    while True:
-        ic1 = 2 * i + 1
-        ic2 = ic1 + 1
-
-        if ic1 >= size:
-            break
-        elif ic2 >= size:
-            if priorities[ic1] > p:
-                i_swap = ic1
-            else:
-                break
-        elif priorities[ic1] >= priorities[ic2]:
-            if p < priorities[ic1]:
-                i_swap = ic1
-            else:
-                break
-        else:
-            if p < priorities[ic2]:
-                i_swap = ic2
-            else:
-                break
-
-        priorities[i] = priorities[i_swap]
-        indices[i] = indices[i_swap]
-        flags[i] = flags[i_swap]
-
-        i = i_swap
-
-    priorities[i] = p
-    indices[i] = n
-    flags[i] = f
-
-    return 1
-
-
-@numba.njit(
-    "i4(f4[::1],i4[::1],u1[::1],f4,i4,u1)",
-    fastmath=True,
-    locals={
-        "size": numba.types.intp,
-        "i": numba.types.uint16,
-        "ic1": numba.types.uint16,
-        "ic2": numba.types.uint16,
-        "i_swap": numba.types.uint16,
-    },
-    cache=True,
-)
 def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
     if p >= priorities[0]:
         return 0
@@ -910,8 +850,7 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
             elif q in in_graph[p]:
                 pass
             else:
-                # added = unchecked_heap_push(current_graph, p, d, q, 1)
-                added = flagged_heap_push(
+                added = checked_flagged_heap_push(
                     current_graph[1][p],
                     current_graph[0][p],
                     current_graph[2][p],
@@ -927,8 +866,7 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
             if p == q or p in in_graph[q]:
                 pass
             else:
-                # added = unchecked_heap_push(current_graph, q, d, p, 1)
-                added = flagged_heap_push(
+                added = checked_flagged_heap_push(
                     current_graph[1][p],
                     current_graph[0][p],
                     current_graph[2][p],
@@ -952,7 +890,7 @@ def initalize_heap_from_graph_indices(heap, graph_indices, data, metric):
             j = graph_indices[i, idx]
             if j >= 0:
                 d = metric(data[i], data[j])
-                flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, j, 1)
+                checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, j, 1)
 
     return heap
 
@@ -970,8 +908,7 @@ def sparse_initalize_heap_from_graph_indices(
             ind2 = data_indices[data_indptr[j] : data_indptr[j + 1]]
             data2 = data_vals[data_indptr[j] : data_indptr[j + 1]]
             d = metric(ind1, data1, ind2, data2)
-            # unchecked_heap_push(heap, i, d, j, 1)
-            flagged_heap_push(heap[0][i], heap[1][i], heap[2][i], j, d, 1)
+            checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, j, 1)
 
     return heap
 
