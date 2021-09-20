@@ -78,8 +78,6 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
                 if p == -1 or q == -1:
                     continue
 
-                # heap_push(current_graph, p, d, q, 1)
-                # heap_push(current_graph, q, d, p, 1)
                 checked_flagged_heap_push(
                     current_graph[1][p],
                     current_graph[0][p],
@@ -117,7 +115,6 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
                 to_data = data[indptr[i] : indptr[i + 1]]
                 d = dist(from_inds, from_data, to_inds, to_data)
 
-                # heap_push(heap, i, d, idx, 1)
                 checked_flagged_heap_push(
                     heap[1][i], heap[0][i], heap[2][i], d, idx, np.uint8(1)
                 )
