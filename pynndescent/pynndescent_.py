@@ -573,6 +573,12 @@ class NNDescent(object):
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. A value of 1.0 will prune all edges that it can.
 
+    n_search_trees: int (optional, default=1)
+        The number of random projection trees to use in initializing searching or
+        querying.
+
+        .. deprecated:: 0.5.5
+
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
 
@@ -1732,9 +1738,11 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. A value of 1.0 will prune all edges that it can.
 
-    n_search_trees: float (optional, default=1)
+    n_search_trees: int (optional, default=1)
         The number of random projection trees to use in initializing searching or
         querying.
+
+        .. deprecated:: 0.5.5
 
     search_epsilon: float (optional, default=0.1)
         When searching for nearest neighbors of a query point this values
