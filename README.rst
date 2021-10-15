@@ -3,12 +3,9 @@
   :align: center
   :alt: PyNNDescent Logo
 
-.. image:: https://travis-ci.com/lmcinnes/pynndescent.svg
-    :target: https://travis-ci.com/lmcinnes/pynndescent
-    :alt: Travis Build Status
-.. image:: https://ci.appveyor.com/api/projects/status/github/lmcinnes/pynndescent?branch=master&svg=true
-    :target: https://ci.appveyor.com/project/lmcinnes/pynndescent
-    :alt: AppVeyor Build Status
+.. image:: https://dev.azure.com/lelandmcinnes/UMAP%20project%20builds/_apis/build/status/lmcinnes.pynndescent?branchName=master
+    :target: .. _build_status: https://dev.azure.com/lelandmcinnes/UMAP%20project%20builds/_build/latest?definitionId=2&branchName=master
+    :alt: Azure Pipelines Build Status
 .. image:: https://img.shields.io/lgtm/alerts/g/lmcinnes/pynndescent.svg
     :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/alerts
     :alt: LGTM Alerts
