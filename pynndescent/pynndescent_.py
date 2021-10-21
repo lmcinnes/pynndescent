@@ -628,7 +628,7 @@ class NNDescent(object):
         ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
         ``-1`` means using all processors.
 
-    compressed: bool (optional, default=False)
+    compressed: bool (optional, default=True)
         Whether to prune out data not needed for searching the index. This will
         result in a significantly smaller index, particularly useful for saving,
         but will remove information that might otherwise be useful.
