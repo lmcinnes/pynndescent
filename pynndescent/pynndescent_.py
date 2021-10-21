@@ -1604,6 +1604,9 @@ class NNDescent(object):
         return indices, dists
 
     def update(self, X):
+        if not hasattr(self, "_search_graph"):
+            self._init_search_graph()
+
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
