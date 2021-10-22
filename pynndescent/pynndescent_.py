@@ -656,7 +656,7 @@ class NNDescent(object):
         n_iters=None,
         delta=0.001,
         n_jobs=None,
-        compressed=True,
+        compressed=False,
         verbose=False,
     ):
 
