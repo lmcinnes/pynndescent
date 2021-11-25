@@ -1180,12 +1180,6 @@ class NNDescent(object):
         n_neighbors = self.n_neighbors
         parallel_search = self.parallel_batch_queries
 
-        if self.parallel_batch_queries:
-            prange = numba.prange
-        else:
-            prange = range
-
-
         @numba.njit(
             fastmath=True,
             locals={
@@ -1215,7 +1209,7 @@ class NNDescent(object):
             distance_scale = 1.0 + epsilon
             internal_rng_state = np.copy(rng_state)
 
-            for i in prange(query_points.shape[0]):
+            for i in numba.prange(query_points.shape[0]):
                 # Avoid races on visited if parallel
                 if parallel_search:
                     visited_nodes = np.zeros_like(visited)
@@ -1355,11 +1349,6 @@ class NNDescent(object):
         n_neighbors = self.n_neighbors
         parallel_search = self.parallel_batch_queries
 
-        if self.parallel_batch_queries:
-            prange = numba.prange
-        else:
-            prange = range
-
         @numba.njit(
             fastmath=True,
             locals={
@@ -1389,7 +1378,7 @@ class NNDescent(object):
             distance_scale = 1.0 + epsilon
             internal_rng_state = np.copy(rng_state)
 
-            for i in prange(n_query_points):
+            for i in numba.prange(n_query_points):
                 # Avoid races on visited if parallel
                 if parallel_search:
                     visited_nodes = np.zeros_like(visited)
