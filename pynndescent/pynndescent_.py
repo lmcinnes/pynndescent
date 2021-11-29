@@ -1240,7 +1240,7 @@ class NNDescent(object):
 
                 for j in range(n_initial_points):
                     candidate = candidate_indices[j]
-                    d = dist(data[candidate], current_query)
+                    d = np.float32(dist(data[candidate], current_query))
                     # indices are guaranteed different
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
@@ -1252,7 +1252,7 @@ class NNDescent(object):
                             np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
                         if has_been_visited(visited_nodes, candidate) == 0:
-                            d = dist(data[candidate], current_query)
+                            d = np.float32(dist(data[candidate], current_query))
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
@@ -1274,7 +1274,7 @@ class NNDescent(object):
                         if has_been_visited(visited_nodes, candidate) == 0:
                             mark_visited(visited_nodes, candidate)
 
-                            d = dist(data[candidate], current_query)
+                            d = np.float32(dist(data[candidate], current_query))
 
                             if d < distance_bound:
                                 simple_heap_push(
@@ -1420,9 +1420,9 @@ class NNDescent(object):
                         data_indptr[candidate] : data_indptr[candidate + 1]
                     ]
 
-                    d = dist(
+                    d = np.float32(dist(
                         from_inds, from_data, current_query_inds, current_query_data
-                    )
+                    ))
                     # indices are guaranteed different
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
@@ -1441,12 +1441,12 @@ class NNDescent(object):
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
 
-                            d = dist(
+                            d = np.float32(dist(
                                 from_inds,
                                 from_data,
                                 current_query_inds,
                                 current_query_data,
-                            )
+                            ))
 
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
@@ -1476,12 +1476,12 @@ class NNDescent(object):
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
 
-                            d = dist(
+                            d = np.float32(dist(
                                 from_inds,
                                 from_data,
                                 current_query_inds,
                                 current_query_data,
-                            )
+                            ))
 
                             if d < distance_bound:
                                 simple_heap_push(
