@@ -366,18 +366,15 @@ def test_sparse_jensen_shannon():
                 / 2.0
             )
             d2 = spdist.sparse_jensen_shannon_divergence(
-                    sparse_test_data[i].indices,
-                    sparse_test_data[i].data,
-                    sparse_test_data[j].indices,
-                    sparse_test_data[j].data,
-                )
+                sparse_test_data[i].indices,
+                sparse_test_data[i].data,
+                sparse_test_data[j].indices,
+                sparse_test_data[j].data,
+            )
             assert np.isclose(d1, d2, rtol=1e-3)
 
 
-
-@pytest.mark.parametrize(
-    "p", [1.0, 2.0, 3.0,0.5]
-)
+@pytest.mark.parametrize("p", [1.0, 2.0, 3.0, 0.5])
 def test_wasserstein_1d(p):
     test_data = np.random.random(size=(10, 100))
     # sparsify
@@ -388,10 +385,10 @@ def test_wasserstein_1d(p):
         for j in range(i + 1, test_data.shape[0]):
             d1 = dist.wasserstein_1d(test_data[i], test_data[j], p)
             d2 = spdist.sparse_wasserstein_1d(
-                    sparse_test_data[i].indices,
-                    sparse_test_data[i].data,
-                    sparse_test_data[j].indices,
-                    sparse_test_data[j].data,
-                    p
-                )
+                sparse_test_data[i].indices,
+                sparse_test_data[i].data,
+                sparse_test_data[j].indices,
+                sparse_test_data[j].data,
+                p,
+            )
             assert np.isclose(d1, d2)

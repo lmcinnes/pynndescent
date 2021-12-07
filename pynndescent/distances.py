@@ -51,7 +51,6 @@ def euclidean(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def squared_euclidean(x, y):
     r"""Squared euclidean distance.
@@ -235,7 +234,6 @@ def jaccard(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def alternative_jaccard(x, y):
     num_non_zero = 0.0
@@ -421,7 +419,6 @@ def cosine(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def alternative_cosine(x, y):
     result = 0.0
@@ -452,7 +449,6 @@ def alternative_cosine(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def dot(x, y):
     result = 0.0
@@ -480,7 +476,6 @@ def dot(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def alternative_dot(x, y):
     result = 0.0
@@ -813,6 +808,7 @@ def jensen_shannon_divergence(x, y):
         )
 
     return result
+
 
 @numba.njit()
 def wasserstein_1d(x, y, p=1.0):
