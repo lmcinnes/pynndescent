@@ -372,3 +372,26 @@ def test_sparse_jensen_shannon():
                     sparse_test_data[j].data,
                 )
             assert np.isclose(d1, d2, rtol=1e-3)
+
+
+
+@pytest.mark.parametrize(
+    "p", [1.0, 2.0, 3.0,0.5]
+)
+def test_wasserstein_1d(p):
+    test_data = np.random.random(size=(10, 100))
+    # sparsify
+    test_data[test_data <= 0.5] = 0.0
+    sparse_test_data = csr_matrix(test_data)
+
+    for i in range(test_data.shape[0]):
+        for j in range(i + 1, test_data.shape[0]):
+            d1 = dist.wasserstein_1d(test_data[i], test_data[j], p)
+            d2 = spdist.sparse_wasserstein_1d(
+                    sparse_test_data[i].indices,
+                    sparse_test_data[i].data,
+                    sparse_test_data[j].indices,
+                    sparse_test_data[j].data,
+                    p
+                )
+            assert np.isclose(d1, d2)

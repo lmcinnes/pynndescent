@@ -534,6 +534,7 @@ class NNDescent(object):
             * sokalsneath
             * yule
             * hellinger
+            * wasserstein-1d
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
@@ -1708,6 +1709,8 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             * sokalmichener
             * sokalsneath
             * yule
+            * hellinger
+            * wasserstein-1d
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered

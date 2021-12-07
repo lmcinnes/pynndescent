@@ -814,6 +814,10 @@ def jensen_shannon_divergence(x, y):
 
     return result
 
+@numba.njit()
+def wasserstein_1d(x, y, p=1.0):
+    return minkowski(np.cumsum(x / np.sum(x)), np.cumsum(y / np.sum(y)), p)
+
 
 @numba.njit()
 def symmetric_kl_divergence(x, y):
@@ -873,6 +877,10 @@ named_distances = {
     "hellinger": hellinger,
     "kantorovich": kantorovich,
     "wasserstein": kantorovich,
+    "wasserstein_1d": wasserstein_1d,
+    "wasserstein-1d": wasserstein_1d,
+    "kantorovich-1d": wasserstein_1d,
+    "kantorovich-1d": wasserstein_1d,
     "sinkhorn": sinkhorn,
     "jensen-shannon": jensen_shannon_divergence,
     "jensen_shannon": jensen_shannon_divergence,
