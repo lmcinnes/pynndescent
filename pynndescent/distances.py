@@ -51,7 +51,6 @@ def euclidean(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def squared_euclidean(x, y):
     r"""Squared euclidean distance.
@@ -235,7 +234,6 @@ def jaccard(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def alternative_jaccard(x, y):
     num_non_zero = 0.0
@@ -421,7 +419,6 @@ def cosine(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def alternative_cosine(x, y):
     result = 0.0
@@ -452,7 +449,6 @@ def alternative_cosine(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def dot(x, y):
     result = 0.0
@@ -480,7 +476,6 @@ def dot(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
-
 )
 def alternative_dot(x, y):
     result = 0.0
@@ -816,6 +811,66 @@ def jensen_shannon_divergence(x, y):
 
 
 @numba.njit()
+def wasserstein_1d(x, y, p=1):
+    x_sum = 0.0
+    y_sum = 0.0
+    for i in range(x.shape[0]):
+        x_sum += x[i]
+        y_sum += y[i]
+
+    x_cdf = x / x_sum
+    y_cdf = y / y_sum
+
+    for i in range(1, x_cdf.shape[0]):
+        x_cdf[i] += x_cdf[i - 1]
+        y_cdf[i] += y_cdf[i - 1]
+
+    return minkowski(x_cdf, y_cdf, p)
+
+
+@numba.njit()
+def circular_kantorovich(x, y, p=1):
+    x_sum = 0.0
+    y_sum = 0.0
+    for i in range(x.shape[0]):
+        x_sum += x[i]
+        y_sum += y[i]
+
+    x_cdf = x / x_sum
+    y_cdf = y / y_sum
+
+    for i in range(1, x_cdf.shape[0]):
+        x_cdf[i] += x_cdf[i - 1]
+        y_cdf[i] += y_cdf[i - 1]
+
+    mu = np.median((x_cdf - y_cdf) ** p)
+
+    # Now we just want minkowski distance on the CDFs shifted by mu
+    result = 0.0
+    if p > 2:
+        for i in range(x_cdf.shape[0]):
+            result += np.abs(x_cdf[i] - y_cdf[i] - mu) ** p
+
+        return result ** (1.0 / p)
+
+    elif p == 2:
+        for i in range(x_cdf.shape[0]):
+            val = x_cdf[i] - y_cdf[i] - mu
+            result += val * val
+
+        return np.sqrt(result)
+
+    elif p == 1:
+        for i in range(x_cdf.shape[0]):
+            result += np.abs(x_cdf[i] - y_cdf[i] - mu)
+
+        return result
+
+    else:
+        raise ValueError("Invalid p supplied to Kantorvich distance")
+
+
+@numba.njit()
 def symmetric_kl_divergence(x, y):
     result = 0.0
     l1_norm_x = 0.0
@@ -873,6 +928,12 @@ named_distances = {
     "hellinger": hellinger,
     "kantorovich": kantorovich,
     "wasserstein": kantorovich,
+    "wasserstein_1d": wasserstein_1d,
+    "wasserstein-1d": wasserstein_1d,
+    "kantorovich-1d": wasserstein_1d,
+    "kantorovich_1d": wasserstein_1d,
+    "circular_kantorovich": circular_kantorovich,
+    "circular_wasserstein": circular_kantorovich,
     "sinkhorn": sinkhorn,
     "jensen-shannon": jensen_shannon_divergence,
     "jensen_shannon": jensen_shannon_divergence,

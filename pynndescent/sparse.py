@@ -758,6 +758,65 @@ def sparse_kantorovich(ind1, data1, ind2, data2, ground_metric=dummy_ground_metr
     return kantorovich(data1, data2, cost_matrix)
 
 
+@numba.njit()
+def sparse_wasserstein_1d(ind1, data1, ind2, data2, p=1):
+    result = 0.0
+    old_ind = 0
+    delta = 0.0
+    i1 = 0
+    i2 = 0
+    cdf1 = 0.0
+    cdf2 = 0.0
+    l1_norm_x = np.sum(data1)
+    l1_norm_y = np.sum(data2)
+
+    norm = lambda x, p: np.power(np.abs(x), p)
+
+    # pass through both index lists
+    while i1 < ind1.shape[0] and i2 < ind2.shape[0]:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+
+        if j1 == j2:
+            result += delta * (j1 - old_ind)
+            cdf1 += data1[i1] / l1_norm_x
+            cdf2 += data2[i2] / l1_norm_y
+            delta = norm(cdf1 - cdf2, p)
+            old_ind = j1
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            result += delta * (j1 - old_ind)
+            cdf1 += data1[i1] / l1_norm_x
+            delta = norm(cdf1 - cdf2, p)
+            old_ind = j1
+            i1 += 1
+        else:
+            result += delta * (j2 - old_ind)
+            cdf2 += data2[i2] / l1_norm_y
+            delta = norm(cdf1 - cdf2, p)
+            old_ind = j2
+            i2 += 1
+            # pass over the tails
+    while i1 < ind1.shape[0]:
+        j1 = ind1[i1]
+        result += delta * (j1 - old_ind)
+        cdf1 += data1[i1] / l1_norm_x
+        delta = norm(cdf1 - cdf2, p)
+        old_ind = j1
+        i1 += 1
+
+    while i2 < ind2.shape[0]:
+        j2 = ind2[i2]
+        result += delta * (j2 - old_ind)
+        cdf2 += data2[i2] / l1_norm_y
+        delta = norm(cdf1 - cdf2, p)
+        old_ind = j2
+        i2 += 1
+
+    return np.power(result, 1.0 / p)
+
+
 # Because of the EPS values and the need to normalize after adding them (and then average those for jensen_shannon)
 # it seems like we might as well just take the dense union (dense vectors supported on the union of indices)
 # and call the dense distance functions
@@ -917,6 +976,10 @@ sparse_named_distances = {
     # Distribution distances
     "kantorovich": sparse_kantorovich,
     "wasserstein": sparse_kantorovich,
+    "wasserstein_1d": sparse_wasserstein_1d,
+    "wasserstein-1d": sparse_wasserstein_1d,
+    "kantorovich-1d": sparse_wasserstein_1d,
+    "kantorovich-1d": sparse_wasserstein_1d,
     "hellinger": sparse_hellinger,
     "jensen-shannon": sparse_jensen_shannon_divergence,
     "jensen_shannon": sparse_jensen_shannon_divergence,
