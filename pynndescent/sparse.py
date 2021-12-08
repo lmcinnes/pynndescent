@@ -759,7 +759,7 @@ def sparse_kantorovich(ind1, data1, ind2, data2, ground_metric=dummy_ground_metr
 
 
 @numba.njit()
-def sparse_wasserstein_1d(ind1, data1, ind2, data2, p=1.0):
+def sparse_wasserstein_1d(ind1, data1, ind2, data2, p=1):
     result = 0.0
     old_ind = 0
     delta = 0.0
