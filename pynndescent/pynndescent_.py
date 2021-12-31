@@ -496,7 +496,7 @@ def resort_tree_indices(tree, tree_order):
     return new_tree
 
 
-class NNDescent(object):
+class NNDescent:
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
     very flexible and supports a wide variety of distances, including
     non-metric distances. NNDescent also scales well against high dimensional
@@ -505,7 +505,7 @@ class NNDescent(object):
 
     Parameters
     ----------
-    data: array os shape (n_samples, n_features)
+    data: array of shape (n_samples, n_features)
         The training graph_data set to find nearest neighbors in.
 
     metric: string or callable (optional, default='euclidean')
@@ -596,14 +596,11 @@ class NNDescent(object):
         The``'alternative'`` algorithm has been deprecated and is no longer
         available.
 
-    low_memory: boolean (optional, default=False)
+    low_memory: boolean (optional, default=True)
         Whether to use a lower memory, but more computationally expensive
-        approach to index construction. This defaults to false as for most
-        cases it speeds index construction, but if you are having issues
-        with excessive memory use for your dataset consider setting this
-        to True.
+        approach to index construction.
 
-    max_candidates: int (optional, default=20)
+    max_candidates: int (optional, default=None)
         Internally each "self-join" keeps a maximum number of candidates (
         nearest neighbors and reverse nearest neighbors) to be considered.
         This value controls this aspect of the algorithm. Larger values will
@@ -629,7 +626,7 @@ class NNDescent(object):
         ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
         ``-1`` means using all processors.
 
-    compressed: bool (optional, default=True)
+    compressed: bool (optional, default=False)
         Whether to prune out data not needed for searching the index. This will
         result in a significantly smaller index, particularly useful for saving,
         but will remove information that might otherwise be useful.
