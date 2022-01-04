@@ -631,6 +631,11 @@ class NNDescent:
         result in a significantly smaller index, particularly useful for saving,
         but will remove information that might otherwise be useful.
 
+    parallel_batch_queries: bool (optional, default=False)
+        Whether to use parallelism of batched queries. This can be useful for large
+        batches of queries on multicore machines, but results in performance degradation
+        for single queries, so is poor for streaming use.
+
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
     """
@@ -655,6 +660,7 @@ class NNDescent:
         delta=0.001,
         n_jobs=None,
         compressed=False,
+        parallel_batch_queries=False,
         verbose=False,
     ):
 
@@ -679,6 +685,7 @@ class NNDescent:
         self.dim = data.shape[1]
         self.n_jobs = n_jobs
         self.compressed = compressed
+        self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
 
         data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
@@ -1169,6 +1176,7 @@ class NNDescent:
         indices = self._search_graph.indices
         dist = self._distance_func
         n_neighbors = self.n_neighbors
+        parallel_search = self.parallel_batch_queries
 
         @numba.njit(
             fastmath=True,
@@ -1191,6 +1199,7 @@ class NNDescent:
                 "distance_bound": numba.types.float32,
                 "seed_scale": numba.types.float32,
             },
+            parallel=self.parallel_batch_queries,
         )
         def search_closure(query_points, k, epsilon, visited, rng_state):
 
@@ -1198,8 +1207,14 @@ class NNDescent:
             distance_scale = 1.0 + epsilon
             internal_rng_state = np.copy(rng_state)
 
-            for i in range(query_points.shape[0]):
-                visited[:] = 0
+            for i in numba.prange(query_points.shape[0]):
+                # Avoid races on visited if parallel
+                if parallel_search:
+                    visited_nodes = np.zeros_like(visited)
+                else:
+                    visited_nodes = visited
+                    visited_nodes[:] = 0
+
                 if dist == alternative_dot or dist == alternative_cosine:
                     norm = np.sqrt((query_points[i] ** 2).sum())
                     if norm > 0.0:
@@ -1223,24 +1238,24 @@ class NNDescent:
 
                 for j in range(n_initial_points):
                     candidate = candidate_indices[j]
-                    d = dist(data[candidate], current_query)
+                    d = np.float32(dist(data[candidate], current_query))
                     # indices are guaranteed different
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
-                    mark_visited(visited, candidate)
+                    mark_visited(visited_nodes, candidate)
 
                 if n_random_samples > 0:
                     for j in range(n_random_samples):
                         candidate = np.int32(
                             np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
-                        if has_been_visited(visited, candidate) == 0:
-                            d = dist(data[candidate], current_query)
+                        if has_been_visited(visited_nodes, candidate) == 0:
+                            d = np.float32(dist(data[candidate], current_query))
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
                             heapq.heappush(seed_set, (d, candidate))
-                            mark_visited(visited, candidate)
+                            mark_visited(visited_nodes, candidate)
 
                 ############ Search ##############
                 distance_bound = distance_scale * heap_priorities[0]
@@ -1254,10 +1269,10 @@ class NNDescent:
 
                         candidate = indices[j]
 
-                        if has_been_visited(visited, candidate) == 0:
-                            mark_visited(visited, candidate)
+                        if has_been_visited(visited_nodes, candidate) == 0:
+                            mark_visited(visited_nodes, candidate)
 
-                            d = dist(data[candidate], current_query)
+                            d = np.float32(dist(data[candidate], current_query))
 
                             if d < distance_bound:
                                 simple_heap_push(
@@ -1330,6 +1345,7 @@ class NNDescent:
         indices = self._search_graph.indices
         dist = self._distance_func
         n_neighbors = self.n_neighbors
+        parallel_search = self.parallel_batch_queries
 
         @numba.njit(
             fastmath=True,
@@ -1348,6 +1364,7 @@ class NNDescent:
                 "distance_scale": numba.types.float32,
                 "seed_scale": numba.types.float32,
             },
+            parallel=self.parallel_batch_queries,
         )
         def search_closure(
             query_inds, query_indptr, query_data, k, epsilon, visited, rng_state
@@ -1359,8 +1376,13 @@ class NNDescent:
             distance_scale = 1.0 + epsilon
             internal_rng_state = np.copy(rng_state)
 
-            for i in range(n_query_points):
-                visited[:] = 0
+            for i in numba.prange(n_query_points):
+                # Avoid races on visited if parallel
+                if parallel_search:
+                    visited_nodes = np.zeros_like(visited)
+                else:
+                    visited_nodes = visited
+                    visited_nodes[:] = 0
 
                 current_query_inds = query_inds[query_indptr[i] : query_indptr[i + 1]]
                 current_query_data = query_data[query_indptr[i] : query_indptr[i + 1]]
@@ -1396,20 +1418,20 @@ class NNDescent:
                         data_indptr[candidate] : data_indptr[candidate + 1]
                     ]
 
-                    d = dist(
+                    d = np.float32(dist(
                         from_inds, from_data, current_query_inds, current_query_data
-                    )
+                    ))
                     # indices are guaranteed different
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
-                    mark_visited(visited, candidate)
+                    mark_visited(visited_nodes, candidate)
 
                 if n_random_samples > 0:
                     for j in range(n_random_samples):
                         candidate = np.int32(
                             np.abs(tau_rand_int(internal_rng_state)) % n_index_points
                         )
-                        if has_been_visited(visited, candidate) == 0:
+                        if has_been_visited(visited_nodes, candidate) == 0:
                             from_inds = data_inds[
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
@@ -1417,18 +1439,18 @@ class NNDescent:
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
 
-                            d = dist(
+                            d = np.float32(dist(
                                 from_inds,
                                 from_data,
                                 current_query_inds,
                                 current_query_data,
-                            )
+                            ))
 
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
                             heapq.heappush(seed_set, (d, candidate))
-                            mark_visited(visited, candidate)
+                            mark_visited(visited_nodes, candidate)
 
                 ############ Search ##############
                 distance_bound = distance_scale * heap_priorities[0]
@@ -1442,8 +1464,8 @@ class NNDescent:
 
                         candidate = indices[j]
 
-                        if has_been_visited(visited, candidate) == 0:
-                            mark_visited(visited, candidate)
+                        if has_been_visited(visited_nodes, candidate) == 0:
+                            mark_visited(visited_nodes, candidate)
 
                             from_inds = data_inds[
                                 data_indptr[candidate] : data_indptr[candidate + 1]
@@ -1452,12 +1474,12 @@ class NNDescent:
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
 
-                            d = dist(
+                            d = np.float32(dist(
                                 from_inds,
                                 from_data,
                                 current_query_inds,
                                 current_query_data,
-                            )
+                            ))
 
                             if d < distance_bound:
                                 simple_heap_push(
@@ -1797,6 +1819,11 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         and less accurate searching. Don't tweak this value unless you know
         what you're doing.
 
+    parallel_batch_queries: bool (optional, default=False)
+        Whether to use parallelism of batched queries. This can be useful for large
+        batches of queries on multicore machines, but results in performance degradation
+        for single queries, so is poor for streaming use.
+
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
 
@@ -1828,6 +1855,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         max_candidates=None,
         n_iters=None,
         early_termination_value=0.001,
+        parallel_batch_queries=False,
         verbose=False,
     ):
 
@@ -1847,6 +1875,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.n_iters = n_iters
         self.early_termination_value = early_termination_value
         self.n_jobs = n_jobs
+        self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
 
     def fit(self, X, compress_index=True):
@@ -1895,6 +1924,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             delta=self.early_termination_value,
             n_jobs=self.n_jobs,
             compressed=compress_index,
+            parallel_batch_queries=self.parallel_batch_queries,
             verbose=self.verbose,
         )
 
