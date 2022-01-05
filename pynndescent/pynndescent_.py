@@ -9,7 +9,7 @@ import numpy as np
 from sklearn.utils import check_random_state, check_array
 from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
-from scipy.sparse import csr_matrix, coo_matrix, isspmatrix_csr, vstack as sparse_vstack
+from scipy.sparse import csr_matrix, coo_matrix, isspmatrix_csr, vstack as sparse_vstack, issparse
 
 import heapq
 
@@ -56,6 +56,11 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 FLOAT32_EPS = np.finfo(np.float32).eps
 
 EMPTY_GRAPH = make_heap(1, 1)
+
+
+def is_c_contiguous(array_like):
+    flags = getattr(array_like, "flags", None)
+    return flags is not None and flags["C_CONTIGUOUS"]
 
 
 @numba.njit(parallel=True, cache=True)
@@ -688,6 +693,11 @@ class NNDescent:
         self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
 
+        if getattr(data, "dtype", None) == np.float32 and (issparse(data) or is_c_contiguous(data)):
+            copy_on_normalize = True
+        else:
+            copy_on_normalize = False
+
         data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
         self._raw_data = data
 
@@ -744,7 +754,7 @@ class NNDescent:
             self._angular_trees = False
 
         if metric == "dot":
-            data = normalize(data, norm="l2", copy=False)
+            data = normalize(data, norm="l2", copy=copy_on_normalize)
 
         self.rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
