@@ -58,8 +58,8 @@ def arr_intersect(ar1, ar2):
     [
         "i4(i4[:],i4[:])",
         numba.types.int32(
-            numba.types.Array(numba.types.int32, 1, readonly=True),
-            numba.types.Array(numba.types.int32, 1, readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
         ),
     ],
     locals={
