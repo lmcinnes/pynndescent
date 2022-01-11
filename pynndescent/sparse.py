@@ -53,6 +53,36 @@ def arr_intersect(ar1, ar2):
     aux.sort()
     return aux[:-1][aux[1:] == aux[:-1]]
 
+# Some things require size of intersection; do this quickly; assume sorted arrays for speed
+@numba.njit(
+    'i4(i4[:],i4[:])',
+    locals={
+        "i1": numba.uint16,
+        "i2": numba.uint16,
+    }
+)
+def fast_intersection_size(ar1, ar2):
+    # NOTE: We assume arrays are sorted; if they are not this will break
+    i1 = 0
+    i2 = 0
+
+    result = 0
+
+    while i1 < ar1.shape[0] and i2 < ar2.shape[0]:
+        j1 = ar1[i1]
+        j2 = ar2[i2]
+
+        if j1 == j2:
+            result += 1
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            i1 += 1
+        else:
+            i2 += 1
+
+    return result
+
 
 @numba.njit(
     [
@@ -146,7 +176,6 @@ def sparse_sum(ind1, data1, ind2, data2):
 @numba.njit(cache=True)
 def sparse_diff(ind1, data1, ind2, data2):
     return sparse_sum(ind1, data1, ind2, -data2)
-
 
 @numba.njit(
     [
@@ -380,8 +409,8 @@ def sparse_bray_curtis(ind1, data1, ind2, data2):  # pragma: no cover
 
 @numba.njit()
 def sparse_jaccard(ind1, data1, ind2, data2):
-    num_non_zero = arr_union(ind1, ind2).shape[0]
-    num_equal = arr_intersect(ind1, ind2).shape[0]
+    num_equal = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_equal
 
     if num_non_zero == 0:
         return 0.0
@@ -403,24 +432,26 @@ def sparse_jaccard(ind1, data1, ind2, data2):
     locals={"num_non_zero": numba.types.intp, "num_equal": numba.types.intp},
 )
 def sparse_alternative_jaccard(ind1, data1, ind2, data2):
-    num_non_zero = arr_union(ind1, ind2).shape[0]
-    num_equal = arr_intersect(ind1, ind2).shape[0]
+    num_equal = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_equal
 
     if num_non_zero == 0:
         return 0.0
     else:
-        return -np.log2(num_equal / num_non_zero)
+        # return -np.log2(num_equal / num_non_zero)
+        return (num_non_zero - num_equal) / num_equal
 
 
 @numba.vectorize(fastmath=True)
 def correct_alternative_jaccard(v):
-    return 1.0 - pow(2.0, -v)
+    # return 1.0 - pow(2.0, -v)
+    return v / (v + 1)
 
 
 @numba.njit()
 def sparse_matching(ind1, data1, ind2, data2, n_features):
-    num_true_true = arr_intersect(ind1, ind2).shape[0]
-    num_non_zero = arr_union(ind1, ind2).shape[0]
+    num_equal = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_equal
     num_not_equal = num_non_zero - num_true_true
 
     return float(num_not_equal) / n_features
@@ -428,8 +459,8 @@ def sparse_matching(ind1, data1, ind2, data2, n_features):
 
 @numba.njit()
 def sparse_dice(ind1, data1, ind2, data2):
-    num_true_true = arr_intersect(ind1, ind2).shape[0]
-    num_non_zero = arr_union(ind1, ind2).shape[0]
+    num_true_true = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
     num_not_equal = num_non_zero - num_true_true
 
     if num_not_equal == 0.0:
@@ -440,8 +471,8 @@ def sparse_dice(ind1, data1, ind2, data2):
 
 @numba.njit()
 def sparse_kulsinski(ind1, data1, ind2, data2, n_features):
-    num_true_true = arr_intersect(ind1, ind2).shape[0]
-    num_non_zero = arr_union(ind1, ind2).shape[0]
+    num_true_true = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
     num_not_equal = num_non_zero - num_true_true
 
     if num_not_equal == 0:
@@ -454,8 +485,8 @@ def sparse_kulsinski(ind1, data1, ind2, data2, n_features):
 
 @numba.njit()
 def sparse_rogers_tanimoto(ind1, data1, ind2, data2, n_features):
-    num_true_true = arr_intersect(ind1, ind2).shape[0]
-    num_non_zero = arr_union(ind1, ind2).shape[0]
+    num_true_true = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
     num_not_equal = num_non_zero - num_true_true
 
     return (2.0 * num_not_equal) / (n_features + num_not_equal)
@@ -466,7 +497,7 @@ def sparse_russellrao(ind1, data1, ind2, data2, n_features):
     if ind1.shape[0] == ind2.shape[0] and np.all(ind1 == ind2):
         return 0.0
 
-    num_true_true = arr_intersect(ind1, ind2).shape[0]
+    num_true_true = fast_intersection_size(ind1, ind2)
 
     if num_true_true == np.sum(data1 != 0) and num_true_true == np.sum(data2 != 0):
         return 0.0
@@ -476,8 +507,8 @@ def sparse_russellrao(ind1, data1, ind2, data2, n_features):
 
 @numba.njit()
 def sparse_sokal_michener(ind1, data1, ind2, data2, n_features):
-    num_true_true = arr_intersect(ind1, ind2).shape[0]
-    num_non_zero = arr_union(ind1, ind2).shape[0]
+    num_true_true = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
     num_not_equal = num_non_zero - num_true_true
 
     return (2.0 * num_not_equal) / (n_features + num_not_equal)
@@ -485,8 +516,8 @@ def sparse_sokal_michener(ind1, data1, ind2, data2, n_features):
 
 @numba.njit()
 def sparse_sokal_sneath(ind1, data1, ind2, data2):
-    num_true_true = arr_intersect(ind1, ind2).shape[0]
-    num_non_zero = arr_union(ind1, ind2).shape[0]
+    num_true_true = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
     num_not_equal = num_non_zero - num_true_true
 
     if num_not_equal == 0.0:
