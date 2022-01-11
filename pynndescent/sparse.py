@@ -55,7 +55,13 @@ def arr_intersect(ar1, ar2):
 
 # Some things require size of intersection; do this quickly; assume sorted arrays for speed
 @numba.njit(
-    'i4(i4[:],i4[:])',
+    [
+        "i4(i4[:],i4[:])",
+        numba.types.int32(
+            numba.types.Array(numba.types.int32, 1, readonly=True),
+            numba.types.Array(numba.types.int32, 1, readonly=True),
+        ),
+    ],
     locals={
         "i1": numba.uint16,
         "i2": numba.uint16,
