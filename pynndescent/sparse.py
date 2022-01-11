@@ -443,6 +443,8 @@ def sparse_alternative_jaccard(ind1, data1, ind2, data2):
 
     if num_non_zero == 0:
         return 0.0
+    elif num_equal == 0:
+        return FLOAT32_MAX
     else:
         # return -np.log2(num_equal / num_non_zero)
         return (num_non_zero - num_equal) / num_equal
@@ -456,8 +458,8 @@ def correct_alternative_jaccard(v):
 
 @numba.njit()
 def sparse_matching(ind1, data1, ind2, data2, n_features):
-    num_equal = fast_intersection_size(ind1, ind2)
-    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_equal
+    num_true_true = fast_intersection_size(ind1, ind2)
+    num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
     num_not_equal = num_non_zero - num_true_true
 
     return float(num_not_equal) / n_features
