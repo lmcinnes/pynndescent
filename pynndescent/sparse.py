@@ -252,12 +252,7 @@ def sparse_mul(ind1, data1, ind2, data2):
 @numba.njit(
     [
         # "Tuple((i4[::1],f4[::1]))(i4[::1],f4[::1],i4[::1],f4[::1])",
-        numba.types.Tuple(
-            (
-                numba.types.ListType(numba.types.int32),
-                numba.types.ListType(numba.types.float32),
-            )
-        )(
+        numba.types.float32(
             numba.types.Array(numba.types.int32, 1, "C", readonly=True),
             numba.types.Array(numba.types.float32, 1, "C", readonly=True),
             numba.types.Array(numba.types.int32, 1, "C", readonly=True),
