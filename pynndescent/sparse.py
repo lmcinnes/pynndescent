@@ -71,21 +71,36 @@ def fast_intersection_size(ar1, ar2):
     # NOTE: We assume arrays are sorted; if they are not this will break
     i1 = 0
     i2 = 0
+    limit1 = ar1.shape[0] - 1
+    limit2 = ar2.shape[0] - 1
+    j1 = ar1[i1]
+    j2 = ar2[i2]
 
     result = 0
 
-    while i1 < ar1.shape[0] and i2 < ar2.shape[0]:
-        j1 = ar1[i1]
-        j2 = ar2[i2]
-
+    while True:
         if j1 == j2:
             result += 1
+            if i1 < limit1:
+                i1 += 1
+                j1 = ar1[i1]
+            else:
+                break
+
+            if i2 < limit2:
+                i2 += 1
+                j2 = ar2[i2]
+            else:
+                break
+
+        elif j1 < j2 and i1 < limit1:
             i1 += 1
+            j1 = ar1[i1]
+        elif j2 < j1 and i2 < limit2:
             i2 += 1
-        elif j1 < j2:
-            i1 += 1
+            j2 = ar2[i2]
         else:
-            i2 += 1
+            break
 
     return result
 
@@ -446,14 +461,14 @@ def sparse_alternative_jaccard(ind1, data1, ind2, data2):
     elif num_equal == 0:
         return FLOAT32_MAX
     else:
-        # return -np.log2(num_equal / num_non_zero)
-        return (num_non_zero - num_equal) / num_equal
+        return -np.log2(num_equal / num_non_zero)
+        # return (num_non_zero - num_equal) / num_equal
 
 
 @numba.vectorize(fastmath=True)
 def correct_alternative_jaccard(v):
-    # return 1.0 - pow(2.0, -v)
-    return v / (v + 1)
+    return 1.0 - pow(2.0, -v)
+    # return v / (v + 1)
 
 
 @numba.njit()
