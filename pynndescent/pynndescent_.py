@@ -745,7 +745,7 @@ class NNDescent:
             "dot",
             "correlation",
             "dice",
-            "jaccard",
+            # "jaccard",
             "hellinger",
             "hamming",
         ):
