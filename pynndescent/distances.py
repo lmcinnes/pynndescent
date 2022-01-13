@@ -439,7 +439,7 @@ def alternative_cosine(x, y):
     else:
         result = np.sqrt(norm_x * norm_y) / result
         # return np.log2(result)
-        return result / (1 - result)
+        return (1 - result) / result
 
 
 @numba.njit(
@@ -487,7 +487,7 @@ def alternative_dot(x, y):
     if result <= 0.0:
         return FLOAT32_MAX
     else:
-        return result / (1 - result)
+        return (1 - result) / result
         # return -np.log2(result)
 
 
