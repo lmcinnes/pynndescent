@@ -438,7 +438,8 @@ def alternative_cosine(x, y):
         return FLOAT32_MAX
     else:
         result = np.sqrt(norm_x * norm_y) / result
-        return np.log2(result)
+        # return np.log2(result)
+        return result / (1 - result)
 
 
 @numba.njit(
@@ -486,13 +487,14 @@ def alternative_dot(x, y):
     if result <= 0.0:
         return FLOAT32_MAX
     else:
-        return -np.log2(result)
+        return result / (1 - result)
+        # return -np.log2(result)
 
 
 @numba.vectorize(fastmath=True)
 def correct_alternative_cosine(d):
-    return 1.0 - pow(2.0, -d)
-
+    # return 1.0 - pow(2.0, -d)
+    return d / (d + 1)
 
 @numba.njit(fastmath=True)
 def tsss(x, y):
