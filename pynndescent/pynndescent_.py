@@ -707,7 +707,7 @@ class NNDescent:
         data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
         self._raw_data = data
 
-        if not tree_init or n_trees == 0 or init_graph is not None or self.compression_init:
+        if not tree_init or n_trees == 0 or init_graph is not None:
             self.tree_init = False
         else:
             self.tree_init = True
