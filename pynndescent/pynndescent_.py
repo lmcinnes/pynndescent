@@ -13,6 +13,8 @@ from scipy.sparse import csr_matrix, coo_matrix, isspmatrix_csr, vstack as spars
 
 import heapq
 
+from sklearn.utils.extmath import randomized_svd
+
 import pynndescent.sparse as sparse
 import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as pynnd_dist
@@ -657,6 +659,8 @@ class NNDescent:
         diversify_prob=1.0,
         n_search_trees=1,
         tree_init=True,
+        compression_init=False,
+        compression_n_components=64,
         init_graph=None,
         random_state=None,
         low_memory=True,
@@ -692,6 +696,8 @@ class NNDescent:
         self.compressed = compressed
         self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
+        self.compression_init = compression_init
+        self.compression_n_components = compression_n_components
 
         if getattr(data, "dtype", None) == np.float32 and (issparse(data) or is_c_contiguous(data)):
             copy_on_normalize = True
@@ -701,7 +707,7 @@ class NNDescent:
         data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
         self._raw_data = data
 
-        if not tree_init or n_trees == 0 or init_graph is not None:
+        if not tree_init or n_trees == 0 or init_graph is not None or self.compression_init:
             self.tree_init = False
         else:
             self.tree_init = True
@@ -745,7 +751,7 @@ class NNDescent:
             "dot",
             "correlation",
             "dice",
-            # "jaccard",
+            "jaccard",
             "hellinger",
             "hamming",
         ):
@@ -780,6 +786,22 @@ class NNDescent:
                 self._angular_trees,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
+        elif self.compression_init:
+            if verbose:
+                print(ts(), "Building compressed vectors and index")
+            U, S, VT = randomized_svd(
+                self._raw_data,
+                self.compression_n_components,
+                n_iters=5,
+                random_state=random_state,
+            )
+            compressed_data = U * S
+            self._compressed_components = VT.T.astype(np.float64, order="C")
+
+            compressed_metric = "cosine" if self._angular_trees else "euclidean"
+            self._compressed_index = NNDescent(compressed_data, metric=compressed_metric)
+            self._rp_forest = None
+            leaf_array = self._compressed_index._neighbor_graph[0]
         else:
             self._rp_forest = None
             leaf_array = np.array([[-1]])
@@ -1129,9 +1151,9 @@ class NNDescent:
         else:
             self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
 
-        tree_order = np.argsort(self._vertex_order)
+        self._unmapping_order = np.argsort(self._vertex_order)
         self._search_forest = tuple(
-            resort_tree_indices(tree, tree_order)
+            resort_tree_indices(tree, self._unmapping_order)
             for tree in self._search_forest[: self.n_search_trees]
         )
 
@@ -1377,7 +1399,7 @@ class NNDescent:
             parallel=self.parallel_batch_queries,
         )
         def search_closure(
-            query_inds, query_indptr, query_data, k, epsilon, visited, rng_state
+            query_inds, query_indptr, query_data, k, epsilon, init_data, visited, rng_state
         ):
 
             n_query_points = query_indptr.shape[0] - 1
@@ -1410,10 +1432,13 @@ class NNDescent:
                 heapq.heapify(seed_set)
 
                 ############ Init ################
-                index_bounds = sparse_tree_search_closure(
-                    current_query_inds, current_query_data, internal_rng_state
-                )
-                candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
+                if init_data[0,0] != -1:
+                    index_bounds = sparse_tree_search_closure(
+                        current_query_inds, current_query_data, internal_rng_state
+                    )
+                    candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
+                else:
+                    candidate_indices = init_data[i]
 
                 n_initial_points = candidate_indices.shape[0]
                 n_random_samples = min(k, n_neighbors) - n_initial_points
@@ -1554,6 +1579,8 @@ class NNDescent:
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
         if not hasattr(self, "_search_function"):
+            if hasattr(self, "_compressed_index"):
+                self._compressed_index.prepare()
             if self._is_sparse:
                 self._init_sparse_search_function()
             else:
@@ -1614,12 +1641,21 @@ class NNDescent:
             if not query_data.has_sorted_indices:
                 query_data.sort_indices()
 
+            if self.compression_init:
+                compressed_query = query_data @ self._compressed_components
+                init_data = self._compressed_index.query(compressed_query)[0]
+                for i in range(init_data.shape[0]):
+                    init_data[i] = self._unmapping_order[init_data[i]]
+            else:
+                init_data = np.array([[-1]])
+
             result = self._search_function(
                 query_data.indices,
                 query_data.indptr,
                 query_data.data,
                 k,
                 epsilon,
+                init_data,
                 self._visited,
                 self.search_rng_state,
             )
