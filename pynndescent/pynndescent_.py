@@ -786,7 +786,11 @@ class NNDescent:
                 self._angular_trees,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
-        elif self.compression_init:
+        else:
+            self._rp_forest = None
+            leaf_array = np.array([[-1]])
+
+        if self.compression_init:
             if verbose:
                 print(ts(), "Building compressed vectors and index")
             U, S, VT = randomized_svd(
@@ -797,14 +801,22 @@ class NNDescent:
             )
             compressed_data = U * S
             self._compressed_components = VT.T.astype(np.float64, order="C")
+            if verbose:
+                print(ts(), "Compressed the data")
 
             compressed_metric = "cosine" if self._angular_trees else "euclidean"
-            self._compressed_index = NNDescent(compressed_data, metric=compressed_metric)
+            self._compressed_index = NNDescent(
+                compressed_data,
+                metric=compressed_metric,
+                n_neighbors=10,
+                pruning_degree_multiplier=1.0,
+            )
             self._rp_forest = None
-            leaf_array = self._compressed_index._neighbor_graph[0]
-        else:
-            self._rp_forest = None
-            leaf_array = np.array([[-1]])
+            if len(leaf_array) == 1:
+                leaf_array = self._compressed_index._neighbor_graph[0]
+
+            if verbose:
+                print(ts(), "Built a compressed index")
 
         if self.max_candidates is None:
             effective_max_candidates = min(60, self.n_neighbors)
@@ -1647,7 +1659,7 @@ class NNDescent:
 
             if self.compression_init:
                 compressed_query = query_data @ self._compressed_components
-                init_data = self._compressed_index.query(compressed_query, k=5, epsilon=0.0)[0].astype(np.int32)
+                init_data = self._compressed_index.query(compressed_query, k=10, epsilon=0.0)[0]
                 # for i in range(init_data.shape[0]):
                 #     init_data[i] = self._unmapping_order[init_data[i]]
             else:
