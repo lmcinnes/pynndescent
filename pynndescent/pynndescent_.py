@@ -804,11 +804,12 @@ class NNDescent:
                 print(ts(), "Compressed the data")
 
             compressed_metric = "cosine" if self._angular_trees else "euclidean"
+            pruning_mult = 10.0 / self.n_neighbors
             self._compressed_index = NNDescent(
                 compressed_data,
                 metric=compressed_metric,
-                n_neighbors=10,
-                pruning_degree_multiplier=1.0,
+                n_neighbors=self.n_neighbors,
+                pruning_degree_multiplier=pruning_mult,
             )
             self._rp_forest = None
             if len(leaf_array) == 1:
