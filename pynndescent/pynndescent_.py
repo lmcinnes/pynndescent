@@ -1542,7 +1542,7 @@ class NNDescent:
             query_data.data,
             5,
             0.0,
-            np.array([[-1]]),
+            np.array([[-1]], dtype=np.int32),
             self._visited,
             self.search_rng_state,
         )
@@ -1644,7 +1644,7 @@ class NNDescent:
 
             if self.compression_init:
                 compressed_query = query_data @ self._compressed_components
-                init_data = self._compressed_index.query(compressed_query)[0]
+                init_data = self._compressed_index.query(compressed_query)[0].astype(np.int32)
                 for i in range(init_data.shape[0]):
                     init_data[i] = self._unmapping_order[init_data[i]]
             else:
