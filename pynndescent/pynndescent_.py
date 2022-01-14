@@ -1138,24 +1138,27 @@ class NNDescent:
         )
 
         # reorder according to the search tree leaf order
-        if self.verbose:
-            print(ts(), "Resorting data and graph based on tree order")
-        self._vertex_order = self._search_forest[0].indices
-        row_ordered_graph = self._search_graph[self._vertex_order, :].tocsc()
-        self._search_graph = row_ordered_graph[:, self._vertex_order]
-        self._search_graph = self._search_graph.tocsr()
-        self._search_graph.sort_indices()
+        if not self.compression_init:
+            if self.verbose:
+                print(ts(), "Resorting data and graph based on tree order")
+            self._vertex_order = self._search_forest[0].indices
+            row_ordered_graph = self._search_graph[self._vertex_order, :].tocsc()
+            self._search_graph = row_ordered_graph[:, self._vertex_order]
+            self._search_graph = self._search_graph.tocsr()
+            self._search_graph.sort_indices()
 
-        if self._is_sparse:
-            self._raw_data = self._raw_data[self._vertex_order, :]
+            if self._is_sparse:
+                self._raw_data = self._raw_data[self._vertex_order, :]
+            else:
+                self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
+
+            self._unmapping_order = np.argsort(self._vertex_order)
+            self._search_forest = tuple(
+                resort_tree_indices(tree, self._unmapping_order)
+                for tree in self._search_forest[: self.n_search_trees]
+            )
         else:
-            self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
-
-        self._unmapping_order = np.argsort(self._vertex_order)
-        self._search_forest = tuple(
-            resort_tree_indices(tree, self._unmapping_order)
-            for tree in self._search_forest[: self.n_search_trees]
-        )
+            self._vertex_order = np.arange(self._raw_data.shape[0])
 
         if self.compressed:
             if self.verbose:
@@ -1644,9 +1647,9 @@ class NNDescent:
 
             if self.compression_init:
                 compressed_query = query_data @ self._compressed_components
-                init_data = self._compressed_index.query(compressed_query)[0].astype(np.int32)
-                for i in range(init_data.shape[0]):
-                    init_data[i] = self._unmapping_order[init_data[i]]
+                init_data = self._compressed_index.query(compressed_query, k=5, epsilon=0.0)[0].astype(np.int32)
+                # for i in range(init_data.shape[0]):
+                #     init_data[i] = self._unmapping_order[init_data[i]]
             else:
                 init_data = np.array([[-1]])
 
