@@ -1542,6 +1542,7 @@ class NNDescent:
             query_data.data,
             5,
             0.0,
+            np.array([[-1]]),
             self._visited,
             self.search_rng_state,
         )
