@@ -792,7 +792,7 @@ class NNDescent:
             U, S, VT = randomized_svd(
                 self._raw_data,
                 self.compression_n_components,
-                n_iters=5,
+                n_iter=5,
                 random_state=random_state,
             )
             compressed_data = U * S
