@@ -660,7 +660,7 @@ class NNDescent:
         n_search_trees=1,
         tree_init=True,
         compression_init=False,
-        compression_n_components=64,
+        compression_n_components=256,
         init_graph=None,
         random_state=None,
         low_memory=True,
