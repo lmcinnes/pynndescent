@@ -1268,7 +1268,8 @@ class NNDescent:
                             mark_visited(visited_nodes, candidate)
 
                 ############ Search ##############
-                distance_bound = distance_scale * heap_priorities[0]
+                best_distance = seed_set[0][0]
+                distance_bound = distance_scale * heap_priorities[0] - epsilon * best_distance
 
                 # Find smallest seed point
                 d_vertex, vertex = heapq.heappop(seed_set)
@@ -1290,7 +1291,9 @@ class NNDescent:
                                 )
                                 heapq.heappush(seed_set, (d, candidate))
                                 # Update bound
-                                distance_bound = distance_scale * heap_priorities[0]
+                                if d < best_distance:
+                                    best_distance = d
+                                distance_bound = distance_scale * heap_priorities[0] - epsilon * best_distance
 
                     # find new smallest seed point
                     if len(seed_set) == 0:
