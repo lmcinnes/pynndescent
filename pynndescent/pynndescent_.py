@@ -707,7 +707,7 @@ class NNDescent:
         data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
         self._raw_data = data
 
-        if not tree_init or n_trees == 0 or init_graph is not None:
+        if not tree_init or n_trees == 0 or init_graph is not None or compression_init:
             self.tree_init = False
         else:
             self.tree_init = True
@@ -794,10 +794,9 @@ class NNDescent:
             if verbose:
                 print(ts(), "Building compressed vectors and index")
             U, S, VT = randomized_svd(
-                self._raw_data,
+                data,
                 self.compression_n_components,
-                n_iter=5,
-                random_state=random_state,
+                random_state=current_random_state,
             )
             compressed_data = U * S
             self._compressed_components = VT.T.astype(np.float64, order="C")
@@ -813,7 +812,7 @@ class NNDescent:
             )
             self._rp_forest = None
             if len(leaf_array) == 1:
-                leaf_array = self._compressed_index._neighbor_graph[0]
+                init_graph = self._compressed_index._neighbor_graph[0]
 
             if verbose:
                 print(ts(), "Built a compressed index")
