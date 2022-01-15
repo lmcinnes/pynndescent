@@ -804,11 +804,12 @@ class NNDescent:
                 print(ts(), "Compressed the data")
 
             compressed_metric = "cosine" if self._angular_trees else "euclidean"
-            pruning_mult = 10.0 / self.n_neighbors
+            compressed_n_neighbors = max(80, self.n_neighbors)
+            pruning_mult = 10.0 / compressed_n_neighbors
             self._compressed_index = NNDescent(
                 compressed_data,
                 metric=compressed_metric,
-                n_neighbors=self.n_neighbors,
+                n_neighbors=compressed_n_neighbors,
                 pruning_degree_multiplier=pruning_mult,
             )
             self._rp_forest = None
@@ -1659,7 +1660,7 @@ class NNDescent:
 
             if self.compression_init:
                 compressed_query = query_data @ self._compressed_components
-                init_data = self._compressed_index.query(compressed_query, k=10, epsilon=0.0)[0]
+                init_data = self._compressed_index.query(compressed_query, k=10, epsilon=epsilon / 2.0)[0]
                 # for i in range(init_data.shape[0]):
                 #     init_data[i] = self._unmapping_order[init_data[i]]
             else:
