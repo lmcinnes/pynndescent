@@ -1448,7 +1448,7 @@ class NNDescent:
                 heapq.heapify(seed_set)
 
                 ############ Init ################
-                if init_data[0,0] != -1:
+                if init_data[0,0] == -1:
                     index_bounds = sparse_tree_search_closure(
                         current_query_inds, current_query_data, internal_rng_state
                     )
