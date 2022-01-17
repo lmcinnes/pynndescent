@@ -1664,7 +1664,7 @@ class NNDescent:
                 # for i in range(init_data.shape[0]):
                 #     init_data[i] = self._unmapping_order[init_data[i]]
             else:
-                init_data = np.array([[-1]])
+                init_data = np.array([[-1]], dtype=np.int32)
 
             result = self._search_function(
                 query_data.indices,
