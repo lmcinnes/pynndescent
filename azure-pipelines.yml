@@ -10,15 +10,39 @@ trigger:
 # https://github.com/Microsoft/azure-pipelines-yaml/issues/20
 strategy:
   matrix:
-    mac10.14_py36:
-      imageName: 'macOS-10.14'
-      python.version: '3.6'
-    mac10.14_py37:
-      imageName: 'macOS-10.14'
+    mac_py37:
+      imageName: 'macOS-latest'
       python.version: '3.7'
-    mac10.14_py38:
-      imageName: 'macOS-10.14'
+    mac_py38:
+      imageName: 'macOS-latest'
       python.version: '3.8'
+    mac_py39:
+      imageName: 'macOS-latest'
+      python.version: '3.9'
+    linux_py37:
+      imageName: 'ubuntu-latest'
+      python.version: '3.7'
+    linux_py38:
+      imageName: 'ubuntu-latest'
+      python.version: '3.8'
+    linux_py39:
+      imageName: 'ubuntu-latest'
+      python.version: '3.9'
+    linux_py310:
+      imageName: 'ubuntu-latest'
+      python.version: '3.10'
+    windows_py37:
+      imageName: 'windows-latest'
+      python.version: '3.7'
+    sindows_py38:
+      imageName: 'windows-latest'
+      python.version: '3.8'
+    windows_py39:
+      imageName: 'windows-latest'
+      python.version: '3.9'
+    windows_py310:
+      imageName: 'windows-latest'
+      python.version: '3.10'
 
 pool:
   vmImage: $(imageName)
