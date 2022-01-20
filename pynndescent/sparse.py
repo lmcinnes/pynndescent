@@ -68,6 +68,9 @@ def arr_intersect(ar1, ar2):
     }
 )
 def fast_intersection_size(ar1, ar2):
+    if ar1.shape[0] == 0 or ar2.shape[0] == 0:
+        return 0
+
     # NOTE: We assume arrays are sorted; if they are not this will break
     i1 = 0
     i2 = 0
