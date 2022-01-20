@@ -28,9 +28,6 @@ strategy:
     linux_py39:
       imageName: 'ubuntu-latest'
       python.version: '3.9'
-    linux_py310:
-      imageName: 'ubuntu-latest'
-      python.version: '3.10'
     windows_py37:
       imageName: 'windows-latest'
       python.version: '3.7'
@@ -40,9 +37,6 @@ strategy:
     windows_py39:
       imageName: 'windows-latest'
       python.version: '3.9'
-    windows_py310:
-      imageName: 'windows-latest'
-      python.version: '3.10'
 
 pool:
   vmImage: $(imageName)
