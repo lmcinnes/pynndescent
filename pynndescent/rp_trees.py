@@ -8,7 +8,7 @@ import numpy as np
 import numba
 import scipy.sparse
 
-from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_intersect
+from pynndescent.sparse import sparse_mul, sparse_diff, sparse_sum, arr_intersect, sparse_dot_product
 from pynndescent.utils import tau_rand_int, norm
 import joblib
 
@@ -908,10 +908,7 @@ def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
     hyperplane_inds = hyperplane[0, :hyperplane_size].astype(np.int32)
     hyperplane_data = hyperplane[1, :hyperplane_size]
 
-    _, aux_data = sparse_mul(hyperplane_inds, hyperplane_data, point_inds, point_data)
-
-    for val in aux_data:
-        margin += val
+    margin += sparse_dot_product(hyperplane_inds, hyperplane_data, point_inds, point_data)
 
     if abs(margin) < EPS:
         side = tau_rand_int(rng_state) % 2
