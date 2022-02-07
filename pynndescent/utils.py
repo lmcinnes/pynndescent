@@ -223,7 +223,7 @@ def siftdown(heap1, heap2, elt):
             elt = swap
 
 
-@numba.njit(cache=True)
+@numba.njit(parallel=True, cache=True)
 def deheap_sort(heap):
     """Given an array of heaps (of graph_indices and weights), unpack the heap
     out to give and array of sorted lists of graph_indices and weights by increasing
@@ -243,7 +243,7 @@ def deheap_sort(heap):
     indices = heap[0]
     weights = heap[1]
 
-    for i in range(indices.shape[0]):
+    for i in numba.prange(indices.shape[0]):
 
         ind_heap = indices[i]
         dist_heap = weights[i]
