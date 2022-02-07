@@ -5,6 +5,7 @@ import pynndescent.distances as dist
 import pynndescent.sparse as spdist
 from scipy import stats
 from scipy.sparse import csr_matrix
+from scipy.version import full_version as scipy_full_version
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import BallTree
 from sklearn.preprocessing import normalize
@@ -241,6 +242,7 @@ def test_seuclidean(spatial_data):
     )
 
 
+@pytest.mark.skipif(scipy_full_version >= "1.8", reason="Function is deprecated")
 def test_weighted_minkowski(spatial_data):
     v = np.abs(np.random.randn(spatial_data.shape[1]))
     dist_matrix = pairwise_distances(spatial_data, metric="wminkowski", w=v, p=3)
