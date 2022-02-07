@@ -242,10 +242,12 @@ def test_seuclidean(spatial_data):
     )
 
 
-@pytest.mark.skipif(scipy_full_version >= "1.8", reason="Function is deprecated")
 def test_weighted_minkowski(spatial_data):
     v = np.abs(np.random.randn(spatial_data.shape[1]))
-    dist_matrix = pairwise_distances(spatial_data, metric="wminkowski", w=v, p=3)
+    if scipy_full_version >= "1.8":
+        dist_matrix = pairwise_distances(spatial_data, metric="minkowski", w=v, p=3)
+    else:
+        dist_matrix = pairwise_distances(spatial_data, metric="wminkowski", w=v, p=3)
     test_matrix = np.array(
         [
             [
