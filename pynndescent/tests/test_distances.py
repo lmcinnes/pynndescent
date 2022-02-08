@@ -48,7 +48,7 @@ def test_spatial_check(spatial_data, metric):
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
-        err_msg="Distances don't match " "for metric {}".format(metric),
+        err_msg="Distances don't match for metric {}".format(metric),
     )
 
 
@@ -88,7 +88,7 @@ def test_binary_check(binary_data, metric):
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
-        err_msg="Distances don't match " "for metric {}".format(metric),
+        err_msg="Distances don't match for metric {}".format(metric),
     )
 
 
@@ -154,7 +154,7 @@ def test_sparse_spatial_check(sparse_spatial_data, metric, decimal=6):
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
-        err_msg="Sparse distances don't match " "for metric {}".format(metric),
+        err_msg="Sparse distances don't match for metric {}".format(metric),
         decimal=decimal,
     )
 
@@ -219,7 +219,7 @@ def test_sparse_binary_check(sparse_binary_data, metric):
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
-        err_msg="Sparse distances don't match " "for metric {}".format(metric),
+        err_msg="Sparse distances don't match for metric {}".format(metric),
     )
 
 
@@ -238,7 +238,7 @@ def test_seuclidean(spatial_data):
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
-        err_msg="Distances don't match " "for metric seuclidean",
+        err_msg="Distances don't match for metric seuclidean",
     )
 
 
@@ -260,7 +260,7 @@ def test_weighted_minkowski(spatial_data):
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
-        err_msg="Distances don't match " "for metric weighted_minkowski",
+        err_msg="Distances don't match for metric weighted_minkowski",
     )
 
 
@@ -279,7 +279,7 @@ def test_mahalanobis(spatial_data):
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
-        err_msg="Distances don't match " "for metric mahalanobis",
+        err_msg="Distances don't match for metric mahalanobis",
     )
 
 
@@ -299,7 +299,7 @@ def test_haversine(spatial_data):
     assert_array_almost_equal(
         test_matrix,
         dist_matrix,
-        err_msg="Distances don't match " "for metric haversine",
+        err_msg="Distances don't match for metric haversine",
     )
 
 
