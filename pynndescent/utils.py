@@ -223,39 +223,36 @@ def siftdown(heap1, heap2, elt):
             elt = swap
 
 
-@numba.guvectorize(
-    ["void(int32[:], float32[:], int32[:], float32[:])"],
-    "(n),(n)->(n),(n)",
-    target="parallel",
-    cache=True,
-)
-def deheap_sort(ind_heap, dist_heap, graph_indices, weights):
-    """Given two arrays representing a heap (graph_indices and weights), return a
-     reordered arrays of graph_indices and weights by increasing weight. This is
-     effectively just the second half of heap sort (the first half not being required
-     since we already have the graph_data in a heap).
+@numba.njit(parallel=True, cache=True)
+def deheap_sort(indices, weights):
+    """Given two arrays representing a heap (indices and weights), reorder the 
+     arrays by increasing weight. This is effectively just the second half of
+     heap sort (the first half not being required since we already have the
+     graph_data in a heap).
+
+     Note that this is done in-place.
 
     Parameters
     ----------
-    ind_heap : array of shape (n_samples, n_neighbors)
+    indices : array of shape (n_samples, n_neighbors)
         The graph indices to sort by weight.
-    dist_heap : array of shape (n_samples, n_neighbors)
+    weights : array of shape (n_samples, n_neighbors)
         The corresponding edge weights.
 
     Returns
     -------
-    graph_indices, weights: arrays of shape (n_samples, n_neighbors)
-        The graph_indices and weights sorted by increasing weight.
+    indices, weights: arrays of shape (n_samples, n_neighbors)
+        The indices and weights sorted by increasing weight.
     """
-    graph_indices[:] = ind_heap
-    weights[:] = dist_heap
-
     # starting from the end of the array and moving back
-    for j in range(ind_heap.shape[0] - 1, 0, -1):
-        graph_indices[0], graph_indices[j] = graph_indices[j], graph_indices[0]
-        weights[0], weights[j] = weights[j], weights[0]
+    for i in numba.prange(indices.shape[0]):
+        for j in range(indices.shape[1] - 1, 0, -1):
+            indices[i, 0], indices[i, j] = indices[i, j], indices[i, 0]
+            weights[i, 0], weights[i, j] = weights[i, j], weights[i, 0]
 
-        siftdown(weights[: j], graph_indices[: j], 0)
+            siftdown(weights[i, :j], indices[i, :j], 0)
+
+    return indices, weights
 
 
 # @numba.njit()
