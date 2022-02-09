@@ -148,7 +148,7 @@ def find_component_connection_edge(
         result = search_closure(
             query_points, candidate_indices, search_size, epsilon, visited
         )
-        inds, dists = deheap_sort(result)
+        inds, dists = deheap_sort(result[0], result[1])
         for i in range(dists.shape[0]):
             for j in range(dists.shape[1]):
                 if dists[i, j] < best_dist:

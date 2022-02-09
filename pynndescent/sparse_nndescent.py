@@ -343,4 +343,4 @@ def nn_descent(
             verbose=verbose,
         )
 
-    return deheap_sort(current_graph)
+    return deheap_sort(current_graph[0], current_graph[1])

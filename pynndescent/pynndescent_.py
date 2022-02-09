@@ -372,7 +372,7 @@ def nn_descent(
             verbose=verbose,
         )
 
-    return deheap_sort(current_graph)
+    return deheap_sort(current_graph[0], current_graph[1])
 
 
 @numba.njit(parallel=True)
@@ -1624,7 +1624,7 @@ class NNDescent:
                 self.search_rng_state,
             )
 
-        indices, dists = deheap_sort(result)
+        indices, dists = deheap_sort(result[0], result[1])
         # Sort to input graph_data order
         indices = self._vertex_order[indices]
 
