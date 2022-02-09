@@ -224,9 +224,9 @@ def siftdown(heap1, heap2, elt):
 
 
 @numba.njit(parallel=True, cache=True)
-def deheap_sort(indices, weights):
-    """Given two arrays representing a heap (indices and weights), reorder the 
-     arrays by increasing weight. This is effectively just the second half of
+def deheap_sort(indices, distances):
+    """Given two arrays representing a heap (indices and distances), reorder the 
+     arrays by increasing distance. This is effectively just the second half of
      heap sort (the first half not being required since we already have the
      graph_data in a heap).
 
@@ -235,24 +235,24 @@ def deheap_sort(indices, weights):
     Parameters
     ----------
     indices : array of shape (n_samples, n_neighbors)
-        The graph indices to sort by weight.
-    weights : array of shape (n_samples, n_neighbors)
-        The corresponding edge weights.
+        The graph indices to sort by distance.
+    distances : array of shape (n_samples, n_neighbors)
+        The corresponding edge distance.
 
     Returns
     -------
-    indices, weights: arrays of shape (n_samples, n_neighbors)
-        The indices and weights sorted by increasing weight.
+    indices, distances: arrays of shape (n_samples, n_neighbors)
+        The indices and distances sorted by increasing distance.
     """
-    # starting from the end of the array and moving back
     for i in numba.prange(indices.shape[0]):
+        # starting from the end of the array and moving back
         for j in range(indices.shape[1] - 1, 0, -1):
             indices[i, 0], indices[i, j] = indices[i, j], indices[i, 0]
-            weights[i, 0], weights[i, j] = weights[i, j], weights[i, 0]
+            distances[i, 0], distances[i, j] = distances[i, j], distances[i, 0]
 
-            siftdown(weights[i, :j], indices[i, :j], 0)
+            siftdown(distances[i, :j], indices[i, :j], 0)
 
-    return indices, weights
+    return indices, distances
 
 
 # @numba.njit()

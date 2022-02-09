@@ -1307,10 +1307,10 @@ class NNDescent:
 
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = self._raw_data[:1]
-        result = self._search_function(
+        inds, dists, _ = self._search_function(
             query_data, 5, 0.0, self._visited, self.search_rng_state
         )
-        _ = self._deheap_function(result[0], result[1])
+        _ = self._deheap_function(inds, dists)
 
     def _init_sparse_search_function(self):
 
@@ -1519,7 +1519,7 @@ class NNDescent:
 
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = self._raw_data[:1]
-        result = self._search_function(
+        inds, dists, _ = self._search_function(
             query_data.indices,
             query_data.indptr,
             query_data.data,
@@ -1528,7 +1528,7 @@ class NNDescent:
             self._visited,
             self.search_rng_state,
         )
-        _ = self._deheap_function(result[0], result[1])
+        _ = self._deheap_function(inds, dists)
 
     @property
     def neighbor_graph(self):
@@ -1609,7 +1609,7 @@ class NNDescent:
                 self._init_search_function()
 
             query_data = np.asarray(query_data).astype(np.float32, order="C")
-            result = self._search_function(
+            indices, dists, _ = self._search_function(
                 query_data, k, epsilon, self._visited, self.search_rng_state
             )
         else:
@@ -1623,7 +1623,7 @@ class NNDescent:
             if not query_data.has_sorted_indices:
                 query_data.sort_indices()
 
-            result = self._search_function(
+            indices, dists, _ = self._search_function(
                 query_data.indices,
                 query_data.indptr,
                 query_data.data,
@@ -1633,7 +1633,7 @@ class NNDescent:
                 self.search_rng_state,
             )
 
-        indices, dists = self._deheap_function(result[0], result[1])
+        indices, dists = self._deheap_function(indices, dists)
         # Sort to input graph_data order
         indices = self._vertex_order[indices]
 
