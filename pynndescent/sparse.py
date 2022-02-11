@@ -938,7 +938,7 @@ def sparse_symmetric_kl_divergence(ind1, data1, ind2, data2):
     return symmetric_kl_divergence(dense_data1, dense_data2)
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, cache=False)
 def diversify(
     indices,
     distances,
@@ -993,7 +993,7 @@ def diversify(
     return indices, distances
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, cache=False)
 def diversify_csr(
     graph_indptr,
     graph_indices,

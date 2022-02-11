@@ -935,7 +935,7 @@ def network_simplex_core(node_arc_data, spanning_tree, graph, max_iter):
     fastmath=True,
     parallel=True,
     locals={"diff": numba.float32, "result": numba.float32},
-    cache=True,
+    cache=False,
 )
 def right_marginal_error(u, K, v, y):
     uK = u @ K
@@ -950,7 +950,7 @@ def right_marginal_error(u, K, v, y):
     fastmath=True,
     parallel=True,
     locals={"diff": numba.float32, "result": numba.float32},
-    cache=True,
+    cache=False,
 )
 def right_marginal_error_batch(u, K, v, y):
     uK = K.T @ u
@@ -962,7 +962,7 @@ def right_marginal_error_batch(u, K, v, y):
     return np.sqrt(result)
 
 
-@numba.njit(fastmath=True, parallel=True, cache=True)
+@numba.njit(fastmath=True, parallel=True, cache=False)
 def transport_plan(K, u, v):
     i_dim = K.shape[0]
     j_dim = K.shape[1]
@@ -974,7 +974,7 @@ def transport_plan(K, u, v):
     return result
 
 
-@numba.njit(fastmath=True, parallel=True, locals={"result": numba.float32}, cache=True)
+@numba.njit(fastmath=True, parallel=True, locals={"result": numba.float32}, cache=False)
 def relative_change_in_plan(old_u, old_v, new_u, new_v):
     i_dim = old_u.shape[0]
     j_dim = old_v.shape[0]
@@ -987,7 +987,7 @@ def relative_change_in_plan(old_u, old_v, new_u, new_v):
     return result / (i_dim * j_dim)
 
 
-@numba.njit(fastmath=True, parallel=True, cache=True)
+@numba.njit(fastmath=True, parallel=True, cache=False)
 def precompute_K_prime(K, x):
     i_dim = K.shape[0]
     j_dim = K.shape[1]
@@ -1003,7 +1003,7 @@ def precompute_K_prime(K, x):
     return result
 
 
-@numba.njit(fastmath=True, parallel=True, cache=True)
+@numba.njit(fastmath=True, parallel=True, cache=False)
 def K_from_cost(cost, regularization):
     i_dim = cost.shape[0]
     j_dim = cost.shape[1]
@@ -1131,7 +1131,7 @@ def sinkhorn_distance(x, y, cost=_dummy_cost, regularization=1.0):
     return result
 
 
-@numba.njit(fastmath=True, parallel=True, cache=True)
+@numba.njit(fastmath=True, parallel=True, cache=False)
 def sinkhorn_distance_batch(x, y, cost=_dummy_cost, regularization=1.0):
     dim_x = x.shape[0]
     dim_y = y.shape[0]

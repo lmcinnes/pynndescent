@@ -223,7 +223,7 @@ def siftdown(heap1, heap2, elt):
             elt = swap
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, cache=False)
 def deheap_sort(indices, distances):
     """Given two arrays representing a heap (indices and distances), reorder the 
      arrays by increasing distance. This is effectively just the second half of
@@ -294,7 +294,7 @@ def deheap_sort(indices, distances):
 #         return -1
 
 
-@numba.njit(parallel=True, locals={"idx": numba.types.int64}, cache=True)
+@numba.njit(parallel=True, locals={"idx": numba.types.int64}, cache=False)
 def new_build_candidates(current_graph, max_candidates, rng_state, n_threads):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
     each vertex the candidate neighbors are any current neighbors, and any
@@ -594,7 +594,7 @@ def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
         "i": numba.uint32,
         "j": numba.uint32,
     },
-    cache=True,
+    cache=False,
 )
 def apply_graph_updates_low_memory(current_graph, updates, n_threads):
 
@@ -689,7 +689,7 @@ def initalize_heap_from_graph_indices(heap, graph_indices, data, metric):
     return heap
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, cache=False)
 def sparse_initalize_heap_from_graph_indices(
     heap, graph_indices, data_indptr, data_indices, data_vals, metric
 ):

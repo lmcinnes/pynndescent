@@ -24,7 +24,7 @@ locale.setlocale(locale.LC_NUMERIC, "C")
 EMPTY_GRAPH = make_heap(1, 1)
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, cache=False)
 def generate_leaf_updates(leaf_block, dist_thresholds, inds, indptr, data, dist):
 
     updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
@@ -122,7 +122,7 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
     return
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, cache=False)
 def generate_graph_updates(
     new_candidate_block, old_candidate_block, dist_thresholds, inds, indptr, data, dist
 ):
