@@ -73,8 +73,8 @@ def make_angular_hyperplane(data, indices, rng_state):
     right_index = tau_rand_int(rng_state) % indices.shape[0]
     right_index += left_index == right_index
     right_index = right_index % indices.shape[0]
-    left , right = indices[left_index], indices[right_index]
-    left_norm , right_norm  = norm(data[left]), norm(data[right])
+    left, right = indices[left_index], indices[right_index]
+    left_norm, right_norm  = norm(data[left]), norm(data[right])
 
     if left_norm == 0.0:
         left_norm = 1.0
