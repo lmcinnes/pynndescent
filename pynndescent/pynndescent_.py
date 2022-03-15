@@ -63,7 +63,7 @@ def is_c_contiguous(array_like):
     return flags is not None and flags["C_CONTIGUOUS"]
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, cache=False)
 def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
 
     updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
@@ -156,7 +156,7 @@ def init_from_neighbor_graph(heap, indices, distances):
     return
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, cache=False)
 def generate_graph_updates(
     new_candidate_block, old_candidate_block, dist_thresholds, data, dist
 ):

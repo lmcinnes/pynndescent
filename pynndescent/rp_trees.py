@@ -1219,7 +1219,7 @@ def renumbaify_tree(tree):
         "result": numba.float32,
         "i": numba.uint32,
     },
-    cache=True,
+    cache=False,
 )
 def score_tree(tree, neighbor_indices, data, rng_state):
     result = 0.0
@@ -1237,7 +1237,7 @@ def score_tree(tree, neighbor_indices, data, rng_state):
     return result / numba.float32(neighbor_indices.shape[0])
 
 
-@numba.njit(nogil=True, parallel=True, locals={"node": numba.int32}, cache=True)
+@numba.njit(nogil=True, parallel=True, locals={"node": numba.int32}, cache=False)
 def score_linked_tree(tree, neighbor_indices):
     result = 0.0
     n_nodes = len(tree.children)
