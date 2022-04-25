@@ -946,22 +946,25 @@ class NNDescent:
 
         if not hasattr(self, "_search_forest"):
             if self._rp_forest is None:
-                # We don't have a forest, so make a small search forest
-                current_random_state = check_random_state(self.random_state)
-                rp_forest = make_forest(
-                    self._raw_data,
-                    self.n_neighbors,
-                    self.n_search_trees,
-                    self.leaf_size,
-                    self.rng_state,
-                    current_random_state,
-                    self.n_jobs,
-                    self._angular_trees,
-                )
-                self._search_forest = [
-                    convert_tree_format(tree, self._raw_data.shape[0])
-                    for tree in rp_forest
-                ]
+                if self.tree_init:
+                    # We don't have a forest, so make a small search forest
+                    current_random_state = check_random_state(self.random_state)
+                    rp_forest = make_forest(
+                        self._raw_data,
+                        self.n_neighbors,
+                        self.n_search_trees,
+                        self.leaf_size,
+                        self.rng_state,
+                        current_random_state,
+                        self.n_jobs,
+                        self._angular_trees,
+                    )
+                    self._search_forest = [
+                        convert_tree_format(tree, self._raw_data.shape[0])
+                        for tree in rp_forest
+                    ]
+                else:
+                    self._search_forest = []
             else:
                 # convert the best trees into a search forest
                 tree_scores = [
@@ -1118,22 +1121,24 @@ class NNDescent:
         # reorder according to the search tree leaf order
         if self.verbose:
             print(ts(), "Resorting data and graph based on tree order")
-        self._vertex_order = self._search_forest[0].indices
-        row_ordered_graph = self._search_graph[self._vertex_order, :].tocsc()
-        self._search_graph = row_ordered_graph[:, self._vertex_order]
-        self._search_graph = self._search_graph.tocsr()
-        self._search_graph.sort_indices()
 
-        if self._is_sparse:
-            self._raw_data = self._raw_data[self._vertex_order, :]
-        else:
-            self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
+        if self.tree_init:
+            self._vertex_order = self._search_forest[0].indices
+            row_ordered_graph = self._search_graph[self._vertex_order, :].tocsc()
+            self._search_graph = row_ordered_graph[:, self._vertex_order]
+            self._search_graph = self._search_graph.tocsr()
+            self._search_graph.sort_indices()
 
-        tree_order = np.argsort(self._vertex_order)
-        self._search_forest = tuple(
-            resort_tree_indices(tree, tree_order)
-            for tree in self._search_forest[: self.n_search_trees]
-        )
+            if self._is_sparse:
+                self._raw_data = self._raw_data[self._vertex_order, :]
+            else:
+                self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
+
+            tree_order = np.argsort(self._vertex_order)
+            self._search_forest = tuple(
+                resort_tree_indices(tree, tree_order)
+                for tree in self._search_forest[: self.n_search_trees]
+            )
 
         if self.compressed:
             if self.verbose:
@@ -1149,34 +1154,42 @@ class NNDescent:
         if self.verbose:
             print(ts(), "Building and compiling search function")
 
-        tree_hyperplanes = self._search_forest[0].hyperplanes
-        tree_offsets = self._search_forest[0].offsets
-        tree_indices = self._search_forest[0].indices
-        tree_children = self._search_forest[0].children
+        if self.tree_init:
+            tree_hyperplanes = self._search_forest[0].hyperplanes
+            tree_offsets = self._search_forest[0].offsets
+            tree_indices = self._search_forest[0].indices
+            tree_children = self._search_forest[0].children
 
-        @numba.njit(
-            [
-                numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
-                    numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-                    numba.types.Array(numba.types.int64, 1, "C", readonly=False),
-                )
-            ],
-            locals={"node": numba.types.uint32, "side": numba.types.boolean},
-        )
-        def tree_search_closure(point, rng_state):
-            node = 0
-            while tree_children[node, 0] > 0:
-                side = select_side(
-                    tree_hyperplanes[node], tree_offsets[node], point, rng_state
-                )
-                if side == 0:
-                    node = tree_children[node, 0]
-                else:
-                    node = tree_children[node, 1]
+            @numba.njit(
+                [
+                    numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
+                        numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+                        numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                    )
+                ],
+                locals={"node": numba.types.uint32, "side": numba.types.boolean},
+            )
+            def tree_search_closure(point, rng_state):
+                node = 0
+                while tree_children[node, 0] > 0:
+                    side = select_side(
+                        tree_hyperplanes[node], tree_offsets[node], point, rng_state
+                    )
+                    if side == 0:
+                        node = tree_children[node, 0]
+                    else:
+                        node = tree_children[node, 1]
 
-            return -tree_children[node]
+                return -tree_children[node]
 
-        self._tree_search = tree_search_closure
+            self._tree_search = tree_search_closure
+        else:
+            @numba.njit()
+            def tree_search_closure(point, rng_state):
+                return (0, 0)
+
+            self._tree_search = tree_search_closure
+            tree_indices = np.zeros(1, dtype=np.int64)
 
         alternative_dot = pynnd_dist.alternative_dot
         alternative_cosine = pynnd_dist.alternative_cosine
@@ -1317,39 +1330,47 @@ class NNDescent:
         if self.verbose:
             print(ts(), "Building and compiling sparse search function")
 
-        tree_hyperplanes = self._search_forest[0].hyperplanes
-        tree_offsets = self._search_forest[0].offsets
-        tree_indices = self._search_forest[0].indices
-        tree_children = self._search_forest[0].children
+        if self.tree_init:
+            tree_hyperplanes = self._search_forest[0].hyperplanes
+            tree_offsets = self._search_forest[0].offsets
+            tree_indices = self._search_forest[0].indices
+            tree_children = self._search_forest[0].children
 
-        @numba.njit(
-            [
-                numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
-                    numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-                    numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-                    numba.types.Array(numba.types.int64, 1, "C", readonly=False),
-                )
-            ],
-            locals={"node": numba.types.uint32, "side": numba.types.boolean},
-        )
-        def sparse_tree_search_closure(point_inds, point_data, rng_state):
-            node = 0
-            while tree_children[node, 0] > 0:
-                side = sparse_select_side(
-                    tree_hyperplanes[node],
-                    tree_offsets[node],
-                    point_inds,
-                    point_data,
-                    rng_state,
-                )
-                if side == 0:
-                    node = tree_children[node, 0]
-                else:
-                    node = tree_children[node, 1]
+            @numba.njit(
+                [
+                    numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
+                        numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+                        numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+                        numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                    )
+                ],
+                locals={"node": numba.types.uint32, "side": numba.types.boolean},
+            )
+            def sparse_tree_search_closure(point_inds, point_data, rng_state):
+                node = 0
+                while tree_children[node, 0] > 0:
+                    side = sparse_select_side(
+                        tree_hyperplanes[node],
+                        tree_offsets[node],
+                        point_inds,
+                        point_data,
+                        rng_state,
+                    )
+                    if side == 0:
+                        node = tree_children[node, 0]
+                    else:
+                        node = tree_children[node, 1]
 
-            return -tree_children[node]
+                return -tree_children[node]
 
-        self._tree_search = sparse_tree_search_closure
+            self._tree_search = sparse_tree_search_closure
+        else:
+            @numba.njit()
+            def sparse_tree_search_closure(point_inds, point_data, rng_state):
+                return (0, 0)
+
+            self._tree_search = sparse_tree_search_closure
+            tree_indices = np.zeros(1, dtype=np.int64)
 
         from pynndescent.distances import alternative_dot, alternative_cosine
 
