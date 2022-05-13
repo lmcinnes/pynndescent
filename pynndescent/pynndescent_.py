@@ -1664,16 +1664,16 @@ class NNDescent:
         return indices, dists
 
     def update(self, X):
-        if not hasattr(self, "_search_graph"):
-            self._init_search_graph()
-
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
         X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
 
-        original_order = np.argsort(self._vertex_order)
+        if hasattr(self, "_vertex_order"):
+            original_order = np.argsort(self._vertex_order)
+        else:
+            original_order = np.ones(self._raw_data.shape[0], dtype=np.bool_)
 
         if self._is_sparse:
             self._raw_data = sparse_vstack([self._raw_data, X])
@@ -1722,6 +1722,24 @@ class NNDescent:
                 leaf_array=np.array([[-1], [-1]]),
                 verbose=self.verbose,
             )
+
+            # Remove search graph and search function
+            # and rerun prepare if it was run previously
+            if (
+                    hasattr(self, "_search_graph") or
+                    hasattr(self, "_search_function") or
+                    hasattr(self, "_search_forest")
+            ):
+                if hasattr(self, "_search_graph"):
+                    del self._search_graph
+
+                if hasattr(self, "_search_forest"):
+                    del self._search_forest
+
+                if hasattr(self, "_search_function"):
+                    del self._search_function
+
+                self.prepare()
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
