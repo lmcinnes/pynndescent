@@ -435,3 +435,46 @@ def test_joblib_dump():
 
     np.testing.assert_equal(neighbors1, neighbors2)
     np.testing.assert_equal(distances1, distances2)
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_update_no_prepare_query_accuracy(nn_data, metric):
+    nnd = NNDescent(nn_data[200:800], metric=metric, n_neighbors=10, random_state=None)
+    nnd.update(nn_data[800:])
+
+    knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
+
+    true_nnd = NearestNeighbors(metric=metric).fit(nn_data[200:])
+    true_indices = true_nnd.kneighbors(nn_data[:200], 10, return_distance=False)
+
+    num_correct = 0.0
+    for i in range(true_indices.shape[0]):
+        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    percent_correct = num_correct / (true_indices.shape[0] * 10)
+    assert percent_correct >= 0.95, (
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+    )
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_update_w_prepare_query_accuracy(nn_data, metric):
+    nnd = NNDescent(nn_data[200:800], metric=metric, n_neighbors=10, random_state=None, compressed=False)
+    nnd.prepare()
+
+    nnd.update(nn_data[800:])
+    nnd.prepare()
+
+    knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
+
+    true_nnd = NearestNeighbors(metric=metric).fit(nn_data[200:])
+    true_indices = true_nnd.kneighbors(nn_data[:200], 10, return_distance=False)
+
+    num_correct = 0.0
+    for i in range(true_indices.shape[0]):
+        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    percent_correct = num_correct / (true_indices.shape[0] * 10)
+    assert percent_correct >= 0.95, (
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+    )
+
+
