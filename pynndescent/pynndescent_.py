@@ -1139,6 +1139,8 @@ class NNDescent:
                 resort_tree_indices(tree, tree_order)
                 for tree in self._search_forest[: self.n_search_trees]
             )
+        else:
+            self._vertex_order = np.arange(self._raw_data.shape[0])
 
         if self.compressed:
             if self.verbose:
