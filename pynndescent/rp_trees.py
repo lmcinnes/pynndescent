@@ -1241,7 +1241,7 @@ def score_tree(tree, neighbor_indices, data, rng_state):
 def score_linked_tree(tree, neighbor_indices):
     result = 0.0
     n_nodes = len(tree.children)
-    for i in numba.prange(n_nodes):
+    for i in range(n_nodes):
         node = numba.int32(i)
         left_child = tree.children[node][0]
         right_child = tree.children[node][1]
