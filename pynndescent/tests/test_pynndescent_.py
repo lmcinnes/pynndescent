@@ -477,4 +477,23 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
         "NN-descent query did not get 95% " "accuracy on nearest neighbors"
     )
 
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_tree_init_false(nn_data, metric):
+    nnd = NNDescent(
+        nn_data[200:], metric=metric, n_neighbors=10, random_state=None, tree_init=False
+    )
+    nnd.prepare()
 
+    knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
+
+    true_nnd = NearestNeighbors(metric=metric).fit(nn_data[200:])
+    true_indices = true_nnd.kneighbors(nn_data[:200], 10, return_distance=False)
+
+    num_correct = 0.0
+    for i in range(true_indices.shape[0]):
+        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    percent_correct = num_correct / (true_indices.shape[0] * 10)
+    assert percent_correct >= 0.95, (
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+    )
