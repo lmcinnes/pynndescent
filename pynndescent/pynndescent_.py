@@ -676,7 +676,7 @@ class NNDescent:
             n_iters = max(5, int(round(np.log2(data.shape[0]))))
 
         self.n_trees = n_trees
-        self.n_trees_for_update = max(1, int(np.round(self.n_trees / 3)))
+        self.n_trees_after_update = max(1, int(np.round(self.n_trees / 3)))
         self.n_neighbors = n_neighbors
         self.metric = metric
         self.metric_kwds = metric_kwds
@@ -1688,10 +1688,11 @@ class NNDescent:
         if self._is_sparse:
             raise NotImplementedError("Sparse update not complete yet")
         else:
+            self.n_trees = self.n_trees_after_update
             self._rp_forest = make_forest(
                 self._raw_data,
                 self.n_neighbors,
-                self.n_trees_for_update,
+                self.n_trees,
                 self.leaf_size,
                 rng_state,
                 current_random_state,
