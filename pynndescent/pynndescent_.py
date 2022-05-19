@@ -9,7 +9,13 @@ import numpy as np
 from sklearn.utils import check_random_state, check_array
 from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
-from scipy.sparse import csr_matrix, coo_matrix, isspmatrix_csr, vstack as sparse_vstack, issparse
+from scipy.sparse import (
+    csr_matrix,
+    coo_matrix,
+    isspmatrix_csr,
+    vstack as sparse_vstack,
+    issparse,
+)
 
 import heapq
 
@@ -694,7 +700,9 @@ class NNDescent:
         self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
 
-        if getattr(data, "dtype", None) == np.float32 and (issparse(data) or is_c_contiguous(data)):
+        if getattr(data, "dtype", None) == np.float32 and (
+            issparse(data) or is_c_contiguous(data)
+        ):
             copy_on_normalize = True
         else:
             copy_on_normalize = False
@@ -1133,7 +1141,9 @@ class NNDescent:
             if self._is_sparse:
                 self._raw_data = self._raw_data[self._vertex_order, :]
             else:
-                self._raw_data = np.ascontiguousarray(self._raw_data[self._vertex_order, :])
+                self._raw_data = np.ascontiguousarray(
+                    self._raw_data[self._vertex_order, :]
+                )
 
             tree_order = np.argsort(self._vertex_order)
             self._search_forest = tuple(
@@ -1187,6 +1197,7 @@ class NNDescent:
 
             self._tree_search = tree_search_closure
         else:
+
             @numba.njit()
             def tree_search_closure(point, rng_state):
                 return (0, 0)
@@ -1368,6 +1379,7 @@ class NNDescent:
 
             self._tree_search = sparse_tree_search_closure
         else:
+
             @numba.njit()
             def sparse_tree_search_closure(point_inds, point_data, rng_state):
                 return (0, 0)
@@ -1427,7 +1439,7 @@ class NNDescent:
                 current_query_data = query_data[query_indptr[i] : query_indptr[i + 1]]
 
                 if dist == alternative_dot or dist == alternative_cosine:
-                    norm = np.sqrt((current_query_data ** 2).sum())
+                    norm = np.sqrt((current_query_data**2).sum())
                     if norm > 0.0:
                         current_query_data = current_query_data / norm
                     else:
@@ -1457,9 +1469,11 @@ class NNDescent:
                         data_indptr[candidate] : data_indptr[candidate + 1]
                     ]
 
-                    d = np.float32(dist(
-                        from_inds, from_data, current_query_inds, current_query_data
-                    ))
+                    d = np.float32(
+                        dist(
+                            from_inds, from_data, current_query_inds, current_query_data
+                        )
+                    )
                     # indices are guaranteed different
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
@@ -1478,12 +1492,14 @@ class NNDescent:
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
 
-                            d = np.float32(dist(
-                                from_inds,
-                                from_data,
-                                current_query_inds,
-                                current_query_data,
-                            ))
+                            d = np.float32(
+                                dist(
+                                    from_inds,
+                                    from_data,
+                                    current_query_inds,
+                                    current_query_data,
+                                )
+                            )
 
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
@@ -1513,12 +1529,14 @@ class NNDescent:
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
 
-                            d = np.float32(dist(
-                                from_inds,
-                                from_data,
-                                current_query_inds,
-                                current_query_data,
-                            ))
+                            d = np.float32(
+                                dist(
+                                    from_inds,
+                                    from_data,
+                                    current_query_inds,
+                                    current_query_data,
+                                )
+                            )
 
                             if d < distance_bound:
                                 simple_heap_push(
@@ -1729,9 +1747,9 @@ class NNDescent:
             # Remove search graph and search function
             # and rerun prepare if it was run previously
             if (
-                    hasattr(self, "_search_graph") or
-                    hasattr(self, "_search_function") or
-                    hasattr(self, "_search_forest")
+                hasattr(self, "_search_graph")
+                or hasattr(self, "_search_function")
+                or hasattr(self, "_search_forest")
             ):
                 if hasattr(self, "_search_graph"):
                     del self._search_graph

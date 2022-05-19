@@ -359,7 +359,7 @@ def haversine(x, y):
         raise ValueError("haversine is only defined for 2 dimensional graph_data")
     sin_lat = np.sin(0.5 * (x[0] - y[0]))
     sin_long = np.sin(0.5 * (x[1] - y[1]))
-    result = np.sqrt(sin_lat ** 2 + np.cos(x[0]) * np.cos(y[0]) * sin_long ** 2)
+    result = np.sqrt(sin_lat**2 + np.cos(x[0]) * np.cos(y[0]) * sin_long**2)
     return 2.0 * np.arcsin(result)
 
 
@@ -565,8 +565,8 @@ def correlation(x, y):
     for i in range(x.shape[0]):
         shifted_x = x[i] - mu_x
         shifted_y = y[i] - mu_y
-        norm_x += shifted_x ** 2
-        norm_y += shifted_y ** 2
+        norm_x += shifted_x**2
+        norm_y += shifted_y**2
         dot_product += shifted_x * shifted_y
 
     if norm_x == 0.0 and norm_y == 0.0:

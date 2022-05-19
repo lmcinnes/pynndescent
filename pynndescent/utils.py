@@ -225,7 +225,7 @@ def siftdown(heap1, heap2, elt):
 
 @numba.njit(parallel=True, cache=False)
 def deheap_sort(indices, distances):
-    """Given two arrays representing a heap (indices and distances), reorder the 
+    """Given two arrays representing a heap (indices and distances), reorder the
      arrays by increasing distance. This is effectively just the second half of
      heap sort (the first half not being required since we already have the
      graph_data in a heap).

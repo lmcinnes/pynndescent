@@ -74,15 +74,15 @@ def test_rankdata_object_string():
 
 
 def test_large_int():
-    data = np.array([2 ** 60, 2 ** 60 + 1], dtype=np.uint64)
+    data = np.array([2**60, 2**60 + 1], dtype=np.uint64)
     r = rankdata(data)
     assert_array_equal(r, [1.0, 2.0])
 
-    data = np.array([2 ** 60, 2 ** 60 + 1], dtype=np.int64)
+    data = np.array([2**60, 2**60 + 1], dtype=np.int64)
     r = rankdata(data)
     assert_array_equal(r, [1.0, 2.0])
 
-    data = np.array([2 ** 60, -(2 ** 60) + 1], dtype=np.int64)
+    data = np.array([2**60, -(2**60) + 1], dtype=np.int64)
     r = rankdata(data)
     assert_array_equal(r, [2.0, 1.0])
 
