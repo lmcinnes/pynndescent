@@ -1157,18 +1157,17 @@ def sparse_hyperplane_dim(hyperplanes):
     return max_dim
 
 
-def convert_tree_format(tree, data_size):
-
+def convert_tree_format(tree, data_size, data_dim):
     n_nodes, n_leaves = num_nodes_and_leaves(tree)
     is_sparse = False
     if tree.hyperplanes[0].ndim == 1:
         # dense hyperplanes
-        hyperplane_dim = dense_hyperplane_dim(tree.hyperplanes)
+        hyperplane_dim = data_dim  # dense_hyperplane_dim(tree.hyperplanes)
         hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
     else:
         # sparse hyperplanes
         is_sparse = True
-        hyperplane_dim = sparse_hyperplane_dim(tree.hyperplanes)
+        hyperplane_dim = data_dim  # sparse_hyperplane_dim(tree.hyperplanes)
         hyperplanes = np.zeros((n_nodes, 2, hyperplane_dim), dtype=np.float32)
         hyperplanes[:, 0, :] = -1
 
