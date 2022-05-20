@@ -53,6 +53,7 @@ def arr_intersect(ar1, ar2):
     aux.sort()
     return aux[:-1][aux[1:] == aux[:-1]]
 
+
 # Some things require size of intersection; do this quickly; assume sorted arrays for speed
 @numba.njit(
     [
@@ -65,7 +66,7 @@ def arr_intersect(ar1, ar2):
     locals={
         "i1": numba.uint16,
         "i2": numba.uint16,
-    }
+    },
 )
 def fast_intersection_size(ar1, ar2):
     if ar1.shape[0] == 0 or ar2.shape[0] == 0:
@@ -201,6 +202,7 @@ def sparse_sum(ind1, data1, ind2, data2):
 def sparse_diff(ind1, data1, ind2, data2):
     return sparse_sum(ind1, data1, ind2, -data2)
 
+
 @numba.njit(
     [
         # "Tuple((i4[::1],f4[::1]))(i4[::1],f4[::1],i4[::1],f4[::1])",
@@ -251,6 +253,7 @@ def sparse_mul(ind1, data1, ind2, data2):
             i2 += 1
 
     return result_ind, result_data
+
 
 @numba.njit(
     [
@@ -308,7 +311,8 @@ def sparse_dot_product(ind1, data1, ind2, data2):
                 return result
             j2 = ind2[i2]
 
-    return result # unreachable
+    return result  # unreachable
+
 
 # Return dense vectors supported on the union of the non-zero valued indices
 @numba.njit()
@@ -717,10 +721,10 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
         shifted_data2[i] = data2[i] - mu_y
 
     norm1 = np.sqrt(
-        (norm(shifted_data1) ** 2) + (n_features - ind1.shape[0]) * (mu_x ** 2)
+        (norm(shifted_data1) ** 2) + (n_features - ind1.shape[0]) * (mu_x**2)
     )
     norm2 = np.sqrt(
-        (norm(shifted_data2) ** 2) + (n_features - ind2.shape[0]) * (mu_y ** 2)
+        (norm(shifted_data2) ** 2) + (n_features - ind2.shape[0]) * (mu_y**2)
     )
 
     dot_prod_inds, dot_prod_data = sparse_mul(ind1, shifted_data1, ind2, shifted_data2)
