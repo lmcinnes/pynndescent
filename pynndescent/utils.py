@@ -689,6 +689,18 @@ def initalize_heap_from_graph_indices(heap, graph_indices, data, metric):
     return heap
 
 
+@numba.njit(cache=True)
+def initalize_heap_from_graph_indices_and_distances(heap, graph_indices, graph_distances):
+    for i in range(graph_indices.shape[0]):
+        for idx in range(graph_indices.shape[1]):
+            j = graph_indices[i, idx]
+            if j >= 0:
+                d = graph_distances[i, idx]
+                checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, j, 1)
+
+    return heap
+
+
 @numba.njit(parallel=True, cache=False)
 def sparse_initalize_heap_from_graph_indices(
     heap, graph_indices, data_indptr, data_indices, data_vals, metric
