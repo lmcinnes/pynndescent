@@ -1709,6 +1709,7 @@ class NNDescent:
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
+        X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
 
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)
@@ -1823,14 +1824,15 @@ class NNDescent:
                 updated_indices = list(map(int, updated_indices))
             except (TypeError, ValueError):
                 raise ValueError("Could not convert updated indices to list of int(s).")
+            xs_updated = check_array(xs_updated, dtype=np.float32, accept_sparse="csr", order="C")
             
             ns, ds = index.neighbor_graph
-            n_fresh = xs_fresh.shape[0]
-            assert n_fresh == len(updated_indices), (n_fresh, len(updated_indices))
+            n_updated = xs_updated.shape[0]
+            assert n_updated == len(updated_indices), (n_updated, len(updated_indices))
             raw_data = index._raw_data[np.argsort(index._vertex_order)]
             n_examples, n_dim = raw_data.shape
-            for x_fresh, i_fresh in zip(xs_fresh, updated_indices):
-                raw_data[i_fresh] = x_fresh
+            for x_updated, i_fresh in zip(xs_updated, updated_indices):
+                raw_data[i_fresh] = x_updated
             indices_set = set(updated_indices)
             # update whole rows
             for i in updated_indices:
@@ -1840,10 +1842,10 @@ class NNDescent:
                 for j in range(n_dim):
                     if j in indices_set:
                         ns[i, j] = -1
-            index = NNDescent(raw_data, init_graph=ns, **init_kwargs)
+            index = NNDescent(raw_data, init_graph=ns, init_dist=ds, **init_kwargs)
         if xs_fresh is not None:
             index.update(xs_fresh)
-        return xs_fresh
+        return index
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):

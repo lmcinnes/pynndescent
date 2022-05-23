@@ -61,3 +61,11 @@ def cosine_hang_data():
     this_dir = os.path.dirname(os.path.abspath(__file__))
     data_path = os.path.join(this_dir, "test_data/cosine_hang.npy")
     return np.load(data_path)
+
+
+@pytest.fixture
+def nn_data_1d():
+    nndata = np.random.uniform(0, 1, size=(1000, 1))
+    # Add some all zero graph_data for corner case test
+    nndata = np.vstack([nndata, np.zeros((2, 1))])
+    return nndata

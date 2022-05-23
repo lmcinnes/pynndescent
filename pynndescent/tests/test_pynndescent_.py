@@ -515,6 +515,53 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
     )
 
 
+@pytest.mark.parametrize("metric", ["manhattan"])
+def test_update_with_changed_data(nn_data, metric):
+    def evaluate_predictions(neighbors_true, neigbhors_computed):
+        n_correct = 0
+        n_all = neighbors_true.shape[0] * n_neighbours
+        for i in range(neighbors_true.shape[0]):
+            n_correct += np.sum(np.in1d(neighbors_true[i], neigbhors_computed[i]))
+        return n_correct / n_all
+
+    xs = np.copy(nn_data)
+    queries1 = xs[:50]
+    n_instances = 50
+    n_neighbours = 10
+    kwargs = {"metric": metric, "n_neighbors": 50}
+
+    index = NNDescent(xs, **kwargs)
+    index.prepare()
+    tree = KDTree(xs, metric=metric)
+    neighbors, _ = index.query(queries1, k=n_neighbours)
+    neighbors_expected = tree.query(queries1, n_neighbours, return_distance=False)
+
+    p_correct = evaluate_predictions(neighbors_expected, neighbors)
+    assert p_correct >= 0.95, (
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+    )
+
+    # Update data from xs =  [x0, x1, x2, ..., x{N - 1}]
+    # to [-x0, x1, -x2, x3, ..., (-1)**N x{N - 1}, x0, x1, x2 ..., x{N - 1}]
+    updated_xs = -xs[0:n_instances:2]
+    updated_indices = list(range(0, n_instances, 2))
+    index = NNDescent.update_with_changed_data(
+        index, xs_updated=updated_xs, updated_indices=updated_indices, xs_fresh=xs, **kwargs
+    )
+    xs = np.vstack((xs, xs))
+    xs[updated_indices] = updated_xs
+    tree = KDTree(xs, metric=metric)
+    queries2 = np.vstack((queries1, xs[:20]))
+
+    neighbors2, _ = index.query(queries2, k=n_neighbours)
+    neighbors2_expected = tree.query(queries2, n_neighbours, return_distance=False)
+
+    p_correct = evaluate_predictions(neighbors2_expected, neighbors2)
+    assert p_correct >= 0.95, (
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+    )
+
+
 @pytest.mark.parametrize("n_trees", [1, 2, 3, 10])
 def test_tree_numbers_after_multiple_updates(n_trees):
     trees_after_update = max(1, int(np.round(n_trees / 3)))
