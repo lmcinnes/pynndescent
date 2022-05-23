@@ -557,10 +557,16 @@ def test_tree_init_false(nn_data, metric):
     )
 
 
-@pytest.mark.parametrize("metric", ["euclidean", "manhattan"]) # cosine makes no sense for 1D
+@pytest.mark.parametrize(
+    "metric", ["euclidean", "manhattan"]
+)  # cosine makes no sense for 1D
 def test_one_dimensional_data(nn_data, metric):
     nnd = NNDescent(
-        nn_data[200:, :1], metric=metric, n_neighbors=10, random_state=None, tree_init=False
+        nn_data[200:, :1],
+        metric=metric,
+        n_neighbors=10,
+        random_state=None,
+        tree_init=False,
     )
     nnd.prepare()
 
