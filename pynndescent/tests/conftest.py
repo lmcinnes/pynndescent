@@ -70,4 +70,6 @@ def small_data():
 
 @pytest.fixture
 def sparse_small_data():
-    return sparse.random(40, 5, density=0.5, format="csr")
+    # Too low dim might cause more than one empty row,
+    # which might decrease the computed performance
+    return sparse.random(40, 32, density=0.5, format="csr")
