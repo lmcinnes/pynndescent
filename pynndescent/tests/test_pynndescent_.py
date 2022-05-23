@@ -611,7 +611,7 @@ def test_one_dimensional_data(nn_data, metric):
     nnd = NNDescent(
         nn_data[200:, :1],
         metric=metric,
-        n_neighbors=10,
+        n_neighbors=20,
         random_state=None,
         tree_init=False,
     )
@@ -637,8 +637,9 @@ def test_tree_no_split(small_data, sparse_small_data, metric):
     for data, data_type in zip([small_data, sparse_small_data], ["dense", "sparse"]):
         n_instances = data.shape[0]
         leaf_size = n_instances + 1  # just to be safe
+        data_train = data[n_instances // 2 :]
         nnd = NNDescent(
-            data[n_instances // 2 :],
+            data_train,
             metric=metric,
             n_neighbors=10,
             random_state=None,
@@ -647,11 +648,12 @@ def test_tree_no_split(small_data, sparse_small_data, metric):
         )
         nnd.prepare()
 
-        knn_indices, _ = nnd.query(data[: n_instances // 2], k=10, epsilon=0.2)
+        data_test = data[: n_instances // 2]
+        knn_indices, _ = nnd.query(data_test, k=10, epsilon=0.2)
 
-        true_nnd = NearestNeighbors(metric=metric).fit(data[n_instances // 2 :])
+        true_nnd = NearestNeighbors(metric=metric).fit(data_train)
         true_indices = true_nnd.kneighbors(
-            data[: n_instances // 2], 10, return_distance=False
+            data_test, 10, return_distance=False
         )
 
         num_correct = 0.0
