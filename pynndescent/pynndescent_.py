@@ -969,7 +969,9 @@ class NNDescent:
                         self._angular_trees,
                     )
                     self._search_forest = [
-                        convert_tree_format(tree, self._raw_data.shape[0], self._raw_data.shape[1])
+                        convert_tree_format(
+                            tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                        )
                         for tree in rp_forest
                     ]
                 else:
@@ -988,7 +990,9 @@ class NNDescent:
                 best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
                 del self._rp_forest
                 self._search_forest = [
-                    convert_tree_format(tree, self._raw_data.shape[0], self._raw_data.shape[1])
+                    convert_tree_format(
+                        tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                    )
                     for tree in best_trees
                 ]
 
