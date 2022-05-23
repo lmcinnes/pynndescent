@@ -37,6 +37,7 @@ from pynndescent.utils import (
     apply_graph_updates_high_memory,
     apply_graph_updates_low_memory,
     initalize_heap_from_graph_indices,
+    initalize_heap_from_graph_indices_and_distances,
     sparse_initalize_heap_from_graph_indices,
 )
 
@@ -594,6 +595,16 @@ class NNDescent:
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
 
+    init_graph: np.ndarray (optional, default=None)
+        2D array of indices of candidate neighbours of the shape
+        (data.shape[0], n_neighbours). If the j-th neighbour of the i-th
+        instances is unknown, use init_graph[i, j] = -1
+
+    init_dist: np.ndarray (optional, default=None)
+        2D array with the same shape as init_graph,
+        such that metric(data[i], data[init_graph[i, j]]) equals
+        init_dist[i, j]
+
     random_state: int, RandomState instance or None, optional (default: None)
         If int, random_state is the seed used by the random number generator;
         If RandomState instance, random_state is the random number generator;
@@ -664,6 +675,7 @@ class NNDescent:
         n_search_trees=1,
         tree_init=True,
         init_graph=None,
+        init_dist=None,
         random_state=None,
         low_memory=True,
         max_candidates=None,
@@ -889,9 +901,17 @@ class NNDescent:
                 if init_graph.shape[0] != self._raw_data.shape[0]:
                     raise ValueError("Init graph size does not match dataset size!")
                 _init_graph = make_heap(init_graph.shape[0], self.n_neighbors)
-                _init_graph = initalize_heap_from_graph_indices(
-                    _init_graph, init_graph, data, self._distance_func
-                )
+                if init_dist is None:
+                    _init_graph = initalize_heap_from_graph_indices(
+                        _init_graph, init_graph, data, self._distance_func
+                    )
+                elif init_graph.shape != init_dist.shape:
+                    raise ValueError("The shapes of init graph and init distances do not match!")
+                else:
+                    _init_graph = initalize_heap_from_graph_indices_and_distances(
+                        _init_graph, init_graph, init_dist
+                    )
+
 
             if verbose:
                 print(ts(), "NN descent for", str(n_iters), "iterations")
@@ -1685,36 +1705,10 @@ class NNDescent:
         return indices, dists
 
     def update(self, X):
-        """
-        Updates the graph with the fresh data X. if add.
-        In this case, X should represent the actual data.
-
-        If not add, X is a list of indices that should be removed.
-
-
-        Parameters
-        ----------
-        X
-        update_indices
-
-        Returns
-        -------
-
-        """
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
-        # if add:
-        #     X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
-        # else:
-        #     try:
-        #         X = list(map(int, X))
-        #     except (ValueError, TypeError):
-        #         raise ValueError(
-        #             "When updating existing instances via update(X, add=False), "
-        #             "X should be convertable to list of ints."
-        #         )
 
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)
@@ -1786,6 +1780,70 @@ class NNDescent:
                     del self._search_function
 
                 self.prepare()
+
+    @staticmethod
+    def update_with_changed_data(
+            index,
+            xs_updated=None, updated_indices=None, xs_fresh=None,
+            **init_kwargs
+    ):
+        """
+        Updates the index with a) data that was updated (but should not be appended
+        to the existing data), and b) with fresh data (that is appended to
+        the existing data).
+
+        Parameters
+        ----------
+        index: NNDescent
+            Previously constructed index that we want to update
+
+        xs_updated: np.ndarray (optional, default=None)
+            2D array of the shape (n_updates, dim) where dim is the dimension
+            of the data from which we build index
+
+        updated_indices: array-like of size n_updates (optional, default=None)
+            Something that is convertable to list of ints.
+            Row with index update_indices[i] will be replaced by xs_updated[i].
+
+        xs_fresh: np.ndarray (optional, default=None)
+            2D array of the shape (n_fresh, dim) where dim is the dimension
+            of the data from which we build index
+
+        Returns
+        -------
+            If xs_updated is not None a new NNDescent object, built from index.
+            Otherwise, the same object with updated structures.
+
+        """
+        if "init_graph" in init_kwargs:
+            raise ValueError("Do not pass init_graph via kwargs.")
+        if xs_updated is not None:
+            assert updated_indices is not None, "Provide update indices."
+            try:
+                updated_indices = list(map(int, updated_indices))
+            except (TypeError, ValueError):
+                raise ValueError("Could not convert updated indices to list of int(s).")
+            
+            ns, ds = index.neighbor_graph
+            n_fresh = xs_fresh.shape[0]
+            assert n_fresh == len(updated_indices), (n_fresh, len(updated_indices))
+            raw_data = index._raw_data[np.argsort(index._vertex_order)]
+            n_examples, n_dim = raw_data.shape
+            for x_fresh, i_fresh in zip(xs_fresh, updated_indices):
+                raw_data[i_fresh] = x_fresh
+            indices_set = set(updated_indices)
+            # update whole rows
+            for i in updated_indices:
+                ns[i] = -1
+            # update some columns
+            for i in range(n_examples):
+                for j in range(n_dim):
+                    if j in indices_set:
+                        ns[i, j] = -1
+            index = NNDescent(raw_data, init_graph=ns, **init_kwargs)
+        if xs_fresh is not None:
+            index.update(xs_fresh)
+        return xs_fresh
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
