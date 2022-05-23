@@ -1685,36 +1685,12 @@ class NNDescent:
         return indices, dists
 
     def update(self, X):
-        """
-        Updates the graph with the fresh data X. if add.
-        In this case, X should represent the actual data.
 
-        If not add, X is a list of indices that should be removed.
-
-
-        Parameters
-        ----------
-        X
-        update_indices
-
-        Returns
-        -------
-
-        """
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
-        # if add:
-        #     X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
-        # else:
-        #     try:
-        #         X = list(map(int, X))
-        #     except (ValueError, TypeError):
-        #         raise ValueError(
-        #             "When updating existing instances via update(X, add=False), "
-        #             "X should be convertable to list of ints."
-        #         )
+        X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
 
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)
