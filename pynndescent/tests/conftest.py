@@ -61,3 +61,15 @@ def cosine_hang_data():
     this_dir = os.path.dirname(os.path.abspath(__file__))
     data_path = os.path.join(this_dir, "test_data/cosine_hang.npy")
     return np.load(data_path)
+
+
+@pytest.fixture
+def small_data():
+    return np.random.uniform(40, 5, size=(20, 5))
+
+
+@pytest.fixture
+def sparse_small_data():
+    # Too low dim might cause more than one empty row,
+    # which might decrease the computed performance
+    return sparse.random(40, 32, density=0.5, format="csr")

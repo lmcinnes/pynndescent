@@ -515,6 +515,53 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
     )
 
 
+@pytest.mark.parametrize("metric", ["manhattan"])
+def test_update_with_changed_data(nn_data, metric):
+    def evaluate_predictions(neighbors_true, neigbhors_computed):
+        n_correct = 0
+        n_all = neighbors_true.shape[0] * n_neighbours
+        for i in range(neighbors_true.shape[0]):
+            n_correct += np.sum(np.in1d(neighbors_true[i], neigbhors_computed[i]))
+        return n_correct / n_all
+
+    xs = np.copy(nn_data)
+    queries1 = xs[:50]
+    n_instances = 50
+    n_neighbours = 10
+    kwargs = {"metric": metric, "n_neighbors": 50}
+
+    index = NNDescent(xs, **kwargs)
+    index.prepare()
+    tree = KDTree(xs, metric=metric)
+    neighbors, _ = index.query(queries1, k=n_neighbours)
+    neighbors_expected = tree.query(queries1, n_neighbours, return_distance=False)
+
+    p_correct = evaluate_predictions(neighbors_expected, neighbors)
+    assert p_correct >= 0.95, (
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+    )
+
+    # Update data from xs =  [x0, x1, x2, ..., x{N - 1}]
+    # to [-x0, x1, -x2, x3, ..., (-1)**N x{N - 1}, x0, x1, x2 ..., x{N - 1}]
+    updated_xs = -xs[0:n_instances:2]
+    updated_indices = list(range(0, n_instances, 2))
+    index = NNDescent.update_with_changed_data(
+        index, xs_updated=updated_xs, updated_indices=updated_indices, xs_fresh=xs, **kwargs
+    )
+    xs = np.vstack((xs, xs))
+    xs[updated_indices] = updated_xs
+    tree = KDTree(xs, metric=metric)
+    queries2 = np.vstack((queries1, xs[:20]))
+
+    neighbors2, _ = index.query(queries2, k=n_neighbours)
+    neighbors2_expected = tree.query(queries2, n_neighbours, return_distance=False)
+
+    p_correct = evaluate_predictions(neighbors2_expected, neighbors2)
+    assert p_correct >= 0.95, (
+        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+    )
+
+
 @pytest.mark.parametrize("n_trees", [1, 2, 3, 10])
 def test_tree_numbers_after_multiple_updates(n_trees):
     trees_after_update = max(1, int(np.round(n_trees / 3)))
@@ -556,10 +603,17 @@ def test_tree_init_false(nn_data, metric):
         "NN-descent query did not get 95% " "accuracy on nearest neighbors"
     )
 
-@pytest.mark.parametrize("metric", ["euclidean", "manhattan"]) # cosine makes no sense for 1D
+
+@pytest.mark.parametrize(
+    "metric", ["euclidean", "manhattan"]
+)  # cosine makes no sense for 1D
 def test_one_dimensional_data(nn_data, metric):
     nnd = NNDescent(
-        nn_data[200:, :1], metric=metric, n_neighbors=10, random_state=None, tree_init=False
+        nn_data[200:, :1],
+        metric=metric,
+        n_neighbors=20,
+        random_state=None,
+        tree_init=False,
     )
     nnd.prepare()
 
@@ -576,3 +630,40 @@ def test_one_dimensional_data(nn_data, metric):
     assert percent_correct >= 0.95, (
         "NN-descent query did not get 95% " "accuracy on nearest neighbors"
     )
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_tree_no_split(small_data, sparse_small_data, metric):
+    k = 10
+    for data, data_type in zip([small_data, sparse_small_data], ["dense", "sparse"]):
+        n_instances = data.shape[0]
+        leaf_size = n_instances + 1  # just to be safe
+        data_train = data[n_instances // 2:]
+        data_test = data[:n_instances // 2]
+
+        nnd = NNDescent(
+            data_train,
+            metric=metric,
+            n_neighbors=data_train.shape[0] - 1,
+            random_state=None,
+            tree_init=True,
+            leaf_size=leaf_size,
+        )
+        nnd.prepare()
+        knn_indices, _ = nnd.query(data_test, k=k, epsilon=0.2)
+
+        true_nnd = NearestNeighbors(metric=metric).fit(data_train)
+        true_indices = true_nnd.kneighbors(
+            data_test, k, return_distance=False
+        )
+
+        num_correct = 0.0
+        for i in range(true_indices.shape[0]):
+            num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+        percent_correct = num_correct / (true_indices.shape[0] * k)
+        assert (
+            percent_correct >= 0.95
+        ), "NN-descent query did not get 95% for accuracy on nearest neighbors on {} data".format(
+            data_type
+        )
