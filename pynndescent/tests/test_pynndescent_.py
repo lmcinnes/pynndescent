@@ -29,7 +29,7 @@ def test_nn_descent_neighbor_accuracy(nn_data, seed):
 
     percent_correct = num_correct / (nn_data.shape[0] * 10)
     assert percent_correct >= 0.98, (
-        "NN-descent did not get 99% " "accuracy on nearest neighbors"
+        "NN-descent did not get 99% accuracy on nearest neighbors"
     )
 
 
@@ -48,7 +48,7 @@ def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
 
     percent_correct = num_correct / (nn_data.shape[0] * 10)
     assert percent_correct >= 0.98, (
-        "NN-descent did not get 99% " "accuracy on nearest neighbors"
+        "NN-descent did not get 99% accuracy on nearest neighbors"
     )
 
 
@@ -70,7 +70,7 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
 
     percent_correct = num_correct / (sparse_nn_data.shape[0] * 10)
     assert percent_correct >= 0.85, (
-        "Sparse NN-descent did not get 95% " "accuracy on nearest neighbors"
+        "Sparse NN-descent did not get 95% accuracy on nearest neighbors"
     )
 
 
@@ -93,7 +93,7 @@ def test_sparse_angular_nn_descent_neighbor_accuracy(sparse_nn_data):
 
     percent_correct = num_correct / (sparse_nn_data.shape[0] * 10)
     assert percent_correct >= 0.85, (
-        "Sparse angular NN-descent did not get 98% " "accuracy on nearest neighbors"
+        "Sparse angular NN-descent did not get 98% accuracy on nearest neighbors"
     )
 
 
@@ -110,7 +110,7 @@ def test_nn_descent_query_accuracy(nn_data):
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
-        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+        "NN-descent query did not get 95% accuracy on nearest neighbors"
     )
 
 
@@ -127,7 +127,7 @@ def test_nn_descent_query_accuracy_angular(nn_data):
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
-        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+        "NN-descent query did not get 95% accuracy on nearest neighbors"
     )
 
 
@@ -146,7 +146,7 @@ def test_sparse_nn_descent_query_accuracy(sparse_nn_data):
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
-        "Sparse NN-descent query did not get 95% " "accuracy on nearest neighbors"
+        "Sparse NN-descent query did not get 95% accuracy on nearest neighbors"
     )
 
 
@@ -165,7 +165,7 @@ def test_sparse_nn_descent_query_accuracy_angular(sparse_nn_data):
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
-        "Sparse NN-descent query did not get 95% " "accuracy on nearest neighbors"
+        "Sparse NN-descent query did not get 95% accuracy on nearest neighbors"
     )
 
 
@@ -210,7 +210,7 @@ def test_random_state_none(nn_data, spatial_data):
 
     percent_correct = num_correct / (spatial_data.shape[0] * 10)
     assert percent_correct >= 0.99, (
-        "NN-descent did not get 99% " "accuracy on nearest neighbors"
+        "NN-descent did not get 99% accuracy on nearest neighbors"
     )
 
 
@@ -283,7 +283,7 @@ def test_deduplicated_data_behaves_normally(seed, cosine_hang_data):
 
     proportion_correct = num_correct / (data.shape[0] * n_neighbors)
     assert proportion_correct >= 0.95, (
-        "NN-descent did not get 95%" " accuracy on nearest neighbors"
+        "NN-descent did not get 95% accuracy on nearest neighbors"
     )
 
 

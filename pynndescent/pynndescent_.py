@@ -934,8 +934,8 @@ class NNDescent:
         if np.any(self._neighbor_graph[0] < 0):
             warn(
                 "Failed to correctly find n_neighbors for some samples."
-                "Results may be less than ideal. Try re-running with"
-                "different parameters."
+                " Results may be less than ideal. Try re-running with"
+                " different parameters."
             )
 
         numba.set_num_threads(self._original_num_threads)

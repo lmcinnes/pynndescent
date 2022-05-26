@@ -744,11 +744,11 @@ def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
     #     print("WARNING: RESULT MIGHT BE INACCURATE\nMax number of iteration reached!")
     if solve_status == ProblemStatus.INFEASIBLE:
         raise ValueError(
-            "Optimal transport problem was INFEASIBLE. Please check " "inputs."
+            "Optimal transport problem was INFEASIBLE. Please check inputs."
         )
     elif solve_status == ProblemStatus.UNBOUNDED:
         raise ValueError(
-            "Optimal transport problem was UNBOUNDED. Please check " "inputs."
+            "Optimal transport problem was UNBOUNDED. Please check inputs."
         )
     result = total_cost(node_arc_data.flow, node_arc_data.cost)
 
