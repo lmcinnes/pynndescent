@@ -1830,7 +1830,7 @@ class NNDescent:
             n_updated = xs_updated.shape[0]
             assert n_updated == len(updated_indices), (n_updated, len(updated_indices))
             raw_data = index._raw_data[np.argsort(index._vertex_order)]
-            n_examples, n_dim = raw_data.shape
+            n_examples, n_neighbors = ns.shape
             for x_updated, i_fresh in zip(xs_updated, updated_indices):
                 raw_data[i_fresh] = x_updated
             indices_set = set(updated_indices)
@@ -1839,8 +1839,8 @@ class NNDescent:
                 ns[i] = -1
             # update some columns
             for i in range(n_examples):
-                for j in range(n_dim):
-                    if j in indices_set:
+                for j in range(n_neighbors):
+                    if ns[i, j] in indices_set:
                         ns[i, j] = -1
             index = NNDescent(raw_data, init_graph=ns, init_dist=ds, **init_kwargs)
         if xs_fresh is not None:
