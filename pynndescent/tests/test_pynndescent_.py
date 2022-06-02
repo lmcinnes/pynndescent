@@ -440,7 +440,7 @@ def test_joblib_dump():
 @pytest.mark.parametrize("metric", ["euclidean", "cosine"])
 def test_update_no_prepare_query_accuracy(nn_data, metric):
     nnd = NNDescent(nn_data[200:800], metric=metric, n_neighbors=10, random_state=None)
-    nnd.update(nn_data[800:])
+    nnd.update(xs_fresh=nn_data[800:])
 
     knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
 
@@ -468,7 +468,7 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
     )
     nnd.prepare()
 
-    nnd.update(nn_data[800:])
+    nnd.update(xs_fresh=nn_data[800:])
     nnd.prepare()
 
     knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
@@ -497,7 +497,7 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
     )
     nnd.prepare()
 
-    nnd.update(nn_data[800:])
+    nnd.update(xs_fresh=nn_data[800:])
     nnd.prepare()
 
     knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
@@ -515,51 +515,46 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
     )
 
 
-@pytest.mark.parametrize("metric", ["manhattan"])
-def test_update_with_changed_data(nn_data, metric):
-    def evaluate_predictions(neighbors_true, neigbhors_computed):
-        n_correct = 0
-        n_all = neighbors_true.shape[0] * n_neighbours
-        for i in range(neighbors_true.shape[0]):
-            n_correct += np.sum(np.in1d(neighbors_true[i], neigbhors_computed[i]))
-        return n_correct / n_all
+def evaluate_predictions(neighbors_true, neigbhors_computed, n_neighbors):
+    n_correct = 0
+    n_all = neighbors_true.shape[0] * n_neighbors
+    for i in range(neighbors_true.shape[0]):
+        n_correct += np.sum(np.in1d(neighbors_true[i], neigbhors_computed[i]))
+    return n_correct / n_all
 
-    xs = np.copy(nn_data)
-    queries1 = xs[:50]
-    n_instances = 50
-    n_neighbours = 10
-    kwargs = {"metric": metric, "n_neighbors": 50}
 
-    index = NNDescent(xs, **kwargs)
+@pytest.mark.parametrize("metric", ["manhattan", "euclidean", "cosine"])
+@pytest.mark.parametrize("case", list(range(8)))  # the number of cases in update_data
+def test_update_with_changed_data(update_data, case, metric):
+    def evaluate(nn_descent, xs_to_fit, xs_to_query):
+        true_nn = NearestNeighbors(metric=metric, n_neighbors=k).fit(xs_to_fit)
+        neighbors, _ = nn_descent.query(xs_to_query, k=k)
+        neighbors_expected = true_nn.kneighbors(xs_to_query, k, return_distance=False)
+        p_correct = evaluate_predictions(neighbors_expected, neighbors, k)
+        assert p_correct >= 0.95, (
+            "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+        )
+
+    k = 10
+    xs_orig, xs_updated, indices_updated, xs_fresh = update_data[case]
+    queries1 = xs_orig[:50]
+    # original
+    index = NNDescent(xs_orig, metric=metric, n_neighbors=40, random_state=1234)
     index.prepare()
-    tree = KDTree(xs, metric=metric)
-    neighbors, _ = index.query(queries1, k=n_neighbours)
-    neighbors_expected = tree.query(queries1, n_neighbours, return_distance=False)
-
-    p_correct = evaluate_predictions(neighbors_expected, neighbors)
-    assert p_correct >= 0.95, (
-        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
+    evaluate(index, xs_orig, queries1)
+    # updated
+    index.update(
+        xs_updated=xs_updated, updated_indices=indices_updated, xs_fresh=xs_fresh
     )
-
-    # Update data from xs =  [x0, x1, x2, ..., x{N - 1}]
-    # to [-x0, x1, -x2, x3, ..., (-1)**N x{N - 1}, x0, x1, x2 ..., x{N - 1}]
-    updated_xs = -xs[0:n_instances:2]
-    updated_indices = list(range(0, n_instances, 2))
-    index = NNDescent.update_with_changed_data(
-        index, xs_updated=updated_xs, updated_indices=updated_indices, xs_fresh=xs, **kwargs
-    )
-    xs = np.vstack((xs, xs))
-    xs[updated_indices] = updated_xs
-    tree = KDTree(xs, metric=metric)
-    queries2 = np.vstack((queries1, xs[:20]))
-
-    neighbors2, _ = index.query(queries2, k=n_neighbours)
-    neighbors2_expected = tree.query(queries2, n_neighbours, return_distance=False)
-
-    p_correct = evaluate_predictions(neighbors2_expected, neighbors2)
-    assert p_correct >= 0.95, (
-        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
-    )
+    if xs_fresh is not None:
+        xs = np.vstack((xs_orig, xs_fresh))
+        queries2 = np.vstack((queries1, xs_fresh[:20]))
+    else:
+        xs = xs_orig
+        queries2 = queries1
+    if indices_updated is not None:
+        xs[indices_updated] = xs_updated
+    evaluate(index, xs, queries2)
 
 
 @pytest.mark.parametrize("n_trees", [1, 2, 3, 10])
@@ -573,7 +568,7 @@ def test_tree_numbers_after_multiple_updates(n_trees):
         nnd.n_trees_after_update == trees_after_update
     ), "The value of the n_trees_after_update in NN-descent after update(s) is wrong"
     for i in range(5):
-        nnd.update(np.array([[i]], dtype=np.float64))
+        nnd.update(xs_fresh=np.array([[i]], dtype=np.float64))
         assert (
             nnd.n_trees == trees_after_update
         ), "The value of the n_trees in NN-descent after update(s) is wrong"

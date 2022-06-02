@@ -73,3 +73,23 @@ def sparse_small_data():
     # Too low dim might cause more than one empty row,
     # which might decrease the computed performance
     return sparse.random(40, 32, density=0.5, format="csr")
+
+
+@pytest.fixture
+def update_data():
+    np.random.seed(12345)
+    xs_orig = np.random.uniform(0, 1, size=(1000, 5))
+    xs_for_complete_update = np.random.uniform(0, 1, size=xs_orig.shape)
+    xs_fresh = np.random.uniform(0, 1, size=xs_orig.shape)
+    xs_fresh_small = np.random.uniform(0, 1, size=(100, xs_orig.shape[1]))
+    updates = [
+        (xs_orig, None, None, None),
+        (xs_orig, None, None, xs_fresh),
+        (xs_orig, xs_for_complete_update, list(range(xs_orig.shape[0])), None),
+        (xs_orig, -xs_orig[0:50:2], list(range(0, 50, 2)), None),
+        (xs_orig, -xs_orig[0:500:2], list(range(0, 500, 2)), None),
+        (xs_orig, xs_for_complete_update, list(range(xs_orig.shape[0])), xs_fresh),
+        (xs_orig, -xs_orig[0:50:2], list(range(0, 50, 2)), xs_fresh_small),
+        (xs_orig, -xs_orig[0:500:2], list(range(0, 500, 2)), xs_fresh)
+    ]
+    return updates
