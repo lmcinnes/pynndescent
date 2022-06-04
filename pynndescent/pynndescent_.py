@@ -1720,11 +1720,12 @@ class NNDescent:
         ----------
         xs_updated: np.ndarray (optional, default=None)
             2D array of the shape (n_updates, dim) where dim is the dimension
-            of the data from which we build index
+            of the data from which we built self
 
         updated_indices: array-like of size n_updates (optional, default=None)
             Something that is convertable to list of ints.
-            Row with index update_indices[i] will be replaced by xs_updated[i].
+            If, self is currently built from xs, then xs[update_indices[i]]
+            will be replaced by xs_updated[i].
 
         xs_fresh: np.ndarray (optional, default=None)
             2D array of the shape (n_fresh, dim) where dim is the dimension
@@ -1732,8 +1733,7 @@ class NNDescent:
 
         Returns
         -------
-            If xs_updated is not None a new NNDescent object, built from index.
-            Otherwise, the same object with updated structures.
+            None
         """
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
