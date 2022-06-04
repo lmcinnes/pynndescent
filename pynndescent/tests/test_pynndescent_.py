@@ -537,7 +537,8 @@ def test_update_with_changed_data(update_data, case, metric):
 
     k = 10
     xs_orig, xs_updated, indices_updated, xs_fresh = update_data[case]
-    queries1 = xs_orig[:50]
+    queries1 = xs_orig
+
     # original
     index = NNDescent(xs_orig, metric=metric, n_neighbors=40, random_state=1234)
     index.prepare()
@@ -548,13 +549,15 @@ def test_update_with_changed_data(update_data, case, metric):
     )
     if xs_fresh is not None:
         xs = np.vstack((xs_orig, xs_fresh))
-        queries2 = np.vstack((queries1, xs_fresh[:20]))
+        queries2 = np.vstack((queries1, xs_fresh))
     else:
         xs = xs_orig
         queries2 = queries1
     if indices_updated is not None:
         xs[indices_updated] = xs_updated
     evaluate(index, xs, queries2)
+    if indices_updated is not None:
+        evaluate(index, xs, xs_updated)
 
 
 @pytest.mark.parametrize("n_trees", [1, 2, 3, 10])

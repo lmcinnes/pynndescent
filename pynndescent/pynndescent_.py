@@ -1713,9 +1713,6 @@ class NNDescent:
 
         Parameters
         ----------
-        index: NNDescent
-            Previously constructed index that we want to update
-
         xs_updated: np.ndarray (optional, default=None)
             2D array of the shape (n_updates, dim) where dim is the dimension
             of the data from which we build index
@@ -1787,18 +1784,20 @@ class NNDescent:
                 # but will leave this here as a marker
                 raise error_sparse_to_do
         else:
-            self._raw_data = np.ascontiguousarray(
-                np.vstack([self._raw_data[original_order, :], xs_fresh])
-            )
-            ns, ds = self.neighbor_graph
-            n_examples, n_neighbors = ns.shape
+            self._raw_data = self._raw_data[original_order, :]
             for x_updated, i_fresh in zip(xs_updated, updated_indices):
                 self._raw_data[i_fresh] = x_updated
+            self._raw_data = np.ascontiguousarray(
+                np.vstack([self._raw_data, xs_fresh])
+            )
+            ns, ds = self._neighbor_graph
+            n_examples, n_neighbors = ns.shape
             indices_set = set(updated_indices)  # for fast "is element" checks
             for i in range(n_examples):
                 # maybe update whole row
                 if i in updated_indices:
                     ns[i] = -1
+                    ds[i] = np.inf
                     continue
                 # maybe update some columns
                 for j in range(n_neighbors):
