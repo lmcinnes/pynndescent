@@ -90,6 +90,6 @@ def update_data():
         (xs_orig, -xs_orig[0:500:2], list(range(0, 500, 2)), None),
         (xs_orig, xs_for_complete_update, list(range(xs_orig.shape[0])), xs_fresh),
         (xs_orig, -xs_orig[0:50:2], list(range(0, 50, 2)), xs_fresh_small),
-        (xs_orig, -xs_orig[0:500:2], list(range(0, 500, 2)), xs_fresh)
+        (xs_orig, -xs_orig[0:500:2], list(range(0, 500, 2)), xs_fresh),
     ]
     return updates

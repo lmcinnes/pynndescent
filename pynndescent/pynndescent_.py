@@ -907,12 +907,13 @@ class NNDescent:
                         _init_graph, init_graph, data, self._distance_func
                     )
                 elif init_graph.shape != init_dist.shape:
-                    raise ValueError("The shapes of init graph and init distances do not match!")
+                    raise ValueError(
+                        "The shapes of init graph and init distances do not match!"
+                    )
                 else:
                     _init_graph = initalize_heap_from_graph_indices_and_distances(
                         _init_graph, init_graph, init_dist
                     )
-
 
             if verbose:
                 print(ts(), "NN descent for", str(n_iters), "iterations")
@@ -990,7 +991,9 @@ class NNDescent:
                         self._angular_trees,
                     )
                     self._search_forest = [
-                        convert_tree_format(tree, self._raw_data.shape[0], self._raw_data.shape[1])
+                        convert_tree_format(
+                            tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                        )
                         for tree in rp_forest
                     ]
                 else:
@@ -1009,7 +1012,9 @@ class NNDescent:
                 best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
                 del self._rp_forest
                 self._search_forest = [
-                    convert_tree_format(tree, self._raw_data.shape[0], self._raw_data.shape[1])
+                    convert_tree_format(
+                        tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                    )
                     for tree in best_trees
                 ]
 
@@ -1737,16 +1742,22 @@ class NNDescent:
         error_sparse_to_do = NotImplementedError("Sparse update not complete yet")
         # input checks
         if xs_updated is not None:
-            xs_updated = check_array(xs_updated, dtype=np.float32, accept_sparse="csr", order="C")
+            xs_updated = check_array(
+                xs_updated, dtype=np.float32, accept_sparse="csr", order="C"
+            )
             if updated_indices is None:
-                raise ValueError("If xs_updated are provided, updated_indices must also be provided!")
+                raise ValueError(
+                    "If xs_updated are provided, updated_indices must also be provided!"
+                )
             if self._is_sparse:
                 raise error_sparse_to_do
             else:
                 try:
                     updated_indices = list(map(int, updated_indices))
                 except (TypeError, ValueError):
-                    raise ValueError("Could not convert updated indices to list of int(s).")
+                    raise ValueError(
+                        "Could not convert updated indices to list of int(s)."
+                    )
                 n1 = len(updated_indices)
                 n2 = xs_updated.shape[0]
                 if n1 != n2:
@@ -1767,11 +1778,15 @@ class NNDescent:
             updated_indices = []
         if xs_fresh is None:
             if self._is_sparse:
-                xs_fresh = csr_matrix(([], [], []), shape=(0, self._raw_data.shape[1]), dtype=np.float32)
+                xs_fresh = csr_matrix(
+                    ([], [], []), shape=(0, self._raw_data.shape[1]), dtype=np.float32
+                )
             else:
                 xs_fresh = np.zeros((0, self._raw_data.shape[1]), dtype=np.float32)
         else:
-            xs_fresh = check_array(xs_fresh, dtype=np.float32, accept_sparse="csr", order="C")
+            xs_fresh = check_array(
+                xs_fresh, dtype=np.float32, accept_sparse="csr", order="C"
+            )
         # data preparation
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)
@@ -1787,9 +1802,7 @@ class NNDescent:
             self._raw_data = self._raw_data[original_order, :]
             for x_updated, i_fresh in zip(xs_updated, updated_indices):
                 self._raw_data[i_fresh] = x_updated
-            self._raw_data = np.ascontiguousarray(
-                np.vstack([self._raw_data, xs_fresh])
-            )
+            self._raw_data = np.ascontiguousarray(np.vstack([self._raw_data, xs_fresh]))
             ns, ds = self._neighbor_graph
             n_examples, n_neighbors = ns.shape
             indices_set = set(updated_indices)  # for fast "is element" checks

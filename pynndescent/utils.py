@@ -690,7 +690,9 @@ def initalize_heap_from_graph_indices(heap, graph_indices, data, metric):
 
 
 @numba.njit(cache=True)
-def initalize_heap_from_graph_indices_and_distances(heap, graph_indices, graph_distances):
+def initalize_heap_from_graph_indices_and_distances(
+    heap, graph_indices, graph_distances
+):
     for i in range(graph_indices.shape[0]):
         for idx in range(graph_indices.shape[1]):
             j = graph_indices[i, idx]
