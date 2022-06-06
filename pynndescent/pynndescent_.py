@@ -18,7 +18,6 @@ from scipy.sparse import (
 )
 
 import heapq
-import inspect
 
 import pynndescent.sparse as sparse
 import pynndescent.sparse_nndescent as sparse_nnd
