@@ -1723,12 +1723,12 @@ class NNDescent:
 
         updated_indices: array-like of size n_updates (optional, default=None)
             Something that is convertable to list of ints.
-            If, self is currently built from xs, then xs[update_indices[i]]
+            If self is currently built from xs, then xs[update_indices[i]]
             will be replaced by xs_updated[i].
 
         xs_fresh: np.ndarray (optional, default=None)
             2D array of the shape (n_fresh, dim) where dim is the dimension
-            of the data from which we build index
+            of the data from which we built self
 
         Returns
         -------
@@ -1807,7 +1807,7 @@ class NNDescent:
             indices_set = set(updated_indices)  # for fast "is element" checks
             for i in range(n_examples):
                 # maybe update whole row
-                if i in updated_indices:
+                if i in indices_set:
                     ns[i] = -1
                     ds[i] = np.inf
                     continue
