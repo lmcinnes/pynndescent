@@ -28,7 +28,7 @@ INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
 FlatTree = namedtuple(
-    "FlatTree", ["hyperplanes", "offsets", "children", "indices", "leaf_size"]
+    "FlatTree", ["hyperplanes", "offsets", "children", "indices", "leaf_size"], module=__name__
 )
 
 dense_hyperplane_type = numba.float32[::1]
