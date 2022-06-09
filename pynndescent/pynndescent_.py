@@ -1711,24 +1711,26 @@ class NNDescent:
 
     def update(self, xs_fresh=None, xs_updated=None, updated_indices=None):
         """
-        Updates the index with a) data that was updated (but should not be appended
-        to the existing data), and b) with fresh data (that is appended to
-        the existing data).
+        Updates the index with a) fresh data (that is appended to
+        the existing data), and b) data that was only updated (but should not be appended
+        to the existing data).
+
+        Not applicable to sparse data yet.
 
         Parameters
         ----------
+        xs_fresh: np.ndarray (optional, default=None)
+            2D array of the shape (n_fresh, dim) where dim is the dimension
+            of the data from which we built self.
+
         xs_updated: np.ndarray (optional, default=None)
             2D array of the shape (n_updates, dim) where dim is the dimension
-            of the data from which we built self
+            of the data from which we built self.
 
         updated_indices: array-like of size n_updates (optional, default=None)
             Something that is convertable to list of ints.
             If self is currently built from xs, then xs[update_indices[i]]
             will be replaced by xs_updated[i].
-
-        xs_fresh: np.ndarray (optional, default=None)
-            2D array of the shape (n_fresh, dim) where dim is the dimension
-            of the data from which we built self
 
         Returns
         -------

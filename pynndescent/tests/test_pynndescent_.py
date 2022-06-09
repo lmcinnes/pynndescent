@@ -536,7 +536,7 @@ def test_update_with_changed_data(update_data, case, metric):
         )
 
     k = 10
-    xs_orig, xs_updated, indices_updated, xs_fresh = update_data[case]
+    xs_orig, xs_fresh, xs_updated, indices_updated = update_data[case]
     queries1 = xs_orig
 
     # original
@@ -545,7 +545,7 @@ def test_update_with_changed_data(update_data, case, metric):
     evaluate(index, xs_orig, queries1)
     # updated
     index.update(
-        xs_updated=xs_updated, updated_indices=indices_updated, xs_fresh=xs_fresh
+        xs_fresh=xs_fresh, xs_updated=xs_updated, updated_indices=indices_updated
     )
     if xs_fresh is not None:
         xs = np.vstack((xs_orig, xs_fresh))
