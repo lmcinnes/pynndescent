@@ -1709,7 +1709,7 @@ class NNDescent:
 
         return indices, dists
 
-    def update(self, xs_updated=None, updated_indices=None, xs_fresh=None):
+    def update(self, xs_fresh=None, xs_updated=None, updated_indices=None):
         """
         Updates the index with a) data that was updated (but should not be appended
         to the existing data), and b) with fresh data (that is appended to
