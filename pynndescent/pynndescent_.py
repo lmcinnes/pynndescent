@@ -906,12 +906,13 @@ class NNDescent:
                         _init_graph, init_graph, data, self._distance_func
                     )
                 elif init_graph.shape != init_dist.shape:
-                    raise ValueError("The shapes of init graph and init distances do not match!")
+                    raise ValueError(
+                        "The shapes of init graph and init distances do not match!"
+                    )
                 else:
                     _init_graph = initalize_heap_from_graph_indices_and_distances(
                         _init_graph, init_graph, init_dist
                     )
-
 
             if verbose:
                 print(ts(), "NN descent for", str(n_iters), "iterations")
@@ -989,7 +990,9 @@ class NNDescent:
                         self._angular_trees,
                     )
                     self._search_forest = [
-                        convert_tree_format(tree, self._raw_data.shape[0], self._raw_data.shape[1])
+                        convert_tree_format(
+                            tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                        )
                         for tree in rp_forest
                     ]
                 else:
@@ -1008,7 +1011,9 @@ class NNDescent:
                 best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
                 del self._rp_forest
                 self._search_forest = [
-                    convert_tree_format(tree, self._raw_data.shape[0], self._raw_data.shape[1])
+                    convert_tree_format(
+                        tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                    )
                     for tree in best_trees
                 ]
 
@@ -1704,27 +1709,118 @@ class NNDescent:
 
         return indices, dists
 
-    def update(self, X):
+    def update(self, xs_fresh=None, xs_updated=None, updated_indices=None):
+        """
+        Updates the index with a) fresh data (that is appended to
+        the existing data), and b) data that was only updated (but should not be appended
+        to the existing data).
+
+        Not applicable to sparse data yet.
+
+        Parameters
+        ----------
+        xs_fresh: np.ndarray (optional, default=None)
+            2D array of the shape (n_fresh, dim) where dim is the dimension
+            of the data from which we built self.
+
+        xs_updated: np.ndarray (optional, default=None)
+            2D array of the shape (n_updates, dim) where dim is the dimension
+            of the data from which we built self.
+
+        updated_indices: array-like of size n_updates (optional, default=None)
+            Something that is convertable to list of ints.
+            If self is currently built from xs, then xs[update_indices[i]]
+            will be replaced by xs_updated[i].
+
+        Returns
+        -------
+            None
+        """
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
-        X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
-
+        error_sparse_to_do = NotImplementedError("Sparse update not complete yet")
+        # input checks
+        if xs_updated is not None:
+            xs_updated = check_array(
+                xs_updated, dtype=np.float32, accept_sparse="csr", order="C"
+            )
+            if updated_indices is None:
+                raise ValueError(
+                    "If xs_updated are provided, updated_indices must also be provided!"
+                )
+            if self._is_sparse:
+                raise error_sparse_to_do
+            else:
+                try:
+                    updated_indices = list(map(int, updated_indices))
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        "Could not convert updated indices to list of int(s)."
+                    )
+                n1 = len(updated_indices)
+                n2 = xs_updated.shape[0]
+                if n1 != n2:
+                    raise ValueError(
+                        f"Number of updated indices ({n1}) must match "
+                        f"number of rows of xs_updated ({n2})."
+                    )
+        else:
+            if updated_indices is not None:
+                warn(
+                    "xs_updated not provided, while update_indices provided. "
+                    "They will be ignored."
+                )
+                updated_indices = None
+        if updated_indices is None:
+            # make an empty iterable instead
+            xs_updated = []
+            updated_indices = []
+        if xs_fresh is None:
+            if self._is_sparse:
+                xs_fresh = csr_matrix(
+                    ([], [], []), shape=(0, self._raw_data.shape[1]), dtype=np.float32
+                )
+            else:
+                xs_fresh = np.zeros((0, self._raw_data.shape[1]), dtype=np.float32)
+        else:
+            xs_fresh = check_array(
+                xs_fresh, dtype=np.float32, accept_sparse="csr", order="C"
+            )
+        # data preparation
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)
         else:
             original_order = np.ones(self._raw_data.shape[0], dtype=np.bool_)
-
         if self._is_sparse:
-            self._raw_data = sparse_vstack([self._raw_data, X])
+            self._raw_data = sparse_vstack([self._raw_data, xs_fresh])
+            if updated_indices:
+                # cannot be reached due to the check above,
+                # but will leave this here as a marker
+                raise error_sparse_to_do
         else:
-            self._raw_data = np.ascontiguousarray(
-                np.vstack([self._raw_data[original_order, :], X])
-            )
-
+            self._raw_data = self._raw_data[original_order, :]
+            for x_updated, i_fresh in zip(xs_updated, updated_indices):
+                self._raw_data[i_fresh] = x_updated
+            self._raw_data = np.ascontiguousarray(np.vstack([self._raw_data, xs_fresh]))
+            ns, ds = self._neighbor_graph
+            n_examples, n_neighbors = ns.shape
+            indices_set = set(updated_indices)  # for fast "is element" checks
+            for i in range(n_examples):
+                # maybe update whole row
+                if i in indices_set:
+                    ns[i] = -1
+                    ds[i] = np.inf
+                    continue
+                # maybe update some columns
+                for j in range(n_neighbors):
+                    if ns[i, j] in indices_set:
+                        ns[i, j] = -1
+                        ds[i, j] = np.inf
+        # update neighbors
         if self._is_sparse:
-            raise NotImplementedError("Sparse update not complete yet")
+            raise error_sparse_to_do
         else:
             self.n_trees = self.n_trees_after_update
             self._rp_forest = make_forest(
@@ -1781,71 +1877,6 @@ class NNDescent:
                     del self._search_function
 
                 self.prepare()
-
-    @staticmethod
-    def update_with_changed_data(
-            index,
-            xs_updated=None, updated_indices=None, xs_fresh=None,
-            **init_kwargs
-    ):
-        """
-        Updates the index with a) data that was updated (but should not be appended
-        to the existing data), and b) with fresh data (that is appended to
-        the existing data).
-
-        Parameters
-        ----------
-        index: NNDescent
-            Previously constructed index that we want to update
-
-        xs_updated: np.ndarray (optional, default=None)
-            2D array of the shape (n_updates, dim) where dim is the dimension
-            of the data from which we build index
-
-        updated_indices: array-like of size n_updates (optional, default=None)
-            Something that is convertable to list of ints.
-            Row with index update_indices[i] will be replaced by xs_updated[i].
-
-        xs_fresh: np.ndarray (optional, default=None)
-            2D array of the shape (n_fresh, dim) where dim is the dimension
-            of the data from which we build index
-
-        Returns
-        -------
-            If xs_updated is not None a new NNDescent object, built from index.
-            Otherwise, the same object with updated structures.
-
-        """
-        if "init_graph" in init_kwargs:
-            raise ValueError("Do not pass init_graph via kwargs.")
-        if xs_updated is not None:
-            assert updated_indices is not None, "Provide update indices."
-            try:
-                updated_indices = list(map(int, updated_indices))
-            except (TypeError, ValueError):
-                raise ValueError("Could not convert updated indices to list of int(s).")
-            xs_updated = check_array(xs_updated, dtype=np.float32, accept_sparse="csr", order="C")
-            
-            ns, ds = index.neighbor_graph
-            n_updated = xs_updated.shape[0]
-            assert n_updated == len(updated_indices), (n_updated, len(updated_indices))
-            raw_data = index._raw_data[np.argsort(index._vertex_order)]
-            n_examples, n_dim = raw_data.shape
-            for x_updated, i_fresh in zip(xs_updated, updated_indices):
-                raw_data[i_fresh] = x_updated
-            indices_set = set(updated_indices)
-            # update whole rows
-            for i in updated_indices:
-                ns[i] = -1
-            # update some columns
-            for i in range(n_examples):
-                for j in range(n_dim):
-                    if j in indices_set:
-                        ns[i, j] = -1
-            index = NNDescent(raw_data, init_graph=ns, init_dist=ds, **init_kwargs)
-        if xs_fresh is not None:
-            index.update(xs_fresh)
-        return index
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
