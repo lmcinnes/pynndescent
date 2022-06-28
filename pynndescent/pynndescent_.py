@@ -1353,9 +1353,12 @@ class NNDescent:
             return result
 
         self._search_function = search_closure
-        self._deheap_function = numba.njit(parallel=self.parallel_batch_queries)(
-            deheap_sort.py_func
-        )
+        if hasattr(deheap_sort, "py_func"):
+            self._deheap_function = numba.njit(parallel=self.parallel_batch_queries)(
+                deheap_sort.py_func
+            )
+        else:
+            self._deheap_function = deheap_sort
 
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = self._raw_data[:1]
@@ -1580,9 +1583,12 @@ class NNDescent:
             return result
 
         self._search_function = search_closure
-        self._deheap_function = numba.njit(parallel=self.parallel_batch_queries)(
-            deheap_sort.py_func
-        )
+        if hasattr(deheap_sort, "py_func"):
+            self._deheap_function = numba.njit(parallel=self.parallel_batch_queries)(
+                deheap_sort.py_func
+            )
+        else:
+            self._deheap_function = deheap_sort
 
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = self._raw_data[:1]
