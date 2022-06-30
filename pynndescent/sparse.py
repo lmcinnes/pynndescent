@@ -453,10 +453,7 @@ def sparse_canberra(ind1, data1, ind2, data2):
     numer_data = np.abs(numer_data)
 
     _, val_data = sparse_mul(numer_inds, numer_data, denom_inds, denom_data)
-    result = 0.0
-    for val in val_data:
-        result += val
-
+    result = np.sum(val_data)
     return result
 
 
