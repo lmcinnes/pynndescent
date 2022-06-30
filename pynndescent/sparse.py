@@ -616,12 +616,9 @@ def sparse_sokal_sneath(ind1, data1, ind2, data2):
 @numba.njit()
 def sparse_cosine(ind1, data1, ind2, data2):
     _, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = np.sum(aux_data)
     norm1 = norm(data1)
     norm2 = norm(data2)
-
-    for val in aux_data:
-        result += val
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0
