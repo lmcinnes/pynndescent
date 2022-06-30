@@ -456,7 +456,6 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     n_right = 0
     side = np.empty(indices.shape[0], np.int8)
     for i in range(indices.shape[0]):
-        margin = hyperplane_offset
         i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
