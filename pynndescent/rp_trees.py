@@ -350,14 +350,12 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
     n_right = 0
     side = np.empty(indices.shape[0], np.int8)
     for i in range(indices.shape[0]):
-        margin = 0.0
 
         i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
         _, mul_data = sparse_mul(hyperplane_inds, hyperplane_data, i_inds, i_data)
-        for val in mul_data:
-            margin += val
+        margin=np.sum(mul_data)
 
         if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
@@ -463,8 +461,7 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
         _, mul_data = sparse_mul(hyperplane_inds, hyperplane_data, i_inds, i_data)
-        for val in mul_data:
-            margin += val
+        margin = hyperplane_offset + np.sum(mul_data)
 
         if abs(margin) < EPS:
             side[i] = abs(tau_rand_int(rng_state)) % 2
