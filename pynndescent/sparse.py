@@ -689,20 +689,15 @@ def sparse_alternative_dot(ind1, data1, ind2, data2):
 @numba.njit()
 def sparse_correlation(ind1, data1, ind2, data2, n_features):
 
-    mu_x = np.sum([data1[i] for i in range(data1.shape[0])])
-    mu_y = np.sum([data2[i] for i in range(data2.shape[0])])
     dot_product = 0.0
 
     if ind1.shape[0] == 0 and ind2.shape[0] == 0:
         return 0.0
     elif ind1.shape[0] == 0 or ind2.shape[0] == 0:
         return 1.0
-
-    for i in range(data1.shape[0]):
-        mu_x += data1[i]
-    for i in range(data2.shape[0]):
-        mu_y += data2[i]
-
+    mu_x = np.sum([data1[i] for i in range(data1.shape[0])])
+    mu_y = np.sum([data2[i] for i in range(data2.shape[0])])
+    
     mu_x /= n_features
     mu_y /= n_features
 
