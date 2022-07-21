@@ -42,6 +42,7 @@ configuration = {
         "numba >= 0.51.2",
         "llvmlite >= 0.30",
         "joblib >= 0.11",
+        'importlib-metadata >= 4.8.1; python_version < "3.8"',
     ],
     "ext_modules": [],
     "cmdclass": {},
