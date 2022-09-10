@@ -309,7 +309,7 @@ def test_spearmanr():
 
     scipy_expected = stats.spearmanr(x, y)
     r = dist.spearmanr(x, y)
-    assert_array_equal(r, scipy_expected.correlation)
+    assert_array_almost_equal(r, scipy_expected.correlation)
 
 
 def test_alternative_distances():
