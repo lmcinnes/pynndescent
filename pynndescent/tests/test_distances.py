@@ -174,7 +174,7 @@ def test_sparse_spatial_check(sparse_spatial_data, metric, decimal=6):
 )
 def test_sparse_binary_check(sparse_binary_data, metric):
     if metric in spdist.sparse_named_distances:
-        dist_matrix = pairwise_distances(sparse_binary_data.todense(), metric=metric)
+        dist_matrix = pairwise_distances(np.asarray(sparse_binary_data.todense()), metric=metric)
     if metric in ("jaccard", "dice", "sokalsneath"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
     if metric in ("kulsinski", "russellrao"):
