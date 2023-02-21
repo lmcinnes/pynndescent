@@ -141,6 +141,18 @@ def angular_random_projection_split(data, indices, rng_state):
             side[i] = 1
             n_right += 1
 
+    # If all points end up on one side, something went wrong numerically
+    # In this case, assign points randomly; they are likely very close anyway
+    if n_left == 0 or n_right == 0:
+        n_left = 0
+        n_right = 0
+        for i in range(indices.shape[0]):
+            side[i] = tau_rand_int(rng_state) % 2
+            if side[i] == 0:
+                n_left += 1
+            else:
+                n_right += 1
+
     # Now that we have the counts allocate arrays
     indices_left = np.empty(n_left, dtype=np.int32)
     indices_right = np.empty(n_right, dtype=np.int32)
@@ -247,6 +259,18 @@ def euclidean_random_projection_split(data, indices, rng_state):
         else:
             side[i] = 1
             n_right += 1
+
+    # If all points end up on one side, something went wrong numerically
+    # In this case, assign points randomly; they are likely very close anyway
+    if n_left == 0 or n_right == 0:
+        n_left = 0
+        n_right = 0
+        for i in range(indices.shape[0]):
+            side[i] = tau_rand_int(rng_state) % 2
+            if side[i] == 0:
+                n_left += 1
+            else:
+                n_right += 1
 
     # Now that we have the counts allocate arrays
     indices_left = np.empty(n_left, dtype=np.int32)
@@ -372,6 +396,18 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
             side[i] = 1
             n_right += 1
 
+    # If all points end up on one side, something went wrong numerically
+    # In this case, assign points randomly; they are likely very close anyway
+    if n_left == 0 or n_right == 0:
+        n_left = 0
+        n_right = 0
+        for i in range(indices.shape[0]):
+            side[i] = tau_rand_int(rng_state) % 2
+            if side[i] == 0:
+                n_left += 1
+            else:
+                n_right += 1
+
     # Now that we have the counts allocate arrays
     indices_left = np.empty(n_left, dtype=np.int32)
     indices_right = np.empty(n_right, dtype=np.int32)
@@ -479,6 +515,18 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
             side[i] = 1
             n_right += 1
 
+    # If all points end up on one side, something went wrong numerically
+    # In this case, assign points randomly; they are likely very close anyway
+    if n_left == 0 or n_right == 0:
+        n_left = 0
+        n_right = 0
+        for i in range(indices.shape[0]):
+            side[i] = abs(tau_rand_int(rng_state)) % 2
+            if side[i] == 0:
+                n_left += 1
+            else:
+                n_right += 1
+
     # Now that we have the counts allocate arrays
     indices_left = np.empty(n_left, dtype=np.int32)
     indices_right = np.empty(n_right, dtype=np.int32)
@@ -513,8 +561,9 @@ def make_euclidean_tree(
     point_indices,
     rng_state,
     leaf_size=30,
+    max_depth=100,
 ):
-    if indices.shape[0] > leaf_size:
+    if indices.shape[0] > leaf_size and max_depth > 0:
         (
             left_indices,
             right_indices,
@@ -531,6 +580,7 @@ def make_euclidean_tree(
             point_indices,
             rng_state,
             leaf_size,
+            max_depth - 1,
         )
 
         left_node_num = len(point_indices) - 1
@@ -544,6 +594,7 @@ def make_euclidean_tree(
             point_indices,
             rng_state,
             leaf_size,
+            max_depth - 1,
         )
 
         right_node_num = len(point_indices) - 1
@@ -579,8 +630,9 @@ def make_angular_tree(
     point_indices,
     rng_state,
     leaf_size=30,
+    max_depth=100,
 ):
-    if indices.shape[0] > leaf_size:
+    if indices.shape[0] > leaf_size and max_depth > 0:
         (
             left_indices,
             right_indices,
@@ -597,6 +649,7 @@ def make_angular_tree(
             point_indices,
             rng_state,
             leaf_size,
+            max_depth - 1,
         )
 
         left_node_num = len(point_indices) - 1
@@ -610,6 +663,7 @@ def make_angular_tree(
             point_indices,
             rng_state,
             leaf_size,
+            max_depth - 1,
         )
 
         right_node_num = len(point_indices) - 1
@@ -643,8 +697,9 @@ def make_sparse_euclidean_tree(
     point_indices,
     rng_state,
     leaf_size=30,
+    max_depth=100,
 ):
-    if indices.shape[0] > leaf_size:
+    if indices.shape[0] > leaf_size and max_depth > 0:
         (
             left_indices,
             right_indices,
@@ -665,6 +720,7 @@ def make_sparse_euclidean_tree(
             point_indices,
             rng_state,
             leaf_size,
+            max_depth - 1,
         )
 
         left_node_num = len(point_indices) - 1
@@ -680,6 +736,7 @@ def make_sparse_euclidean_tree(
             point_indices,
             rng_state,
             leaf_size,
+            max_depth - 1,
         )
 
         right_node_num = len(point_indices) - 1
@@ -713,8 +770,9 @@ def make_sparse_angular_tree(
     point_indices,
     rng_state,
     leaf_size=30,
+    max_depth=100,
 ):
-    if indices.shape[0] > leaf_size:
+    if indices.shape[0] > leaf_size and max_depth > 0:
         (
             left_indices,
             right_indices,
@@ -735,6 +793,7 @@ def make_sparse_angular_tree(
             point_indices,
             rng_state,
             leaf_size,
+            max_depth - 1,
         )
 
         left_node_num = len(point_indices) - 1
@@ -750,6 +809,7 @@ def make_sparse_angular_tree(
             point_indices,
             rng_state,
             leaf_size,
+            max_depth - 1,
         )
 
         right_node_num = len(point_indices) - 1
@@ -1047,7 +1107,6 @@ def rptree_leaf_array(rp_forest):
 def recursive_convert(
     tree, hyperplanes, offsets, children, indices, node_num, leaf_start, tree_node
 ):
-
     if tree.children[tree_node][0] < 0:
         leaf_end = leaf_start + len(tree.indices[tree_node])
         children[node_num, 0] = -leaf_start
@@ -1087,7 +1146,6 @@ def recursive_convert(
 def recursive_convert_sparse(
     tree, hyperplanes, offsets, children, indices, node_num, leaf_start, tree_node
 ):
-
     if tree.children[tree_node][0] < 0:
         leaf_end = leaf_start + len(tree.indices[tree_node])
         children[node_num, 0] = -leaf_start
@@ -1176,7 +1234,6 @@ FLAT_TREE_LEAF_SIZE = 4
 
 
 def denumbaify_tree(tree):
-
     result = (
         tree.hyperplanes,
         tree.offsets,
@@ -1189,7 +1246,6 @@ def denumbaify_tree(tree):
 
 
 def renumbaify_tree(tree):
-
     result = FlatTree(
         tree[FLAT_TREE_HYPERPLANES],
         tree[FLAT_TREE_OFFSETS],
