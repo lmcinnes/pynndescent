@@ -287,6 +287,24 @@ def test_deduplicated_data_behaves_normally(seed, cosine_hang_data):
     ), "NN-descent did not get 95% accuracy on nearest neighbors"
 
 
+def test_rp_trees_should_not_stack_overflow_with_near_duplicate_data(seed, cosine_near_duplicates_data):
+
+    n_neighbors = 10
+    knn_indices, _ = NNDescent(
+        cosine_near_duplicates_data,
+        "cosine",
+        {},
+        n_neighbors,
+        random_state=np.random.RandomState(seed),
+        n_trees=20,
+    )._neighbor_graph
+
+    for i in range(cosine_near_duplicates_data.shape[0]):
+        assert len(knn_indices[i]) == len(
+            np.unique(knn_indices[i])
+        ), "Duplicate graph_indices in knn graph"
+
+
 def test_output_when_verbose_is_true(spatial_data, seed):
     out = io.StringIO()
     with redirect_stdout(out):
