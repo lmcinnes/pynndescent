@@ -64,6 +64,13 @@ def cosine_hang_data():
 
 
 @pytest.fixture
+def cosine_near_duplicates_data():
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    data_path = os.path.join(this_dir, "test_data/cosine_near_duplicates.npy")
+    return np.load(data_path)
+
+
+@pytest.fixture
 def small_data():
     return np.random.uniform(40, 5, size=(20, 5))
 
