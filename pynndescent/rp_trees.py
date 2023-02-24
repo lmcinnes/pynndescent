@@ -549,7 +549,6 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
 
 @numba.njit(
     nogil=True,
-    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_euclidean_tree(
@@ -614,7 +613,6 @@ def make_euclidean_tree(
 
 @numba.njit(
     nogil=True,
-    cache=True,
     locals={
         "children": numba.types.ListType(children_type),
         "left_node_num": numba.types.int32,
@@ -683,7 +681,6 @@ def make_angular_tree(
 
 @numba.njit(
     nogil=True,
-    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_sparse_euclidean_tree(
@@ -756,7 +753,6 @@ def make_sparse_euclidean_tree(
 
 @numba.njit(
     nogil=True,
-    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_sparse_angular_tree(
