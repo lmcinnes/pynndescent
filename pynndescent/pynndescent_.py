@@ -776,6 +776,7 @@ class NNDescent:
 
         if metric == "dot":
             data = normalize(data, norm="l2", copy=copy_on_normalize)
+            self._raw_data = data
 
         self.rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64

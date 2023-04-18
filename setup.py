@@ -8,7 +8,7 @@ def readme():
 
 configuration = {
     "name": "pynndescent",
-    "version": "0.5.8",
+    "version": "0.5.9",
     "description": "Nearest Neighbor Descent",
     "long_description": readme(),
     "classifiers": [
@@ -16,7 +16,6 @@ configuration = {
         "Intended Audience :: Science/Research",
         "Intended Audience :: Developers",
         "License :: OSI Approved",
-        "Programming Language :: C",
         "Programming Language :: Python",
         "Topic :: Software Development",
         "Topic :: Scientific/Engineering",
