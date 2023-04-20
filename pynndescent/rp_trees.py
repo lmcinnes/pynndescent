@@ -821,7 +821,7 @@ def make_sparse_angular_tree(
         point_indices.append(indices)
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(nogil=True)
 def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
     indices = np.arange(data.shape[0]).astype(np.int32)
 
@@ -857,7 +857,7 @@ def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
     return result
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(nogil=True)
 def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=False):
     indices = np.arange(indptr.shape[0] - 1).astype(np.int32)
 
