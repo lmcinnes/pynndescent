@@ -1234,7 +1234,12 @@ class NNDescent:
         alternative_dot = pynnd_dist.alternative_dot
         alternative_cosine = pynnd_dist.alternative_cosine
 
-        data = self._raw_data
+        U, S, V = randomized_svd(self._raw_data, n_components=16)
+
+        # data = self._raw_data
+        data = U.astype(np.float32, order="C")
+        query_transform = (S[:, None] * V).astype(np.float32, order="C")
+
         indptr = self._search_graph.indptr
         indices = self._search_graph.indices
         dist = self._distance_func
@@ -1286,6 +1291,8 @@ class NNDescent:
                         continue
                 else:
                     current_query = query_points[i]
+
+                current_query = query_transform @ current_query
 
                 heap_priorities = result[1][i]
                 heap_indices = result[0][i]
