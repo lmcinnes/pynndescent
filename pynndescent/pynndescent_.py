@@ -7,6 +7,7 @@ from warnings import warn
 import numba
 import numpy as np
 from sklearn.utils import check_random_state, check_array
+from sklearn.utils.extmath import randomized_svd
 from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import (
