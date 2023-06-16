@@ -104,7 +104,7 @@ stages:
 
   - stage: BuildPublishArtifact
     dependsOn: RunAllTests
-    condition: and(startsWith(variables['Build.SourceBranch'], 'refs/tags/release-'), eq(variables.triggeredByPullRequest, false))
+    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/release-'), eq(variables.triggeredByPullRequest, false))
     jobs:
       - job: BuildArtifacts
         displayName: Build source dists and wheels    
