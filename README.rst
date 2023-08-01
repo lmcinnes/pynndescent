@@ -4,14 +4,8 @@
   :alt: PyNNDescent Logo
 
 .. image:: https://dev.azure.com/lelandmcinnes/UMAP%20project%20builds/_apis/build/status/lmcinnes.pynndescent?branchName=master
-    :target: .. _build_status: https://dev.azure.com/lelandmcinnes/UMAP%20project%20builds/_build/latest?definitionId=2&branchName=master
+    :target: https://dev.azure.com/lelandmcinnes/UMAP%20project%20builds/_build/latest?definitionId=2&branchName=master
     :alt: Azure Pipelines Build Status
-.. image:: https://img.shields.io/lgtm/alerts/g/lmcinnes/pynndescent.svg
-    :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/alerts
-    :alt: LGTM Alerts
-.. image:: https://img.shields.io/lgtm/grade/python/g/lmcinnes/pynndescent.svg
-    :target: https://lgtm.com/projects/g/lmcinnes/pynndescent/context:python
-    :alt: LGTM Grade
 .. image:: https://readthedocs.org/projects/pynndescent/badge/?version=latest
     :target: https://pynndescent.readthedocs.io/en/latest/?badge=latest
     :alt: Documentation Status
