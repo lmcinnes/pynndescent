@@ -853,7 +853,12 @@ def make_dense_tree(data, rng_state, leaf_size=30, angular=False):
             leaf_size,
         )
 
-    result = FlatTree(hyperplanes, offsets, children, point_indices, leaf_size)
+    max_leaf_size = leaf_size
+    for points in point_indices:
+        if len(points) > max_leaf_size:
+            max_leaf_size = numba.int32(len(points))
+
+    result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
     return result
 
 
@@ -893,7 +898,12 @@ def make_sparse_tree(inds, indptr, spdata, rng_state, leaf_size=30, angular=Fals
             leaf_size,
         )
 
-    return FlatTree(hyperplanes, offsets, children, point_indices, leaf_size)
+    max_leaf_size = leaf_size
+    for points in point_indices:
+        if len(points) > max_leaf_size:
+            max_leaf_size = numba.int32(len(points))
+
+    return FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
 
 
 @numba.njit(
@@ -1067,14 +1077,14 @@ def make_forest(
     return tuple(result)
 
 
-@numba.njit(nogil=True, cache=True)
-def get_leaves_from_tree(tree):
+#@numba.njit(nogil=True)
+def get_leaves_from_tree(tree, max_leaf_size):
     n_leaves = 0
     for i in range(len(tree.children)):
         if tree.children[i][0] == -1 and tree.children[i][1] == -1:
             n_leaves += 1
 
-    result = np.full((n_leaves, tree.leaf_size), -1, dtype=np.int32)
+    result = np.full((n_leaves, max_leaf_size), -1, dtype=np.int32)
     leaf_index = 0
     for i in range(len(tree.indices)):
         if tree.children[i][0] == -1 or tree.children[i][1] == -1:
@@ -1086,8 +1096,9 @@ def get_leaves_from_tree(tree):
 
 
 def rptree_leaf_array_parallel(rp_forest):
+    max_leaf_size = np.max([rp_tree.leaf_size for rp_tree in rp_forest])
     result = joblib.Parallel(n_jobs=-1, require="sharedmem")(
-        joblib.delayed(get_leaves_from_tree)(rp_tree) for rp_tree in rp_forest
+        joblib.delayed(get_leaves_from_tree)(rp_tree, max_leaf_size) for rp_tree in rp_forest
     )
     return result
 
