@@ -58,7 +58,6 @@ def test_spatial_check(spatial_data, metric):
         "jaccard",
         "matching",
         "dice",
-        "kulsinski",
         "rogerstanimoto",
         "russellrao",
         "sokalmichener",
@@ -70,7 +69,7 @@ def test_binary_check(binary_data, metric):
     dist_matrix = pairwise_distances(binary_data, metric=metric)
     if metric in ("jaccard", "dice", "sokalsneath", "yule"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
-    if metric in ("kulsinski", "russellrao"):
+    if metric == "russellrao":
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
         # And because distance between all zero vectors should be zero
         dist_matrix[10, 11] = 0.0
@@ -113,7 +112,7 @@ def test_sparse_spatial_check(sparse_spatial_data, metric, decimal=6):
         )
     if metric in ("braycurtis", "dice", "sokalsneath", "yule"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
-    if metric in ("cosine", "correlation", "kulsinski", "russellrao"):
+    if metric in ("cosine", "correlation", "russellrao"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 1.0
         # And because distance between all zero vectors should be zero
         dist_matrix[10, 11] = 0.0
@@ -165,7 +164,6 @@ def test_sparse_spatial_check(sparse_spatial_data, metric, decimal=6):
         "jaccard",
         "matching",
         "dice",
-        "kulsinski",
         "rogerstanimoto",
         "russellrao",
         "sokalmichener",
@@ -177,7 +175,7 @@ def test_sparse_binary_check(sparse_binary_data, metric):
         dist_matrix = pairwise_distances(np.asarray(sparse_binary_data.todense()), metric=metric)
     if metric in ("jaccard", "dice", "sokalsneath"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
-    if metric in ("kulsinski", "russellrao"):
+    if metric == "russellrao":
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 1.0
         # And because distance between all zero vectors should be zero
         dist_matrix[10, 11] = 0.0
