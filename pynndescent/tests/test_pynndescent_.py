@@ -684,5 +684,5 @@ def test_tree_no_split(small_data, sparse_small_data, metric):
 
 @pytest.mark.skipif('NUMBA_DISABLE_JIT' in os.environ, reason="Too expensive for disabled Numba")
 def test_bad_data():
-    data = np.sqrt(np.load("test_data/pynndescent_bug_np.npz")['arr_0'])
+    data = np.sqrt(np.load("pynndescent/tests/test_data/pynndescent_bug_np.npz")['arr_0'])
     index = NNDescent(data, metric="cosine")
