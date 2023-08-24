@@ -53,7 +53,7 @@ def generate_leaf_updates(leaf_block, dist_thresholds, inds, indptr, data, dist)
     return updates
 
 
-@numba.njit(locals={"d": numba.float32, "p": numba.int32, "q": numba.int32}, cache=True)
+@numba.njit(locals={"d": numba.float32, "p": numba.int32, "q": numba.int32}, cache=False)
 def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
@@ -99,7 +99,7 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
 @numba.njit(
     fastmath=True,
     locals={"d": numba.float32, "i": numba.int32, "idx": numba.int32},
-    cache=True,
+    cache=False,
 )
 def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
     n_samples = indptr.shape[0] - 1
