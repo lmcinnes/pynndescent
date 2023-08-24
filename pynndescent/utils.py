@@ -676,7 +676,7 @@ def apply_graph_updates_high_memory(current_graph, updates, in_graph):
     return n_changes
 
 
-@numba.njit(cache=True)
+@numba.njit(cache=False)
 def initalize_heap_from_graph_indices(heap, graph_indices, data, metric):
 
     for i in range(graph_indices.shape[0]):
