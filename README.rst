@@ -3,8 +3,8 @@
   :align: center
   :alt: PyNNDescent Logo
 
-.. image:: https://dev.azure.com/lelandmcinnes/UMAP%20project%20builds/_apis/build/status/lmcinnes.pynndescent?branchName=master
-    :target: https://dev.azure.com/lelandmcinnes/UMAP%20project%20builds/_build/latest?definitionId=2&branchName=master
+.. image:: https://dev.azure.com/TutteInstitute/build-pipelines/_apis/build/status%2Flmcinnes.pynndescent?branchName=master
+    :target: https://dev.azure.com/TutteInstitute/build-pipelines/_build?definitionId=17
     :alt: Azure Pipelines Build Status
 .. image:: https://readthedocs.org/projects/pynndescent/badge/?version=latest
     :target: https://pynndescent.readthedocs.io/en/latest/?badge=latest
