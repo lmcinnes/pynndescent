@@ -9,3 +9,5 @@ ipykernel
 nbsphinx
 matplotlib
 seaborn
+numpy
+pandas
