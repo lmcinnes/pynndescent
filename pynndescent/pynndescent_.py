@@ -630,6 +630,13 @@ class NNDescent:
         non-negligible computation cost in building the index. Don't tweak
         this value unless you know what you're doing.
 
+    max_rptree_depth: int (optional, default=100)
+        Maximum depth of random projection trees. Increasing this may result in a
+        richer, deeper random projection forest, but it may be composed of many
+        degenerate branches. Increase leaf_size in order to keep shallower, wider
+        nondegenerate trees. Such wide trees, however, may yield poor performance
+        of the preparation of the NN descent.
+
     n_iters: int (optional, default=None)
         The maximum number of NN-descent iterations to perform. The
         NN-descent algorithm can abort early if limited progress is being
@@ -679,6 +686,7 @@ class NNDescent:
         random_state=None,
         low_memory=True,
         max_candidates=None,
+        max_rptree_depth=200,
         n_iters=None,
         delta=0.001,
         n_jobs=None,
@@ -702,6 +710,7 @@ class NNDescent:
         self.prune_degree_multiplier = pruning_degree_multiplier
         self.diversify_prob = diversify_prob
         self.n_search_trees = n_search_trees
+        self.max_rptree_depth = max_rptree_depth
         self.max_candidates = max_candidates
         self.low_memory = low_memory
         self.n_iters = n_iters
@@ -800,6 +809,7 @@ class NNDescent:
                 current_random_state,
                 self.n_jobs,
                 self._angular_trees,
+                max_depth=self.max_rptree_depth,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
         else:
@@ -989,6 +999,7 @@ class NNDescent:
                         current_random_state,
                         self.n_jobs,
                         self._angular_trees,
+                        max_depth=self.max_rptree_depth,
                     )
                     self._search_forest = [
                         convert_tree_format(
@@ -1839,6 +1850,7 @@ class NNDescent:
                 current_random_state,
                 self.n_jobs,
                 self._angular_trees,
+                max_depth=self.max_rptree_depth,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
             current_graph = make_heap(self._raw_data.shape[0], self.n_neighbors)
