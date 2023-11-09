@@ -686,7 +686,7 @@ class NNDescent:
         random_state=None,
         low_memory=True,
         max_candidates=None,
-        max_rptree_depth=100,
+        max_rptree_depth=200,
         n_iters=None,
         delta=0.001,
         n_jobs=None,

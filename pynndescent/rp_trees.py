@@ -560,7 +560,7 @@ def make_euclidean_tree(
     point_indices,
     rng_state,
     leaf_size=30,
-    max_depth=100,
+    max_depth=200,
 ):
     if indices.shape[0] > leaf_size and max_depth > 0:
         (
@@ -628,7 +628,7 @@ def make_angular_tree(
     point_indices,
     rng_state,
     leaf_size=30,
-    max_depth=100,
+    max_depth=200,
 ):
     if indices.shape[0] > leaf_size and max_depth > 0:
         (
@@ -694,7 +694,7 @@ def make_sparse_euclidean_tree(
     point_indices,
     rng_state,
     leaf_size=30,
-    max_depth=100,
+    max_depth=200,
 ):
     if indices.shape[0] > leaf_size and max_depth > 0:
         (
@@ -766,7 +766,7 @@ def make_sparse_angular_tree(
     point_indices,
     rng_state,
     leaf_size=30,
-    max_depth=100,
+    max_depth=200,
 ):
     if indices.shape[0] > leaf_size and max_depth > 0:
         (
@@ -822,7 +822,7 @@ def make_sparse_angular_tree(
 
 
 @numba.njit(nogil=True)
-def make_dense_tree(data, rng_state, leaf_size=30, angular=False, max_depth=100):
+def make_dense_tree(data, rng_state, leaf_size=30, angular=False, max_depth=200):
     indices = np.arange(data.shape[0]).astype(np.int32)
 
     hyperplanes = numba.typed.List.empty_list(dense_hyperplane_type)
@@ -872,7 +872,7 @@ def make_sparse_tree(
     rng_state,
     leaf_size=30,
     angular=False,
-    max_depth=100,
+    max_depth=200,
 ):
     indices = np.arange(indptr.shape[0] - 1).astype(np.int32)
 
@@ -1034,7 +1034,7 @@ def make_forest(
     random_state,
     n_jobs=None,
     angular=False,
-    max_depth=100,
+    max_depth=200,
 ):
     """Build a random projection forest with ``n_trees``.
 
