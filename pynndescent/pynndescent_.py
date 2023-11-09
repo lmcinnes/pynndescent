@@ -630,6 +630,13 @@ class NNDescent:
         non-negligible computation cost in building the index. Don't tweak
         this value unless you know what you're doing.
 
+    max_rptree_depth: int (optional, default=100)
+        Maximum number of splits performed to build a random projection tree.
+        Increasing this may result in a richer, deeper random projection forest,
+        but it may be composed of many degenerate branches. Increase leaf_size
+        in order to keep shallower, wider nondegenerate trees. Such wide trees,
+        however, may yield poor performance of the preparation of the NN descent.
+
     n_iters: int (optional, default=None)
         The maximum number of NN-descent iterations to perform. The
         NN-descent algorithm can abort early if limited progress is being
