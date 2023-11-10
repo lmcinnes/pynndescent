@@ -1089,10 +1089,40 @@ def make_forest(
             )
     except (RuntimeError, RecursionError, SystemError):
         warn(
-            "Random Projection forest initialisation failed due to recursion"
+            "Random Projection forest initialisation failed due to recursion "
             "limit being reached. Something is a little strange with your "
             "graph_data, and this may take longer than normal to compute."
         )
+
+    # Because of our curtailing the depth of the RP trees, we might end up with
+    # some, and perhaps even all, of our trees holding wider leaves than the
+    # maximum leaf size. Let's drop these trees, as we compute the pairwise
+    # distance between the members of each data leaf (the runtime of which grows
+    # with the square of leaf size). If this means that RP forest initialisation
+    # is truncated in large part (or even entirely), so be it, we revert to
+    # random initialisation.
+    if result:
+        good_trees = [
+            tree
+            for tree in result
+            if tree.leaf_size <= leaf_size
+        ]
+        if len(result) - len(good_trees) > 2:
+            if good_trees:
+                msg = (
+                    f"Dropped {len(result) - len(good_trees)} trees out of the "
+                    f"forest, as issues in the similarity structure resulted in "
+                    "their degeneration."
+                )
+            else:
+                msg = (
+                    f"All the Random Projection trees were degenerate and "
+                    "too poor to constitute a good initialization strategy "
+                    "for the NN descent. We revert to random initialisation, "
+                    "which may take longer for the NN descent to converge."
+                )
+            warn(msg)
+        result = good_trees
 
     return tuple(result)
 
