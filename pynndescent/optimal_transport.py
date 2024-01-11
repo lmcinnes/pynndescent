@@ -76,6 +76,7 @@ SpanningTree = namedtuple(
         "state",  # state array
         "root",  # int
     ],
+    module=__name__,
 )
 DiGraph = namedtuple(
     "DiGraph",
@@ -90,6 +91,7 @@ DiGraph = namedtuple(
         "num_big_subsequences",  # int
         "mixing_coeff",
     ],
+    module=__name__,
 )
 NodeArcData = namedtuple(
     "NodeArcData",
@@ -101,9 +103,10 @@ NodeArcData = namedtuple(
         "source",  # unsigned int array
         "target",  # unsigned int array
     ],
+    module=__name__,
 )
 LeavingArcData = namedtuple(
-    "LeavingArcData", ["u_in", "u_out", "v_in", "delta", "change"]
+    "LeavingArcData", ["u_in", "u_out", "v_in", "delta", "change"], module=__name__
 )
 
 # Just reproduce a simpler version of numpy isclose (not numba supported yet)
