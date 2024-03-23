@@ -172,7 +172,9 @@ def test_sparse_spatial_check(sparse_spatial_data, metric, decimal=6):
 )
 def test_sparse_binary_check(sparse_binary_data, metric):
     if metric in spdist.sparse_named_distances:
-        dist_matrix = pairwise_distances(np.asarray(sparse_binary_data.todense()), metric=metric)
+        dist_matrix = pairwise_distances(
+            np.asarray(sparse_binary_data.todense()), metric=metric
+        )
     if metric in ("jaccard", "dice", "sokalsneath"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
     if metric == "russellrao":
@@ -393,4 +395,38 @@ def test_wasserstein_1d(p):
                 sparse_test_data[j].data,
                 p,
             )
+            assert np.isclose(d1, d2)
+
+
+def test_bit_hamming():
+    test_data = np.random.randint(0, 255, size=(10, 100), dtype=np.uint8)
+    unpacked_data = np.zeros(
+        (test_data.shape[0], test_data.shape[1] * 8), dtype=np.float32
+    )
+    for i in range(unpacked_data.shape[0]):
+        for j in range(unpacked_data.shape[1]):
+            unpacked_data[i, j] = (test_data[i, j // 8] & (1 << (j % 8))) > 0
+
+    all_pairs = pairwise_distances(unpacked_data, metric="hamming")
+    for i in range(test_data.shape[0]):
+        for j in range(i + 1, test_data.shape[0]):
+            d1 = dist.bit_hamming(test_data[i], test_data[j]) / (test_data.shape[1] * 8)
+            d2 = all_pairs[i, j]
+            assert np.isclose(d1, d2)
+
+
+def test_bit_jaccard():
+    test_data = np.random.randint(0, 255, size=(10, 100), dtype=np.uint8)
+    unpacked_data = np.zeros(
+        (test_data.shape[0], test_data.shape[1] * 8), dtype=np.float32
+    )
+    for i in range(unpacked_data.shape[0]):
+        for j in range(unpacked_data.shape[1]):
+            unpacked_data[i, j] = (test_data[i, j // 8] & (1 << (j % 8))) > 0
+
+    all_pairs = pairwise_distances(unpacked_data, metric="jaccard")
+    for i in range(test_data.shape[0]):
+        for j in range(i + 1, test_data.shape[0]):
+            d1 = 1.0 - np.exp(-dist.bit_jaccard(test_data[i], test_data[j]))
+            d2 = all_pairs[i, j]
             assert np.isclose(d1, d2)

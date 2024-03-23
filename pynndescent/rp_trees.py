@@ -33,10 +33,15 @@ FlatTree = namedtuple(
 
 dense_hyperplane_type = numba.float32[::1]
 sparse_hyperplane_type = numba.float64[:, ::1]
+bit_hyperplane_type = numba.uint8[::1]
 offset_type = numba.float64
 children_type = numba.typeof((np.int32(-1), np.int32(-1)))
 point_indices_type = numba.int32[::1]
 
+popcnt = np.array(
+    [bin(i).count('1') for i in range(256)],
+    dtype=np.float32
+)
 
 @numba.njit(
     numba.types.Tuple(
@@ -127,6 +132,136 @@ def angular_random_projection_split(data, indices, rng_state):
         margin = 0.0
         for d in range(dim):
             margin += hyperplane_vector[d] * data[indices[i], d]
+
+        if abs(margin) < EPS:
+            side[i] = tau_rand_int(rng_state) % 2
+            if side[i] == 0:
+                n_left += 1
+            else:
+                n_right += 1
+        elif margin > 0:
+            side[i] = 0
+            n_left += 1
+        else:
+            side[i] = 1
+            n_right += 1
+
+    # If all points end up on one side, something went wrong numerically
+    # In this case, assign points randomly; they are likely very close anyway
+    if n_left == 0 or n_right == 0:
+        n_left = 0
+        n_right = 0
+        for i in range(indices.shape[0]):
+            side[i] = tau_rand_int(rng_state) % 2
+            if side[i] == 0:
+                n_left += 1
+            else:
+                n_right += 1
+
+    # Now that we have the counts allocate arrays
+    indices_left = np.empty(n_left, dtype=np.int32)
+    indices_right = np.empty(n_right, dtype=np.int32)
+
+    # Populate the arrays with graph_indices according to which side they fell on
+    n_left = 0
+    n_right = 0
+    for i in range(side.shape[0]):
+        if side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    return indices_left, indices_right, hyperplane_vector, 0.0
+
+
+@numba.njit(
+    numba.types.Tuple(
+        (numba.int32[::1], numba.int32[::1], bit_hyperplane_type, offset_type)
+    )(numba.uint8[:, ::1], numba.int32[::1], numba.int64[::1]),
+    locals={
+        "n_left": numba.uint32,
+        "n_right": numba.uint32,
+        "hyperplane_vector": numba.uint8[::1],
+        "hyperplane_offset": numba.float32,
+        "margin": numba.float32,
+        "d": numba.uint32,
+        "i": numba.uint32,
+        "left_index": numba.uint32,
+        "right_index": numba.uint32,
+    },
+    fastmath=True,
+    nogil=True,
+    cache=True,
+)
+def angular_bitpacked_random_projection_split(data, indices, rng_state):
+    """Given a set of ``graph_indices`` for graph_data points from ``graph_data``, create
+    a random hyperplane to split the graph_data, returning two arrays graph_indices
+    that fall on either side of the hyperplane. This is the basis for a
+    random projection tree, which simply uses this splitting recursively.
+    This particular split uses cosine distance to determine the hyperplane
+    and which side each graph_data sample falls on.
+    Parameters
+    ----------
+    data: array of shape (n_samples, n_features)
+        The original graph_data to be split
+    indices: array of shape (tree_node_size,)
+        The graph_indices of the elements in the ``graph_data`` array that are to
+        be split in the current operation.
+    rng_state: array of int64, shape (3,)
+        The internal state of the rng
+    Returns
+    -------
+    indices_left: array
+        The elements of ``graph_indices`` that fall on the "left" side of the
+        random hyperplane.
+    indices_right: array
+        The elements of ``graph_indices`` that fall on the "left" side of the
+        random hyperplane.
+    """
+    dim = data.shape[1]
+
+    # Select two random points, set the hyperplane between them
+    left_index = tau_rand_int(rng_state) % indices.shape[0]
+    right_index = tau_rand_int(rng_state) % indices.shape[0]
+    right_index += left_index == right_index
+    right_index = right_index % indices.shape[0]
+    left = indices[left_index]
+    right = indices[right_index]
+
+    left_norm = 0.0
+    right_norm = 0.0
+
+    # Compute the normal vector to the hyperplane (the vector between
+    # the two points)
+    hyperplane_vector = np.empty(dim * 2, dtype=np.uint8)
+    positive_hyperplane_component = hyperplane_vector[:dim]
+    negative_hyperplane_component = hyperplane_vector[dim:]
+
+    for d in range(dim):
+        xor_vector = (data[left, d]) ^ (data[right, d])
+        positive_hyperplane_component[d] = xor_vector & (data[left, d])
+        negative_hyperplane_component[d] = xor_vector & (data[right, d])
+
+    hyperplane_norm = 0.0
+
+    for d in range(dim):
+        hyperplane_norm += popcnt[hyperplane_vector[d]]
+        left_norm += popcnt[data[left, d]]
+        right_norm += popcnt[data[right, d]]
+
+    # For each point compute the margin (project into normal vector)
+    # If we are on lower side of the hyperplane put in one pile, otherwise
+    # put it in the other pile (if we hit hyperplane on the nose, flip a coin)
+    n_left = 0
+    n_right = 0
+    side = np.empty(indices.shape[0], np.int8)
+    for i in range(indices.shape[0]):
+        margin = 0.0
+        for d in range(dim):
+            margin += popcnt[positive_hyperplane_component[d] & data[indices[i], d]]
+            margin -= popcnt[negative_hyperplane_component[d] & data[indices[i], d]]
 
         if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
@@ -678,6 +813,73 @@ def make_angular_tree(
 
     return
 
+@numba.njit(
+    nogil=True,
+    locals={
+        "children": numba.types.ListType(children_type),
+        "left_node_num": numba.types.int32,
+        "right_node_num": numba.types.int32,
+    },
+)
+def make_bit_tree(
+    data,
+    indices,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    max_depth=200,
+):
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+        ) = angular_bitpacked_random_projection_split(data, indices, rng_state)
+
+        make_bit_tree(
+            data,
+            left_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_bit_tree(
+            data,
+            right_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([255], dtype=np.uint8))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
 
 @numba.njit(
     nogil=True,
@@ -824,7 +1026,6 @@ def make_sparse_angular_tree(
 @numba.njit(nogil=True)
 def make_dense_tree(data, rng_state, leaf_size=30, angular=False, max_depth=200):
     indices = np.arange(data.shape[0]).astype(np.int32)
-
     hyperplanes = numba.typed.List.empty_list(dense_hyperplane_type)
     offsets = numba.typed.List.empty_list(offset_type)
     children = numba.typed.List.empty_list(children_type)
@@ -918,6 +1119,38 @@ def make_sparse_tree(
     return FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
 
 
+@numba.njit(nogil=True)
+def make_dense_bit_tree(data, rng_state, leaf_size=30, angular=False, max_depth=200):
+    indices = np.arange(data.shape[0]).astype(np.int32)
+
+    hyperplanes = numba.typed.List.empty_list(bit_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+
+    if angular:
+        make_bit_tree(
+            data,
+            indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth=max_depth,
+        )
+    else:
+        raise NotImplementedError("Euclidean bit trees are not implemented yet.")
+
+    max_leaf_size = leaf_size
+    for points in point_indices:
+        if len(points) > max_leaf_size:
+            max_leaf_size = numba.int32(len(points))
+
+    result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
+    return result
+
 @numba.njit(
     [
         "b1(f4[::1],f4,f4[::1],i8[::1])",
@@ -941,6 +1174,43 @@ def select_side(hyperplane, offset, point, rng_state):
     dim = point.shape[0]
     for d in range(dim):
         margin += hyperplane[d] * point[d]
+
+    if abs(margin) < EPS:
+        side = np.abs(tau_rand_int(rng_state)) % 2
+        if side == 0:
+            return 0
+        else:
+            return 1
+    elif margin > 0:
+        return 0
+    else:
+        return 1
+
+
+@numba.njit(
+    [
+        "b1(u1[::1],f4,u1[::1],i8[::1])",
+        numba.types.boolean(
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.float32,
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "margin": numba.types.float32,
+        "dim": numba.types.intp,
+        "d": numba.types.uint16,
+    },
+    cache=True,
+)
+def select_side_bit(hyperplane, offset, point, rng_state):
+    margin = offset
+    dim = point.shape[0]
+    for d in range(dim):
+        margin += popcnt[hyperplane[d] & point[d]]
+        margin -= popcnt[hyperplane[dim + d] & point[d]]
 
     if abs(margin) < EPS:
         side = np.abs(tau_rand_int(rng_state)) % 2
@@ -980,6 +1250,32 @@ def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
 
     return indices[-children[node, 0] : -children[node, 1]]
 
+
+@numba.njit(
+    [
+        "i4[::1](u1[::1],u1[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])",
+        numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 2, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 2, "C", readonly=True),
+            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+        ),
+    ],
+    locals={"node": numba.types.uint32, "side": numba.types.boolean},
+    cache=True,
+)
+def search_flat_bit_tree(point, hyperplanes, offsets, children, indices, rng_state):
+    node = 0
+    while children[node, 0] > 0:
+        side = select_side_bit(hyperplanes[node], offsets[node], point, rng_state)
+        if side == 0:
+            node = children[node, 0]
+        else:
+            node = children[node, 1]
+
+    return indices[-children[node, 0] : -children[node, 1]]
 
 @numba.njit(fastmath=True, cache=True)
 def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
@@ -1034,6 +1330,7 @@ def make_forest(
     random_state,
     n_jobs=None,
     angular=False,
+    bit_tree=False,
     max_depth=200,
 ):
     """Build a random projection forest with ``n_trees``.
@@ -1073,6 +1370,17 @@ def make_forest(
                     leaf_size,
                     angular,
                     max_depth=max_depth,
+                )
+                for i in range(n_trees)
+            )
+        elif bit_tree:
+            result = joblib.Parallel(n_jobs=n_jobs, require="sharedmem")(
+                joblib.delayed(make_dense_bit_tree)(
+                    data,
+                    rng_states[i],
+                    leaf_size,
+                    angular,
+                    max_depth=max_depth
                 )
                 for i in range(n_trees)
             )
@@ -1130,7 +1438,7 @@ def rptree_leaf_array(rp_forest):
         return np.array([[-1]])
 
 
-@numba.njit()
+#@numba.njit()
 def recursive_convert(
     tree, hyperplanes, offsets, children, indices, node_num, leaf_start, tree_node
 ):
@@ -1229,8 +1537,11 @@ def convert_tree_format(tree, data_size, data_dim):
     is_sparse = False
     if tree.hyperplanes[0].ndim == 1:
         # dense hyperplanes
-        hyperplane_dim = data_dim
-        hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=np.float32)
+        if tree.hyperplanes[0].dtype == np.uint8:
+            hyperplane_dim = data_dim * 2
+        else:
+            hyperplane_dim = data_dim
+        hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=tree.hyperplanes[0].dtype)
     else:
         # sparse hyperplanes
         is_sparse = True

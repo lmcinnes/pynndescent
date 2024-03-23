@@ -22,6 +22,11 @@ _dummy_cost = np.zeros((2, 2), dtype=np.float64)
 FLOAT32_EPS = np.finfo(np.float32).eps
 FLOAT32_MAX = np.finfo(np.float32).max
 
+popcnt = np.array(
+    [bin(i).count('1') for i in range(256)],
+    dtype=np.float32
+)
+
 
 @numba.njit(fastmath=True)
 def euclidean(x, y):
@@ -890,6 +895,65 @@ def symmetric_kl_divergence(x, y):
     return result
 
 
+@numba.njit(
+    [
+        "f4(u1[::1],u1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "intersection": numba.types.uint8,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def bit_hamming(x, y):
+    result = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        intersection = x[i] ^ y[i]
+        result += popcnt[intersection]
+
+    return result
+
+
+@numba.njit(
+    [
+        "f4(u1[::1],u1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "denom": numba.types.float32,
+        "and_": numba.types.uint8,
+        "or_": numba.types.uint8,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def bit_jaccard(x, y):
+    result = 0.0
+    denom = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        and_ = x[i] & y[i]
+        or_ = x[i] | y[i]
+        result += popcnt[and_]
+        denom += popcnt[or_]
+
+    return -np.log(result / denom)
+
+
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
@@ -946,6 +1010,8 @@ named_distances = {
     "sokalsneath": sokal_sneath,
     "sokalmichener": sokal_michener,
     "yule": yule,
+    "bit_hamming": bit_hamming,
+    "bit_jaccard": bit_jaccard,
 }
 
 # Some distances have a faster to compute alternative that
