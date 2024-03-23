@@ -49,6 +49,7 @@ from pynndescent.rp_trees import (
     denumbaify_tree,
     renumbaify_tree,
     select_side,
+    select_side_bit,
     sparse_select_side,
     score_linked_tree,
 )
@@ -728,7 +729,13 @@ class NNDescent:
         else:
             copy_on_normalize = False
 
-        data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
+        if metric in ("bit_hamming", "bit_jaccard"):
+            data = check_array(data, dtype=np.uint8, order="C")
+            self._input_dtype = np.uint8
+        else:
+            data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
+            self._input_dtype = np.float32
+
         self._raw_data = data
 
         if not tree_init or n_trees == 0 or init_graph is not None:
@@ -778,10 +785,17 @@ class NNDescent:
             "jaccard",
             "hellinger",
             "hamming",
+            "bit_hamming",
+            "bit_jaccard",
         ):
             self._angular_trees = True
+            if metric in ("bit_hamming", "bit_jaccard"):
+                self._bit_trees = True
+            else:
+                self._bit_trees = False
         else:
             self._angular_trees = False
+            self._bit_trees = False
 
         if metric == "dot":
             data = normalize(data, norm="l2", copy=copy_on_normalize)
@@ -809,6 +823,7 @@ class NNDescent:
                 current_random_state,
                 self.n_jobs,
                 self._angular_trees,
+                self._bit_trees,
                 max_depth=self.max_rptree_depth,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
@@ -1210,27 +1225,50 @@ class NNDescent:
             tree_indices = self._search_forest[0].indices
             tree_children = self._search_forest[0].children
 
-            @numba.njit(
-                [
-                    numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
-                        numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-                        numba.types.Array(numba.types.int64, 1, "C", readonly=False),
-                    )
-                ],
-                locals={"node": numba.types.uint32, "side": numba.types.boolean},
-            )
-            def tree_search_closure(point, rng_state):
-                node = 0
-                while tree_children[node, 0] > 0:
-                    side = select_side(
-                        tree_hyperplanes[node], tree_offsets[node], point, rng_state
-                    )
-                    if side == 0:
-                        node = tree_children[node, 0]
-                    else:
-                        node = tree_children[node, 1]
+            if self._bit_trees:
+                @numba.njit(
+                    [
+                        numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
+                            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+                            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                        )
+                    ],
+                    locals={"node": numba.types.uint32, "side": numba.types.boolean},
+                )
+                def tree_search_closure(point, rng_state):
+                    node = 0
+                    while tree_children[node, 0] > 0:
+                        side = select_side_bit(
+                            tree_hyperplanes[node], tree_offsets[node], point, rng_state
+                        )
+                        if side == 0:
+                            node = tree_children[node, 0]
+                        else:
+                            node = tree_children[node, 1]
 
-                return -tree_children[node]
+                    return -tree_children[node]
+            else:
+                @numba.njit(
+                    [
+                        numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
+                            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+                            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                        )
+                    ],
+                    locals={"node": numba.types.uint32, "side": numba.types.boolean},
+                )
+                def tree_search_closure(point, rng_state):
+                    node = 0
+                    while tree_children[node, 0] > 0:
+                        side = select_side(
+                            tree_hyperplanes[node], tree_offsets[node], point, rng_state
+                        )
+                        if side == 0:
+                            node = tree_children[node, 0]
+                        else:
+                            node = tree_children[node, 1]
+
+                    return -tree_children[node]
 
             self._tree_search = tree_search_closure
         else:
@@ -1252,10 +1290,15 @@ class NNDescent:
         n_neighbors = self.n_neighbors
         parallel_search = self.parallel_batch_queries
 
+        if dist == pynnd_dist.bit_hamming or dist == pynnd_dist.bit_jaccard:
+            data_type = numba.types.uint8[::1]
+        else:
+            data_type = numba.types.float32[::1]
+
         @numba.njit(
             fastmath=True,
             locals={
-                "current_query": numba.types.float32[::1],
+                "current_query": data_type,
                 "i": numba.types.uint32,
                 "j": numba.types.uint32,
                 "heap_priorities": numba.types.float32[::1],
@@ -1267,7 +1310,7 @@ class NNDescent:
                 "visited": numba.types.uint8[::1],
                 "indices": numba.types.int32[::1],
                 "indptr": numba.types.int32[::1],
-                "data": numba.types.float32[:, ::1],
+                "data": data_type,
                 "heap_size": numba.types.int16,
                 "distance_scale": numba.types.float32,
                 "distance_bound": numba.types.float32,
@@ -1693,7 +1736,11 @@ class NNDescent:
             if not hasattr(self, "_search_function"):
                 self._init_search_function()
 
-            query_data = np.asarray(query_data).astype(np.float32, order="C")
+            if self.metric in ("bit_hamming", "bit_jaccard"):
+                query_data = np.asarray(query_data).astype(np.uint8, order="C")
+            else:
+                query_data = np.asarray(query_data).astype(np.float32, order="C")
+
             indices, dists, _ = self._search_function(
                 query_data, k, epsilon, self._visited, self.search_rng_state
             )
@@ -1762,7 +1809,7 @@ class NNDescent:
         # input checks
         if xs_updated is not None:
             xs_updated = check_array(
-                xs_updated, dtype=np.float32, accept_sparse="csr", order="C"
+                xs_updated, dtype=self._input_dtype, accept_sparse="csr", order="C"
             )
             if updated_indices is None:
                 raise ValueError(
@@ -1798,13 +1845,13 @@ class NNDescent:
         if xs_fresh is None:
             if self._is_sparse:
                 xs_fresh = csr_matrix(
-                    ([], [], []), shape=(0, self._raw_data.shape[1]), dtype=np.float32
+                    ([], [], []), shape=(0, self._raw_data.shape[1]), dtype=self._input_dtype
                 )
             else:
-                xs_fresh = np.zeros((0, self._raw_data.shape[1]), dtype=np.float32)
+                xs_fresh = np.zeros((0, self._raw_data.shape[1]), dtype=self._input_dtype)
         else:
             xs_fresh = check_array(
-                xs_fresh, dtype=np.float32, accept_sparse="csr", order="C"
+                xs_fresh, dtype=self._input_dtype, accept_sparse="csr", order="C"
             )
         # data preparation
         if hasattr(self, "_vertex_order"):

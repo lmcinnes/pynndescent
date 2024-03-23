@@ -52,6 +52,32 @@ def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
     ), "NN-descent did not get 99% accuracy on nearest neighbors"
 
 
+def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
+    bitpacked_data = (nn_data * 256).astype(np.uint8)
+    unpacked_data = np.zeros(
+        (bitpacked_data.shape[0], bitpacked_data.shape[1] * 8), dtype=np.float32
+    )
+    for i in range(unpacked_data.shape[0]):
+        for j in range(unpacked_data.shape[1]):
+            unpacked_data[i, j] = (bitpacked_data[i, j // 8] & (1 << (j % 8))) > 0
+
+    knn_indices, _ = NNDescent(
+        bitpacked_data, "bit_jaccard", {}, 10, random_state=np.random.RandomState(seed)
+    )._neighbor_graph
+
+    nn_finder = NearestNeighbors(n_neighbors=10, metric="jaccard").fit(unpacked_data)
+    true_indices = nn_finder.kneighbors(unpacked_data, 10, return_distance=False)
+
+    num_correct = 0.0
+    for i in range(nn_data.shape[0]):
+        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    percent_correct = num_correct / (nn_data.shape[0] * 10)
+    assert (
+        percent_correct >= 0.60
+    ), "NN-descent did not get 60% accuracy on nearest neighbors"
+
+
 @pytest.mark.skipif(
     list(map(int, scipy.version.version.split("."))) < [1, 3, 0],
     reason="requires scipy >= 1.3.0",
@@ -166,6 +192,35 @@ def test_sparse_nn_descent_query_accuracy_angular(sparse_nn_data):
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert (
         percent_correct >= 0.95
+    ), "Sparse NN-descent query did not get 95% accuracy on nearest neighbors"
+
+
+def test_bitpacked_nn_descent_query_accuracy(nn_data):
+    bitpacked_data = (nn_data * 256).astype(np.uint8)
+    unpacked_data = np.zeros(
+        (bitpacked_data.shape[0], bitpacked_data.shape[1] * 8), dtype=np.float32
+    )
+    for i in range(unpacked_data.shape[0]):
+        for j in range(unpacked_data.shape[1]):
+            unpacked_data[i, j] = (bitpacked_data[i, j // 8] & (1 << (j % 8))) > 0
+
+    nnd = NNDescent(
+        bitpacked_data[200:], "bit_jaccard", n_neighbors=50, random_state=None
+    )
+    knn_indices, _ = nnd.query(bitpacked_data[:200], k=10, epsilon=0.36)
+
+    nn = NearestNeighbors(metric="jaccard").fit(unpacked_data[200:])
+    true_indices = nn.kneighbors(
+        unpacked_data[:200], n_neighbors=10, return_distance=False
+    )
+
+    num_correct = 0.0
+    for i in range(true_indices.shape[0]):
+        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+
+    percent_correct = num_correct / (true_indices.shape[0] * 10)
+    assert (
+        percent_correct >= 0.80
     ), "Sparse NN-descent query did not get 95% accuracy on nearest neighbors"
 
 
@@ -287,7 +342,9 @@ def test_deduplicated_data_behaves_normally(seed, cosine_hang_data):
     ), "NN-descent did not get 95% accuracy on nearest neighbors"
 
 
-def test_rp_trees_should_not_stack_overflow_with_near_duplicate_data(seed, cosine_near_duplicates_data):
+def test_rp_trees_should_not_stack_overflow_with_near_duplicate_data(
+    seed, cosine_near_duplicates_data
+):
 
     n_neighbors = 10
     knn_indices, _ = NNDescent(
@@ -682,7 +739,12 @@ def test_tree_no_split(small_data, sparse_small_data, metric):
             data_type
         )
 
-@pytest.mark.skipif('NUMBA_DISABLE_JIT' in os.environ, reason="Too expensive for disabled Numba")
+
+@pytest.mark.skipif(
+    "NUMBA_DISABLE_JIT" in os.environ, reason="Too expensive for disabled Numba"
+)
 def test_bad_data():
-    data = np.sqrt(np.load("pynndescent/tests/test_data/pynndescent_bug_np.npz")['arr_0'])
+    data = np.sqrt(
+        np.load("pynndescent/tests/test_data/pynndescent_bug_np.npz")["arr_0"]
+    )
     index = NNDescent(data, metric="cosine")
