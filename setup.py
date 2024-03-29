@@ -8,7 +8,7 @@ def readme():
 
 configuration = {
     "name": "pynndescent",
-    "version": "0.5.11",
+    "version": "0.5.12",
     "description": "Nearest Neighbor Descent",
     "long_description": readme(),
     "classifiers": [
@@ -23,9 +23,10 @@ configuration = {
         "Operating System :: POSIX",
         "Operating System :: Unix",
         "Operating System :: MacOS",
-        "Programming Language :: Python :: 3.6",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
     ],
     "keywords": "nearest neighbor, knn, ANN",
     "url": "http://github.com/lmcinnes/pynndescent",
