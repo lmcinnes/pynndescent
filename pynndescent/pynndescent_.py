@@ -751,32 +751,9 @@ class NNDescent:
         current_random_state = check_random_state(self.random_state)
 
         self._distance_correction = None
-
-        if callable(metric):
-            _distance_func = metric
-        elif metric in pynnd_dist.named_distances:
-            if metric in pynnd_dist.fast_distance_alternatives:
-                _distance_func = pynnd_dist.fast_distance_alternatives[metric]["dist"]
-                self._distance_correction = pynnd_dist.fast_distance_alternatives[
-                    metric
-                ]["correction"]
-            else:
-                _distance_func = pynnd_dist.named_distances[metric]
-        else:
-            raise ValueError("Metric is neither callable, " + "nor a recognised string")
-
-        # Create a partial function for distances with arguments
-        if len(self._dist_args) > 0:
-            dist_args = self._dist_args
-
-            @numba.njit()
-            def _partial_dist_func(x, y):
-                return _distance_func(x, y, *dist_args)
-
-            self._distance_func = _partial_dist_func
-        else:
-            self._distance_func = _distance_func
-
+        
+        self._set_distance_func()
+        
         if metric in (
             "cosine",
             "dot",
@@ -967,6 +944,32 @@ class NNDescent:
 
         numba.set_num_threads(self._original_num_threads)
 
+    def _set_distance_func(self):
+        if callable(self.metric):
+            _distance_func = self.metric
+        elif self.metric in pynnd_dist.named_distances:
+            if self.metric in pynnd_dist.fast_distance_alternatives:
+                _distance_func = pynnd_dist.fast_distance_alternatives[self.metric]["dist"]
+                self._distance_correction = pynnd_dist.fast_distance_alternatives[
+                    self.metric
+                ]["correction"]
+            else:
+                _distance_func = pynnd_dist.named_distances[self.metric]
+        else:
+            raise ValueError("Metric is neither callable, " + "nor a recognised string")
+
+        # Create a partial function for distances with arguments
+        if len(self._dist_args) > 0:
+            dist_args = self._dist_args
+
+            @numba.njit()
+            def _partial_dist_func(x, y):
+                return _distance_func(x, y, *dist_args)
+
+            self._distance_func = _partial_dist_func
+        else:
+            self._distance_func = _distance_func
+            
     def __getstate__(self):
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
@@ -985,6 +988,7 @@ class NNDescent:
 
     def __setstate__(self, d):
         self.__dict__ = d
+        self._set_distance_func()
         self._search_forest = tuple(
             [renumbaify_tree(tree) for tree in d["_search_forest"]]
         )
