@@ -25,7 +25,7 @@ def test_nn_descent_neighbor_accuracy(nn_data, seed):
 
     num_correct = 0.0
     for i in range(nn_data.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (nn_data.shape[0] * 10)
     assert (
@@ -44,7 +44,7 @@ def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
 
     num_correct = 0.0
     for i in range(nn_data.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (nn_data.shape[0] * 10)
     assert (
@@ -70,7 +70,7 @@ def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
 
     num_correct = 0.0
     for i in range(nn_data.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (nn_data.shape[0] * 10)
     assert (
@@ -92,7 +92,7 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
 
     num_correct = 0.0
     for i in range(sparse_nn_data.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (sparse_nn_data.shape[0] * 10)
     assert (
@@ -115,7 +115,7 @@ def test_sparse_angular_nn_descent_neighbor_accuracy(sparse_nn_data):
 
     num_correct = 0.0
     for i in range(sparse_nn_data.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (sparse_nn_data.shape[0] * 10)
     assert (
@@ -132,7 +132,7 @@ def test_nn_descent_query_accuracy(nn_data):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert (
@@ -149,7 +149,7 @@ def test_nn_descent_query_accuracy_angular(nn_data):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert (
@@ -168,7 +168,7 @@ def test_sparse_nn_descent_query_accuracy(sparse_nn_data):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert (
@@ -187,7 +187,7 @@ def test_sparse_nn_descent_query_accuracy_angular(sparse_nn_data):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert (
@@ -216,7 +216,7 @@ def test_bitpacked_nn_descent_query_accuracy(nn_data):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert (
@@ -261,7 +261,7 @@ def test_random_state_none(nn_data, spatial_data):
 
     num_correct = 0.0
     for i in range(nn_data.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (spatial_data.shape[0] * 10)
     assert (
@@ -334,7 +334,7 @@ def test_deduplicated_data_behaves_normally(seed, cosine_hang_data):
 
     num_correct = 0
     for i in range(data.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     proportion_correct = num_correct / (data.shape[0] * n_neighbors)
     assert (
@@ -524,7 +524,7 @@ def test_update_no_prepare_query_accuracy(nn_data, metric):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
@@ -553,7 +553,7 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
@@ -582,7 +582,7 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
@@ -594,7 +594,7 @@ def evaluate_predictions(neighbors_true, neigbhors_computed, n_neighbors):
     n_correct = 0
     n_all = neighbors_true.shape[0] * n_neighbors
     for i in range(neighbors_true.shape[0]):
-        n_correct += np.sum(np.in1d(neighbors_true[i], neigbhors_computed[i]))
+        n_correct += np.sum(np.isin(neighbors_true[i], neigbhors_computed[i]))
     return n_correct / n_all
 
 
@@ -669,7 +669,7 @@ def test_tree_init_false(nn_data, metric):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
@@ -697,7 +697,7 @@ def test_one_dimensional_data(nn_data, metric):
 
     num_correct = 0.0
     for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
     percent_correct = num_correct / (true_indices.shape[0] * 10)
     assert percent_correct >= 0.95, (
@@ -730,7 +730,7 @@ def test_tree_no_split(small_data, sparse_small_data, metric):
 
         num_correct = 0.0
         for i in range(true_indices.shape[0]):
-            num_correct += np.sum(np.in1d(true_indices[i], knn_indices[i]))
+            num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
 
         percent_correct = num_correct / (true_indices.shape[0] * k)
         assert (
