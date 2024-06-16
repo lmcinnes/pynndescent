@@ -79,7 +79,7 @@ def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
 
 
 @pytest.mark.skipif(
-    list(map(int, re.findall('[0-9]+\.[0-9]+\.?[0-9]*', scipy.version.version)[0].split("."))) < [1, 3, 0],
+    list(map(int, re.findall(r"[0-9]+\.[0-9]+\.?[0-9]*", scipy.version.version)[0].split("."))) < [1, 3, 0],
     reason="requires scipy >= 1.3.0",
 )
 def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
