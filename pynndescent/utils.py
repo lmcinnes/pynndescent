@@ -332,42 +332,54 @@ def new_build_candidates(current_graph, max_candidates, rng_state, n_threads):
         (n_vertices, max_candidates), np.inf, dtype=np.float32
     )
 
+    block_size = n_vertices // n_threads + 1
+
     for n in numba.prange(n_threads):
         local_rng_state = rng_state + n
+        block_start = n * block_size
+        block_end = min(block_start + block_size, n_vertices)
+
         for i in range(n_vertices):
             for j in range(n_neighbors):
                 idx = current_indices[i, j]
-                isn = current_flags[i, j]
 
-                if idx < 0:
-                    continue
+                if idx >= 0 and (
+                    (i >= block_start and i < block_end)
+                    or (idx >= block_start and idx < block_end)
+                ):
+                    isn = current_flags[i, j]
+                    d = tau_rand(local_rng_state)
 
-                d = tau_rand(local_rng_state)
-
-                if isn:
-                    if i % n_threads == n:
-                        checked_heap_push(
-                            new_candidate_priority[i], new_candidate_indices[i], d, idx
-                        )
-                    if idx % n_threads == n:
-                        checked_heap_push(
-                            new_candidate_priority[idx],
-                            new_candidate_indices[idx],
-                            d,
-                            i,
-                        )
-                else:
-                    if i % n_threads == n:
-                        checked_heap_push(
-                            old_candidate_priority[i], old_candidate_indices[i], d, idx
-                        )
-                    if idx % n_threads == n:
-                        checked_heap_push(
-                            old_candidate_priority[idx],
-                            old_candidate_indices[idx],
-                            d,
-                            i,
-                        )
+                    if isn:
+                        if i >= block_start and i < block_end:
+                            checked_heap_push(
+                                new_candidate_priority[i],
+                                new_candidate_indices[i],
+                                d,
+                                idx,
+                            )
+                        if idx >= block_start and idx < block_end:
+                            checked_heap_push(
+                                new_candidate_priority[idx],
+                                new_candidate_indices[idx],
+                                d,
+                                i,
+                            )
+                    else:
+                        if i >= block_start and i < block_end:
+                            checked_heap_push(
+                                old_candidate_priority[i],
+                                old_candidate_indices[i],
+                                d,
+                                idx,
+                            )
+                        if idx >= block_start and idx < block_end:
+                            checked_heap_push(
+                                old_candidate_priority[idx],
+                                old_candidate_indices[idx],
+                                d,
+                                i,
+                            )
 
     indices = current_graph[0]
     flags = current_graph[2]
