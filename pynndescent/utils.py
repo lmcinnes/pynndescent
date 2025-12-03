@@ -614,9 +614,14 @@ def apply_graph_updates_low_memory(current_graph, updates, n_threads):
     priorities = current_graph[1]
     indices = current_graph[0]
     flags = current_graph[2]
-    # n_threads = numba.get_num_threads()
+
+    n_vertices = indices.shape[0]
+    block_size = n_vertices // n_threads + 1
 
     for n in numba.prange(n_threads):
+        block_start = n * block_size
+        block_end = min(block_start + block_size, n_vertices)
+
         for i in range(len(updates)):
             for j in range(len(updates[i])):
                 p, q, d = updates[i][j]
@@ -624,13 +629,13 @@ def apply_graph_updates_low_memory(current_graph, updates, n_threads):
                 if p == -1 or q == -1:
                     continue
 
-                if p % n_threads == n:
+                if p >= block_start and p < block_end:
                     added = checked_flagged_heap_push(
                         priorities[p], indices[p], flags[p], d, q, 1
                     )
                     n_changes += added
 
-                if q % n_threads == n:
+                if q >= block_start and q < block_end:
                     added = checked_flagged_heap_push(
                         priorities[q], indices[q], flags[q], d, p, 1
                     )
