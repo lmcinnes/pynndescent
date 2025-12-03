@@ -15,6 +15,11 @@ from pynndescent.optimal_transport import (
     sinkhorn_transport_plan,
 )
 
+from numba import types
+from numba.extending import intrinsic
+from numba.core import cgutils
+from llvmlite import ir as llvm_ir
+
 _mock_identity = np.eye(2, dtype=np.float32)
 _mock_ones = np.ones(2, dtype=np.float32)
 _dummy_cost = np.zeros((2, 2), dtype=np.float64)
@@ -22,10 +27,24 @@ _dummy_cost = np.zeros((2, 2), dtype=np.float64)
 FLOAT32_EPS = np.finfo(np.float32).eps
 FLOAT32_MAX = np.finfo(np.float32).max
 
-popcnt = np.array(
-    [bin(i).count('1') for i in range(256)],
-    dtype=np.float32
-)
+
+@intrinsic
+def popcnt_u8(typingctx, val):
+    """Hardware popcount for uint8 using LLVM intrinsic."""
+    sig = types.uint8(types.uint8)
+
+    def popcnt_u8_impl(context, builder, sig, args):
+        [val] = args
+        # Declare LLVM's ctpop intrinsic for i8
+        llvm_i8 = val.type
+        fnty = llvm_ir.FunctionType(llvm_i8, [llvm_i8])
+        llvm_ctpop = cgutils.get_or_insert_function(
+            builder.module, fnty, "llvm.ctpop.i8"
+        )
+        result = builder.call(llvm_ctpop, [val])
+        return result
+
+    return sig, popcnt_u8_impl
 
 
 @numba.njit(fastmath=True)
@@ -905,21 +924,21 @@ def symmetric_kl_divergence(x, y):
     ],
     fastmath=True,
     locals={
-        "result": numba.types.float32,
+        "result": numba.types.int32,
         "intersection": numba.types.uint8,
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
 )
 def bit_hamming(x, y):
-    result = 0.0
+    result = 0
     dim = x.shape[0]
 
     for i in range(dim):
         intersection = x[i] ^ y[i]
-        result += popcnt[intersection]
+        result += popcnt_u8(intersection)
 
-    return result
+    return np.float32(result)
 
 
 @numba.njit(
@@ -932,8 +951,8 @@ def bit_hamming(x, y):
     ],
     fastmath=True,
     locals={
-        "result": numba.types.float32,
-        "denom": numba.types.float32,
+        "result": numba.types.int32,
+        "denom": numba.types.int32,
         "and_": numba.types.uint8,
         "or_": numba.types.uint8,
         "dim": numba.types.intp,
@@ -941,17 +960,20 @@ def bit_hamming(x, y):
     },
 )
 def bit_jaccard(x, y):
-    result = 0.0
-    denom = 0.0
+    result = 0
+    denom = 0
     dim = x.shape[0]
 
     for i in range(dim):
         and_ = x[i] & y[i]
         or_ = x[i] | y[i]
-        result += popcnt[and_]
-        denom += popcnt[or_]
+        result += popcnt_u8(and_)
+        denom += popcnt_u8(or_)
 
-    return -np.log(result / denom)
+    if denom == 0:
+        return 0.0
+    else:
+        return -np.log(np.float32(result) / np.float32(denom))
 
 
 named_distances = {
