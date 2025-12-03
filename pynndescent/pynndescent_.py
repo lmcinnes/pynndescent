@@ -36,6 +36,8 @@ from pynndescent.utils import (
     mark_visited,
     apply_graph_updates_high_memory,
     apply_graph_updates_low_memory,
+    generate_graph_update_array,
+    apply_graph_update_array,
     initalize_heap_from_graph_indices,
     initalize_heap_from_graph_indices_and_distances,
     sparse_initalize_heap_from_graph_indices,
@@ -94,7 +96,9 @@ def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
     return updates
 
 
-@numba.njit(locals={"d": numba.float32, "p": numba.int32, "q": numba.int32}, cache=False)
+@numba.njit(
+    locals={"d": numba.float32, "p": numba.int32, "q": numba.int32}, cache=False
+)
 def init_rp_tree(data, dist, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
@@ -210,7 +214,16 @@ def process_candidates(
     n_blocks,
     block_size,
     n_threads,
+    update_array,
+    n_updates_per_thread,
 ):
+    """Process candidate neighbors using array-based update generation.
+
+    This is more efficient than the list-based approach because:
+    1. No dynamic memory allocation during parallel loops
+    2. Better cache locality with contiguous array storage
+    3. Each thread writes to its own section of the array
+    """
     c = 0
     n_vertices = new_candidate_neighbors.shape[0]
     for i in range(n_blocks + 1):
@@ -222,11 +235,20 @@ def process_candidates(
 
         dist_thresholds = current_graph[1][:, 0]
 
-        updates = generate_graph_updates(
-            new_candidate_block, old_candidate_block, dist_thresholds, data, dist
+        generate_graph_update_array(
+            update_array,
+            n_updates_per_thread,
+            new_candidate_block,
+            old_candidate_block,
+            dist_thresholds,
+            data,
+            dist,
+            n_threads,
         )
 
-        c += apply_graph_updates_low_memory(current_graph, updates, n_threads)
+        c += apply_graph_update_array(
+            current_graph, update_array, n_updates_per_thread, n_threads
+        )
 
     return c
 
@@ -248,6 +270,19 @@ def nn_descent_internal_low_memory_parallel(
     n_blocks = n_vertices // block_size
     n_threads = numba.get_num_threads()
 
+    # Pre-allocate update arrays for efficiency
+    # Estimate max updates: each candidate pair can generate one update
+    max_updates_per_thread = (
+        int(
+            (max_candidates**2 + max_candidates * (max_candidates - 1) / 2)
+            * block_size
+            / n_threads
+        )
+        + 1024
+    )
+    update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
@@ -265,6 +300,8 @@ def nn_descent_internal_low_memory_parallel(
             n_blocks,
             block_size,
             n_threads,
+            update_array,
+            n_updates_per_thread,
         )
 
         if c <= delta * n_neighbors * data.shape[0]:
@@ -285,15 +322,27 @@ def nn_descent_internal_high_memory_parallel(
     delta=0.001,
     verbose=False,
 ):
+    """High memory variant - now uses same efficient array-based approach.
+
+    The array-based approach is efficient enough that we no longer need
+    separate code paths. This function is kept for API compatibility.
+    """
     n_vertices = data.shape[0]
     block_size = 16384
     n_blocks = n_vertices // block_size
     n_threads = numba.get_num_threads()
 
-    in_graph = [
-        set(current_graph[0][i].astype(np.int64))
-        for i in range(current_graph[0].shape[0])
-    ]
+    # Pre-allocate update arrays
+    max_updates_per_thread = (
+        int(
+            (max_candidates**2 + max_candidates * (max_candidates - 1) / 2)
+            * block_size
+            / n_threads
+        )
+        + 1024
+    )
+    update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
 
     for n in range(n_iters):
         if verbose:
@@ -303,20 +352,18 @@ def nn_descent_internal_high_memory_parallel(
             current_graph, max_candidates, rng_state, n_threads
         )
 
-        c = 0
-        for i in range(n_blocks + 1):
-            block_start = i * block_size
-            block_end = min(n_vertices, (i + 1) * block_size)
-
-            new_candidate_block = new_candidate_neighbors[block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[block_start:block_end]
-            dist_thresholds = current_graph[1][:, 0]
-
-            updates = generate_graph_updates(
-                new_candidate_block, old_candidate_block, dist_thresholds, data, dist
-            )
-
-            c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
+        c = process_candidates(
+            data,
+            dist,
+            current_graph,
+            new_candidate_neighbors,
+            old_candidate_neighbors,
+            n_blocks,
+            block_size,
+            n_threads,
+            update_array,
+            n_updates_per_thread,
+        )
 
         if c <= delta * n_neighbors * data.shape[0]:
             if verbose:
@@ -751,9 +798,9 @@ class NNDescent:
         current_random_state = check_random_state(self.random_state)
 
         self._distance_correction = None
-        
+
         self._set_distance_func()
-        
+
         if metric in (
             "cosine",
             "dot",
@@ -949,7 +996,9 @@ class NNDescent:
             _distance_func = self.metric
         elif self.metric in pynnd_dist.named_distances:
             if self.metric in pynnd_dist.fast_distance_alternatives:
-                _distance_func = pynnd_dist.fast_distance_alternatives[self.metric]["dist"]
+                _distance_func = pynnd_dist.fast_distance_alternatives[self.metric][
+                    "dist"
+                ]
                 self._distance_correction = pynnd_dist.fast_distance_alternatives[
                     self.metric
                 ]["correction"]
@@ -969,7 +1018,7 @@ class NNDescent:
             self._distance_func = _partial_dist_func
         else:
             self._distance_func = _distance_func
-            
+
     def __getstate__(self):
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
@@ -1230,11 +1279,14 @@ class NNDescent:
             tree_children = self._search_forest[0].children
 
             if self._bit_trees:
+
                 @numba.njit(
                     [
                         numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
                             numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-                            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                            numba.types.Array(
+                                numba.types.int64, 1, "C", readonly=False
+                            ),
                         )
                     ],
                     locals={"node": numba.types.uint32, "side": numba.types.boolean},
@@ -1251,12 +1303,18 @@ class NNDescent:
                             node = tree_children[node, 1]
 
                     return -tree_children[node]
+
             else:
+
                 @numba.njit(
                     [
                         numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
-                            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-                            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                            numba.types.Array(
+                                numba.types.float32, 1, "C", readonly=True
+                            ),
+                            numba.types.Array(
+                                numba.types.int64, 1, "C", readonly=False
+                            ),
                         )
                     ],
                     locals={"node": numba.types.uint32, "side": numba.types.boolean},
@@ -1849,10 +1907,14 @@ class NNDescent:
         if xs_fresh is None:
             if self._is_sparse:
                 xs_fresh = csr_matrix(
-                    ([], [], []), shape=(0, self._raw_data.shape[1]), dtype=self._input_dtype
+                    ([], [], []),
+                    shape=(0, self._raw_data.shape[1]),
+                    dtype=self._input_dtype,
                 )
             else:
-                xs_fresh = np.zeros((0, self._raw_data.shape[1]), dtype=self._input_dtype)
+                xs_fresh = np.zeros(
+                    (0, self._raw_data.shape[1]), dtype=self._input_dtype
+                )
         else:
             xs_fresh = check_array(
                 xs_fresh, dtype=self._input_dtype, accept_sparse="csr", order="C"

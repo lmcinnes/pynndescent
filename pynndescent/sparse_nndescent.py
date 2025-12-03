@@ -15,6 +15,8 @@ from pynndescent.utils import (
     checked_flagged_heap_push,
     apply_graph_updates_high_memory,
     apply_graph_updates_low_memory,
+    sparse_generate_graph_update_array,
+    apply_graph_update_array,
 )
 
 from pynndescent.sparse import sparse_euclidean
@@ -53,7 +55,9 @@ def generate_leaf_updates(leaf_block, dist_thresholds, inds, indptr, data, dist)
     return updates
 
 
-@numba.njit(locals={"d": numba.float32, "p": numba.int32, "q": numba.int32}, cache=False)
+@numba.njit(
+    locals={"d": numba.float32, "p": numba.int32, "q": numba.int32}, cache=False
+)
 def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
 
     n_leaves = leaf_array.shape[0]
@@ -169,6 +173,53 @@ def generate_graph_updates(
     return updates
 
 
+@numba.njit(cache=False)
+def sparse_process_candidates(
+    inds,
+    indptr,
+    data,
+    dist,
+    current_graph,
+    new_candidate_neighbors,
+    old_candidate_neighbors,
+    n_blocks,
+    block_size,
+    n_threads,
+    update_array,
+    n_updates_per_thread,
+):
+    """Process candidate neighbors for sparse data using array-based updates."""
+    c = 0
+    n_vertices = new_candidate_neighbors.shape[0]
+    for i in range(n_blocks + 1):
+        block_start = i * block_size
+        block_end = min(n_vertices, (i + 1) * block_size)
+
+        new_candidate_block = new_candidate_neighbors[block_start:block_end]
+        old_candidate_block = old_candidate_neighbors[block_start:block_end]
+
+        dist_thresholds = current_graph[1][:, 0]
+
+        sparse_generate_graph_update_array(
+            update_array,
+            n_updates_per_thread,
+            new_candidate_block,
+            old_candidate_block,
+            dist_thresholds,
+            inds,
+            indptr,
+            data,
+            dist,
+            n_threads,
+        )
+
+        c += apply_graph_update_array(
+            current_graph, update_array, n_updates_per_thread, n_threads
+        )
+
+    return c
+
+
 @numba.njit()
 def nn_descent_internal_low_memory_parallel(
     current_graph,
@@ -188,6 +239,18 @@ def nn_descent_internal_low_memory_parallel(
     n_blocks = n_vertices // block_size
     n_threads = numba.get_num_threads()
 
+    # Pre-allocate update arrays
+    max_updates_per_thread = (
+        int(
+            (max_candidates**2 + max_candidates * (max_candidates - 1) / 2)
+            * block_size
+            / n_threads
+        )
+        + 1024
+    )
+    update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
@@ -196,26 +259,20 @@ def nn_descent_internal_low_memory_parallel(
             current_graph, max_candidates, rng_state, n_threads
         )
 
-        c = 0
-        for i in range(n_blocks + 1):
-            block_start = i * block_size
-            block_end = min(n_vertices, (i + 1) * block_size)
-
-            new_candidate_block = new_candidate_neighbors[block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[block_start:block_end]
-            dist_thresholds = current_graph[1][:, 0]
-
-            updates = generate_graph_updates(
-                new_candidate_block,
-                old_candidate_block,
-                dist_thresholds,
-                inds,
-                indptr,
-                data,
-                dist,
-            )
-
-            c += apply_graph_updates_low_memory(current_graph, updates, n_threads)
+        c = sparse_process_candidates(
+            inds,
+            indptr,
+            data,
+            dist,
+            current_graph,
+            new_candidate_neighbors,
+            old_candidate_neighbors,
+            n_blocks,
+            block_size,
+            n_threads,
+            update_array,
+            n_updates_per_thread,
+        )
 
         if c <= delta * n_neighbors * n_vertices:
             if verbose:
@@ -237,15 +294,23 @@ def nn_descent_internal_high_memory_parallel(
     delta=0.001,
     verbose=False,
 ):
+    """High memory variant - now uses same efficient array-based approach."""
     n_vertices = indptr.shape[0] - 1
     block_size = 16384
     n_blocks = n_vertices // block_size
     n_threads = numba.get_num_threads()
 
-    in_graph = [
-        set(current_graph[0][i].astype(np.int64))
-        for i in range(current_graph[0].shape[0])
-    ]
+    # Pre-allocate update arrays
+    max_updates_per_thread = (
+        int(
+            (max_candidates**2 + max_candidates * (max_candidates - 1) / 2)
+            * block_size
+            / n_threads
+        )
+        + 1024
+    )
+    update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
 
     for n in range(n_iters):
         if verbose:
@@ -255,26 +320,20 @@ def nn_descent_internal_high_memory_parallel(
             current_graph, max_candidates, rng_state, n_threads
         )
 
-        c = 0
-        for i in range(n_blocks + 1):
-            block_start = i * block_size
-            block_end = min(n_vertices, (i + 1) * block_size)
-
-            new_candidate_block = new_candidate_neighbors[block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[block_start:block_end]
-            dist_thresholds = current_graph[1][:, 0]
-
-            updates = generate_graph_updates(
-                new_candidate_block,
-                old_candidate_block,
-                dist_thresholds,
-                inds,
-                indptr,
-                data,
-                dist,
-            )
-
-            c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
+        c = sparse_process_candidates(
+            inds,
+            indptr,
+            data,
+            dist,
+            current_graph,
+            new_candidate_neighbors,
+            old_candidate_neighbors,
+            n_blocks,
+            block_size,
+            n_threads,
+            update_array,
+            n_updates_per_thread,
+        )
 
         if c <= delta * n_neighbors * n_vertices:
             if verbose:
