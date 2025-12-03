@@ -31,10 +31,9 @@ urls = {Homepage = "http://github.com/lmcinnes/pynndescent"}
 dependencies = [
     "scikit-learn >= 0.18",
     "scipy >= 1.0",
-    "numba >= 0.51.2",
-    "llvmlite >= 0.30",
+    "numba >= 0.55.0",
+    "llvmlite >= 0.38",
     "joblib >= 0.11",
-    'importlib-metadata >= 4.8.1; python_version < "3.8"',
 ]
 
 [project.optional-dependencies]

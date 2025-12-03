@@ -3,7 +3,6 @@
 #
 # License: BSD 3 clause
 from __future__ import print_function
-import locale
 import numpy as np
 import numba
 
@@ -14,10 +13,9 @@ from pynndescent.distances import (
     symmetric_kl_divergence,
 )
 
-locale.setlocale(locale.LC_NUMERIC, "C")
-
 FLOAT32_EPS = np.finfo(np.float32).eps
 FLOAT32_MAX = np.finfo(np.float32).max
+
 
 # Just reproduce a simpler version of numpy isclose (not numba supported yet)
 @numba.njit(cache=True)

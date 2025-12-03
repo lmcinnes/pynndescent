@@ -5,8 +5,6 @@
 import time
 
 import numba
-from numba.core import types
-import numba.experimental.structref as structref
 import numpy as np
 
 
@@ -129,45 +127,6 @@ def rejection_sample(n_samples, pool_size, rng_state):
     return result
 
 
-@structref.register
-class HeapType(types.StructRef):
-    pass
-
-
-class Heap(structref.StructRefProxy):
-    @property
-    def indices(self):
-        return Heap_get_indices(self)
-
-    @property
-    def distances(self):
-        return Heap_get_distances(self)
-
-    @property
-    def flags(self):
-        return Heap_get_flags(self)
-
-
-@numba.njit(cache=True)
-def Heap_get_flags(self):
-    return self.flags
-
-
-@numba.njit(cache=True)
-def Heap_get_distances(self):
-    return self.distances
-
-
-@numba.njit(cache=True)
-def Heap_get_indices(self):
-    return self.indices
-
-
-structref.define_proxy(Heap, HeapType, ["indices", "distances", "flags"])
-
-# Heap = namedtuple("Heap", ("indices", "distances", "flags"))
-
-
 @numba.njit(cache=True)
 def make_heap(n_points, size):
     """Constructor for the numba enabled heap objects. The heaps are used
@@ -197,6 +156,10 @@ def make_heap(n_points, size):
     result = (indices, distances, flags)
 
     return result
+
+
+# Sentinel value for empty/uninitialized graphs
+EMPTY_GRAPH = make_heap(1, 1)
 
 
 @numba.njit(cache=True)
@@ -253,45 +216,6 @@ def deheap_sort(indices, distances):
             siftdown(distances[i, :j], indices[i, :j], 0)
 
     return indices, distances
-
-
-# @numba.njit()
-# def smallest_flagged(heap, row):
-#     """Search the heap for the smallest element that is
-#     still flagged.
-#
-#     Parameters
-#     ----------
-#     heap: array of shape (3, n_samples, n_neighbors)
-#         The heaps to search
-#
-#     row: int
-#         Which of the heaps to search
-#
-#     Returns
-#     -------
-#     index: int
-#         The index of the smallest flagged element
-#         of the ``row``th heap, or -1 if no flagged
-#         elements remain in the heap.
-#     """
-#     ind = heap[0][row]
-#     dist = heap[1][row]
-#     flag = heap[2][row]
-#
-#     min_dist = np.inf
-#     result_index = -1
-#
-#     for i in range(ind.shape[0]):
-#         if flag[i] == 1 and dist[i] < min_dist:
-#             min_dist = dist[i]
-#             result_index = i
-#
-#     if result_index >= 0:
-#         flag[result_index] = 0.0
-#         return int(ind[result_index])
-#     else:
-#         return -1
 
 
 @numba.njit(parallel=True, locals={"idx": numba.types.int64}, cache=False)

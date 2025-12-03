@@ -39,6 +39,7 @@ from pynndescent.utils import (
     initalize_heap_from_graph_indices,
     initalize_heap_from_graph_indices_and_distances,
     sparse_initalize_heap_from_graph_indices,
+    EMPTY_GRAPH,
 )
 
 from pynndescent.rp_trees import (
@@ -58,8 +59,6 @@ INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
 FLOAT32_EPS = np.finfo(np.float32).eps
-
-EMPTY_GRAPH = make_heap(1, 1)
 
 
 def is_c_contiguous(array_like):

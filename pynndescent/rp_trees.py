@@ -3,7 +3,6 @@
 # License: BSD 2 clause
 from warnings import warn
 
-import locale
 import numpy as np
 import numba
 import scipy.sparse
@@ -19,8 +18,6 @@ from pynndescent.utils import tau_rand_int, norm
 import joblib
 
 from collections import namedtuple
-
-locale.setlocale(locale.LC_NUMERIC, "C")
 
 # Used for a floating point "nearly zero" comparison
 EPS = 1e-8
@@ -38,10 +35,8 @@ offset_type = numba.float64
 children_type = numba.typeof((np.int32(-1), np.int32(-1)))
 point_indices_type = numba.int32[::1]
 
-popcnt = np.array(
-    [bin(i).count('1') for i in range(256)],
-    dtype=np.float32
-)
+popcnt = np.array([bin(i).count("1") for i in range(256)], dtype=np.float32)
+
 
 @numba.njit(
     numba.types.Tuple(
@@ -813,6 +808,7 @@ def make_angular_tree(
 
     return
 
+
 @numba.njit(
     nogil=True,
     locals={
@@ -1151,6 +1147,7 @@ def make_dense_bit_tree(data, rng_state, leaf_size=30, angular=False, max_depth=
     result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
     return result
 
+
 @numba.njit(
     [
         "b1(f4[::1],f4,f4[::1],i8[::1])",
@@ -1277,6 +1274,7 @@ def search_flat_bit_tree(point, hyperplanes, offsets, children, indices, rng_sta
 
     return indices[-children[node, 0] : -children[node, 1]]
 
+
 @numba.njit(fastmath=True, cache=True)
 def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
     margin = offset
@@ -1376,22 +1374,14 @@ def make_forest(
         elif bit_tree:
             result = joblib.Parallel(n_jobs=n_jobs, require="sharedmem")(
                 joblib.delayed(make_dense_bit_tree)(
-                    data,
-                    rng_states[i],
-                    leaf_size,
-                    angular,
-                    max_depth=max_depth
+                    data, rng_states[i], leaf_size, angular, max_depth=max_depth
                 )
                 for i in range(n_trees)
             )
         else:
             result = joblib.Parallel(n_jobs=n_jobs, require="sharedmem")(
                 joblib.delayed(make_dense_tree)(
-                    data,
-                    rng_states[i],
-                    leaf_size,
-                    angular,
-                    max_depth=max_depth
+                    data, rng_states[i], leaf_size, angular, max_depth=max_depth
                 )
                 for i in range(n_trees)
             )
@@ -1426,7 +1416,8 @@ def get_leaves_from_tree(tree, max_leaf_size):
 def rptree_leaf_array_parallel(rp_forest):
     max_leaf_size = np.max([rp_tree.leaf_size for rp_tree in rp_forest])
     result = joblib.Parallel(n_jobs=-1, require="sharedmem")(
-        joblib.delayed(get_leaves_from_tree)(rp_tree, max_leaf_size) for rp_tree in rp_forest
+        joblib.delayed(get_leaves_from_tree)(rp_tree, max_leaf_size)
+        for rp_tree in rp_forest
     )
     return result
 
@@ -1438,7 +1429,7 @@ def rptree_leaf_array(rp_forest):
         return np.array([[-1]])
 
 
-#@numba.njit()
+# @numba.njit()
 def recursive_convert(
     tree, hyperplanes, offsets, children, indices, node_num, leaf_start, tree_node
 ):
@@ -1488,9 +1479,9 @@ def recursive_convert_sparse(
         indices[leaf_start:leaf_end] = tree.indices[tree_node]
         return node_num, leaf_end
     else:
-        hyperplanes[
-            node_num, :, : tree.hyperplanes[tree_node].shape[1]
-        ] = tree.hyperplanes[tree_node]
+        hyperplanes[node_num, :, : tree.hyperplanes[tree_node].shape[1]] = (
+            tree.hyperplanes[tree_node]
+        )
         offsets[node_num] = tree.offsets[tree_node]
         children[node_num, 0] = node_num + 1
         old_node_num = node_num
@@ -1541,7 +1532,9 @@ def convert_tree_format(tree, data_size, data_dim):
             hyperplane_dim = data_dim * 2
         else:
             hyperplane_dim = data_dim
-        hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=tree.hyperplanes[0].dtype)
+        hyperplanes = np.zeros(
+            (n_nodes, hyperplane_dim), dtype=tree.hyperplanes[0].dtype
+        )
     else:
         # sparse hyperplanes
         is_sparse = True

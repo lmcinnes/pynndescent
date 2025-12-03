@@ -3,7 +3,6 @@
 #
 # License: BSD 3 clause
 from __future__ import print_function
-import locale
 import numpy as np
 import numba
 
@@ -15,13 +14,10 @@ from pynndescent.utils import (
     checked_flagged_heap_push,
     sparse_generate_graph_update_array,
     apply_graph_update_array,
+    EMPTY_GRAPH,
 )
 
 from pynndescent.sparse import sparse_euclidean
-
-locale.setlocale(locale.LC_NUMERIC, "C")
-
-EMPTY_GRAPH = make_heap(1, 1)
 
 
 @numba.njit(parallel=True, cache=False)
@@ -223,7 +219,7 @@ def sparse_process_candidates(
 
 
 @numba.njit()
-def nn_descent_internal_low_memory_parallel(
+def nn_descent_internal(
     current_graph,
     inds,
     indptr,
@@ -314,9 +310,9 @@ def nn_descent(
     else:
         raise ValueError("Invalid initial graph specified!")
 
-    # Note: low_memory parameter is kept for API compatibility but both paths
-    # now use the same efficient array-based implementation
-    nn_descent_internal_low_memory_parallel(
+    # Note: low_memory parameter is kept for API compatibility but
+    # now uses the efficient array-based implementation
+    nn_descent_internal(
         current_graph,
         inds,
         indptr,
