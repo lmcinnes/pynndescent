@@ -54,10 +54,6 @@ from pynndescent.rp_trees import (
     score_linked_tree,
 )
 
-update_type = numba.types.List(
-    numba.types.List((numba.types.int64, numba.types.int64, numba.types.float64))
-)
-
 INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 

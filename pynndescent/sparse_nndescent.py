@@ -13,8 +13,6 @@ from pynndescent.utils import (
     new_build_candidates,
     deheap_sort,
     checked_flagged_heap_push,
-    apply_graph_updates_high_memory,
-    apply_graph_updates_low_memory,
     sparse_generate_graph_update_array,
     apply_graph_update_array,
 )
@@ -285,67 +283,6 @@ def nn_descent_internal_low_memory_parallel(
 
 
 @numba.njit()
-def nn_descent_internal_high_memory_parallel(
-    current_graph,
-    inds,
-    indptr,
-    data,
-    n_neighbors,
-    rng_state,
-    max_candidates=50,
-    dist=sparse_euclidean,
-    n_iters=10,
-    delta=0.001,
-    verbose=False,
-):
-    """High memory variant - now uses same efficient array-based approach."""
-    n_vertices = indptr.shape[0] - 1
-    block_size = 16384
-    n_blocks = n_vertices // block_size
-    n_threads = numba.get_num_threads()
-
-    # Pre-allocate update arrays
-    max_updates_per_thread = (
-        int(
-            (max_candidates**2 + max_candidates * (max_candidates - 1) / 2)
-            * block_size
-            / n_threads
-        )
-        + 1024
-    )
-    update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
-    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
-
-    for n in range(n_iters):
-        if verbose:
-            print("\t", n + 1, " / ", n_iters)
-
-        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
-        )
-
-        c = sparse_process_candidates(
-            inds,
-            indptr,
-            data,
-            dist,
-            current_graph,
-            new_candidate_neighbors,
-            old_candidate_neighbors,
-            n_blocks,
-            block_size,
-            n_threads,
-            update_array,
-            n_updates_per_thread,
-        )
-
-        if c <= delta * n_neighbors * n_vertices:
-            if verbose:
-                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
-            return
-
-
-@numba.njit()
 def nn_descent(
     inds,
     indptr,
@@ -377,33 +314,20 @@ def nn_descent(
     else:
         raise ValueError("Invalid initial graph specified!")
 
-    if low_memory:
-        nn_descent_internal_low_memory_parallel(
-            current_graph,
-            inds,
-            indptr,
-            data,
-            n_neighbors,
-            rng_state,
-            max_candidates=max_candidates,
-            dist=dist,
-            n_iters=n_iters,
-            delta=delta,
-            verbose=verbose,
-        )
-    else:
-        nn_descent_internal_high_memory_parallel(
-            current_graph,
-            inds,
-            indptr,
-            data,
-            n_neighbors,
-            rng_state,
-            max_candidates=max_candidates,
-            dist=dist,
-            n_iters=n_iters,
-            delta=delta,
-            verbose=verbose,
-        )
+    # Note: low_memory parameter is kept for API compatibility but both paths
+    # now use the same efficient array-based implementation
+    nn_descent_internal_low_memory_parallel(
+        current_graph,
+        inds,
+        indptr,
+        data,
+        n_neighbors,
+        rng_state,
+        max_candidates=max_candidates,
+        dist=dist,
+        n_iters=n_iters,
+        delta=delta,
+        verbose=verbose,
+    )
 
     return deheap_sort(current_graph[0], current_graph[1])
