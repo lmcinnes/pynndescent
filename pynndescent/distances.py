@@ -518,6 +518,99 @@ def correct_alternative_cosine(d):
     return 1.0 - pow(2.0, -d)
 
 
+@numba.njit(
+    "f4(f4[::1],f4[::1])",
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def inner_product(x, y):
+    r"""Inner product distance (negative inner product).
+
+    This is useful for retrieval tasks where the inner product represents
+    similarity (higher = more similar). The distance is simply the negation
+    of the inner product, so that higher similarity becomes lower distance.
+
+    Note: Unlike dot product distance, this does NOT assume normalized vectors.
+    For normalized vectors, use the `dot` distance instead which is bounded [0, 1].
+
+    .. math::
+        D(x, y) = -\sum_i x_i y_i
+    """
+    result = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        result += x[i] * y[i]
+
+    return -result
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def alternative_inner_product(x, y):
+    r"""Alternative inner product distance using reciprocal transform.
+
+    This transforms the inner product into a positive distance suitable for
+    the bounded-radius search algorithm. The transform is:
+
+    .. math::
+        D_{alt}(x, y) = \frac{1}{\langle x, y \rangle}
+
+    This maps positive inner products to positive distances:
+    - High inner product → small positive distance
+    - Low positive inner product → large positive distance
+    - Non-positive inner product → FLOAT32_MAX (treated as infinitely far)
+
+    In high-dimensional nearest neighbor search, we expect true neighbors
+    to have positive inner products. Pairs with non-positive inner products
+    are treated as maximally distant, similar to how alternative_cosine
+    handles negative cosine similarities.
+
+    The correction function `correct_alternative_inner_product` converts
+    back to the negative inner product.
+    """
+    result = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        result += x[i] * y[i]
+
+    if result <= 0.0:
+        return FLOAT32_MAX
+    else:
+        return 1.0 / result
+
+
+@numba.vectorize(fastmath=True)
+def correct_alternative_inner_product(d):
+    r"""Convert alternative inner product distance back to negative inner product.
+
+    .. math::
+        D(x, y) = -\langle x, y \rangle = -\frac{1}{D_{alt}(x, y)}
+
+    For d = FLOAT32_MAX (non-positive inner products), returns 0.0 as the
+    negative inner product (representing orthogonal or dissimilar vectors).
+    """
+    if d >= FLOAT32_MAX:
+        return 0.0
+    return -1.0 / d
+
+
 @numba.njit(fastmath=True)
 def tsss(x, y):
     d_euc_squared = 0.0
@@ -999,6 +1092,7 @@ named_distances = {
     "canberra": canberra,
     "cosine": cosine,
     "dot": dot,
+    "inner_product": inner_product,
     "correlation": correlation,
     "haversine": haversine,
     "braycurtis": bray_curtis,
@@ -1047,6 +1141,10 @@ fast_distance_alternatives = {
     "l2": {"dist": squared_euclidean, "correction": np.sqrt},
     "cosine": {"dist": alternative_cosine, "correction": correct_alternative_cosine},
     "dot": {"dist": alternative_dot, "correction": correct_alternative_cosine},
+    "inner_product": {
+        "dist": alternative_inner_product,
+        "correction": correct_alternative_inner_product,
+    },
     "true_angular": {
         "dist": alternative_cosine,
         "correction": true_angular_from_alt_cosine,
