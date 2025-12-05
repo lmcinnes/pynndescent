@@ -53,6 +53,7 @@ from pynndescent.rp_trees import (
     select_side_bit,
     sparse_select_side,
     score_linked_tree,
+    make_dense_hub_tree,
 )
 
 INT32_MIN = np.iinfo(np.int32).min + 1
@@ -1010,24 +1011,68 @@ class NNDescent:
                 else:
                     self._search_forest = []
             else:
-                # convert the best trees into a search forest
-                tree_scores = [
-                    score_linked_tree(tree, self._neighbor_graph[0])
-                    for tree in self._rp_forest
-                ]
-                if self.verbose:
-                    print(ts(), "Worst tree score: {:.8f}".format(np.min(tree_scores)))
-                    print(ts(), "Mean tree score: {:.8f}".format(np.mean(tree_scores)))
-                    print(ts(), "Best tree score: {:.8f}".format(np.max(tree_scores)))
-                best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
-                best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
-                del self._rp_forest
-                self._search_forest = [
-                    convert_tree_format(
-                        tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                # Build a graph-informed tree that minimizes edge cuts
+                # (only for dense, non-bit data; fall back to selecting best random tree otherwise)
+                if not self._is_sparse and not getattr(self, "_bit_trees", False):
+                    if self.verbose:
+                        print(ts(), "Building hub-based search tree")
+
+                    gi_tree = make_dense_hub_tree(
+                        self._raw_data,
+                        self._neighbor_graph[0],
+                        self.rng_state,
+                        leaf_size=self.leaf_size if self.leaf_size else 30,
+                        n_candidates=32,
+                        angular=self._angular_trees,
+                        max_depth=self.max_rptree_depth,
                     )
-                    for tree in best_trees
-                ]
+
+                    if self.verbose:
+                        gi_score = score_linked_tree(gi_tree, self._neighbor_graph[0])
+                        # Also score some random trees for comparison
+                        tree_scores = [
+                            score_linked_tree(tree, self._neighbor_graph[0])
+                            for tree in self._rp_forest[: min(5, len(self._rp_forest))]
+                        ]
+                        print(ts(), "Hub-based tree score: {:.8f}".format(gi_score))
+                        print(
+                            ts(),
+                            "Best random tree score: {:.8f}".format(
+                                np.max(tree_scores)
+                            ),
+                        )
+
+                    del self._rp_forest
+                    self._search_forest = [
+                        convert_tree_format(
+                            gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                        )
+                    ]
+                else:
+                    # Fall back to selecting best random tree for sparse/bit data
+                    tree_scores = [
+                        score_linked_tree(tree, self._neighbor_graph[0])
+                        for tree in self._rp_forest
+                    ]
+                    if self.verbose:
+                        print(
+                            ts(), "Worst tree score: {:.8f}".format(np.min(tree_scores))
+                        )
+                        print(
+                            ts(), "Mean tree score: {:.8f}".format(np.mean(tree_scores))
+                        )
+                        print(
+                            ts(), "Best tree score: {:.8f}".format(np.max(tree_scores))
+                        )
+                    best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
+                    best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
+                    del self._rp_forest
+                    self._search_forest = [
+                        convert_tree_format(
+                            tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                        )
+                        for tree in best_trees
+                    ]
 
         nnz_pre_diversify = np.sum(self._neighbor_graph[0] >= 0)
         if self._is_sparse:

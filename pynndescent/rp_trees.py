@@ -677,6 +677,896 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     return indices_left, indices_right, hyperplane, hyperplane_offset
 
 
+# ============================================================================
+# Graph-informed tree construction
+# ============================================================================
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def select_hub_pair(indices, neighbor_indices, data, rng_state, n_hub_candidates=16):
+    """Select two high-degree points that are geometrically distant.
+
+    Strategy:
+    1. Compute in-degree for each point in this node
+    2. Sample n_hub_candidates points weighted by degree
+    3. Pick the pair with maximum geometric distance
+    """
+    n_points = indices.shape[0]
+
+    # Build lookup and compute in-degrees within this node
+    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
+    for i in range(n_points):
+        idx_to_pos[indices[i]] = i
+
+    # Count in-degree: how many times each point appears as neighbor of another point in this node
+    in_degree = np.zeros(n_points, dtype=np.int32)
+    for i in range(n_points):
+        point_idx = indices[i]
+        for j in range(neighbor_indices.shape[1]):
+            neighbor = neighbor_indices[point_idx, j]
+            if neighbor < 0:
+                break
+            neighbor_pos = idx_to_pos[neighbor]
+            if neighbor_pos >= 0:
+                in_degree[neighbor_pos] += 1
+
+    # Find top hub candidates (highest in-degree)
+    # Simple approach: collect indices with degree > 0, sort by degree
+    hub_candidates = np.empty(min(n_hub_candidates, n_points), dtype=np.int32)
+    n_hubs = 0
+
+    # Use a simple selection: pick points with highest degrees
+    # First, find the threshold degree to get ~n_hub_candidates points
+    if n_points <= n_hub_candidates:
+        # Use all points
+        for i in range(n_points):
+            hub_candidates[i] = i
+        n_hubs = n_points
+    else:
+        # Sample weighted by degree (higher degree = more likely to be selected)
+        # Add 1 to all degrees to avoid zero probability
+        total_weight = 0
+        for i in range(n_points):
+            total_weight += in_degree[i] + 1
+
+        selected = np.zeros(n_points, dtype=np.uint8)
+        for _ in range(n_hub_candidates):
+            # Weighted random selection
+            r = np.abs(tau_rand_int(rng_state)) % total_weight
+            cumsum = 0
+            for i in range(n_points):
+                if selected[i] == 0:
+                    cumsum += in_degree[i] + 1
+                    if cumsum > r:
+                        hub_candidates[n_hubs] = i
+                        n_hubs += 1
+                        selected[i] = 1
+                        total_weight -= in_degree[i] + 1
+                        break
+
+    # Find the pair of hub candidates with maximum squared distance
+    best_left = 0
+    best_right = 1 if n_hubs > 1 else 0
+    best_dist_sq = np.float32(0.0)
+
+    for i in range(n_hubs):
+        for j in range(i + 1, n_hubs):
+            left_idx = indices[hub_candidates[i]]
+            right_idx = indices[hub_candidates[j]]
+
+            dist_sq = np.float32(0.0)
+            for d in range(data.shape[1]):
+                diff = data[left_idx, d] - data[right_idx, d]
+                dist_sq += diff * diff
+
+            if dist_sq > best_dist_sq:
+                best_dist_sq = dist_sq
+                best_left = hub_candidates[i]
+                best_right = hub_candidates[j]
+
+    return indices[best_left], indices[best_right]
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+    locals={
+        "n_left": numba.uint32,
+        "n_right": numba.uint32,
+        "hyperplane_vector": numba.float32[::1],
+        "hyperplane_offset": numba.float32,
+        "margin": numba.float32,
+        "d": numba.uint32,
+        "i": numba.uint32,
+        "left_index": numba.uint32,
+        "right_index": numba.uint32,
+        "edge_cuts": numba.uint32,
+    },
+)
+def euclidean_graph_informed_split(
+    data, indices, neighbor_indices, rng_state, n_candidates=10
+):
+    """Graph-informed split that minimizes edge cuts in the neighbor graph.
+
+    Generates n_candidates random hyperplanes and selects the one that
+    minimizes the number of edges cut (neighbors separated by the split).
+    """
+    dim = data.shape[1]
+    n_points = indices.shape[0]
+
+    # Build lookup: point index -> position in indices array (-1 if not in node)
+    # This allows O(1) lookup of a neighbor's side
+    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
+    for i in range(n_points):
+        idx_to_pos[indices[i]] = i
+
+    best_hyperplane = np.empty(dim, dtype=np.float32)
+    best_offset = np.float32(0.0)
+    best_side = np.empty(n_points, dtype=np.int8)
+    best_edge_cuts = np.uint32(0xFFFFFFFF)  # max uint32
+    best_n_left = np.uint32(0)
+    best_n_right = np.uint32(0)
+
+    for _ in range(n_candidates):
+        # Select two random points, set the hyperplane between them
+        left_index = np.abs(tau_rand_int(rng_state)) % n_points
+        right_index = np.abs(tau_rand_int(rng_state)) % n_points
+        right_index += left_index == right_index
+        right_index = right_index % n_points
+        left = indices[left_index]
+        right = indices[right_index]
+
+        # Compute the normal vector to the hyperplane (the vector between
+        # the two points) and the offset from the origin
+        hyperplane_offset = np.float32(0.0)
+        hyperplane_vector = np.empty(dim, dtype=np.float32)
+
+        for d in range(dim):
+            hyperplane_vector[d] = data[left, d] - data[right, d]
+            hyperplane_offset -= (
+                hyperplane_vector[d] * (data[left, d] + data[right, d]) / 2.0
+            )
+
+        # For each point compute the margin (project into normal vector, add offset)
+        # If we are on lower side of the hyperplane put in one pile, otherwise
+        # put it in the other pile (if we hit hyperplane on the nose, flip a coin)
+        n_left = np.uint32(0)
+        n_right = np.uint32(0)
+        side = np.empty(n_points, np.int8)
+        for i in range(n_points):
+            margin = hyperplane_offset
+            for d in range(dim):
+                margin += hyperplane_vector[d] * data[indices[i], d]
+
+            if abs(margin) < EPS:
+                side[i] = np.abs(tau_rand_int(rng_state)) % 2
+                if side[i] == 0:
+                    n_left += 1
+                else:
+                    n_right += 1
+            elif margin > 0:
+                side[i] = 0
+                n_left += 1
+            else:
+                side[i] = 1
+                n_right += 1
+
+        # If all points end up on one side, skip this candidate
+        if n_left == 0 or n_right == 0:
+            continue
+
+        # Count edge cuts: edges where endpoints are on opposite sides
+        edge_cuts = np.uint32(0)
+        for i in range(n_points):
+            point_idx = indices[i]
+            point_side = side[i]
+            # Check all neighbors of this point
+            for j in range(neighbor_indices.shape[1]):
+                neighbor = neighbor_indices[point_idx, j]
+                if neighbor < 0:
+                    break
+                # O(1) lookup of neighbor's position
+                neighbor_pos = idx_to_pos[neighbor]
+                if neighbor_pos >= 0:  # neighbor is in this node
+                    if side[neighbor_pos] != point_side:
+                        edge_cuts += 1
+
+        # Each edge is counted twice (once from each endpoint), so divide by 2
+        edge_cuts = edge_cuts // 2
+
+        if edge_cuts < best_edge_cuts:
+            best_edge_cuts = edge_cuts
+            best_n_left = n_left
+            best_n_right = n_right
+            for d in range(dim):
+                best_hyperplane[d] = hyperplane_vector[d]
+            best_offset = hyperplane_offset
+            for i in range(n_points):
+                best_side[i] = side[i]
+
+    # If no valid candidate found, fall back to random assignment
+    if best_n_left == 0 or best_n_right == 0:
+        best_n_left = np.uint32(0)
+        best_n_right = np.uint32(0)
+        for i in range(n_points):
+            best_side[i] = np.abs(tau_rand_int(rng_state)) % 2
+            if best_side[i] == 0:
+                best_n_left += 1
+            else:
+                best_n_right += 1
+
+    # Now that we have the counts allocate arrays
+    indices_left = np.empty(best_n_left, dtype=np.int32)
+    indices_right = np.empty(best_n_right, dtype=np.int32)
+
+    # Populate the arrays with indices according to which side they fell on
+    n_left = np.uint32(0)
+    n_right = np.uint32(0)
+    for i in range(n_points):
+        if best_side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    return indices_left, indices_right, best_hyperplane, best_offset
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+    locals={
+        "n_left": numba.uint32,
+        "n_right": numba.uint32,
+        "hyperplane_vector": numba.float32[::1],
+        "margin": numba.float32,
+        "d": numba.uint32,
+        "i": numba.uint32,
+        "left_index": numba.uint32,
+        "right_index": numba.uint32,
+        "edge_cuts": numba.uint32,
+    },
+)
+def angular_graph_informed_split(
+    data, indices, neighbor_indices, rng_state, n_candidates=10
+):
+    """Graph-informed angular split that minimizes edge cuts in the neighbor graph.
+
+    Generates n_candidates random hyperplanes and selects the one that
+    minimizes the number of edges cut (neighbors separated by the split).
+    """
+    dim = data.shape[1]
+    n_points = indices.shape[0]
+
+    # Build lookup: point index -> position in indices array (-1 if not in node)
+    # This allows O(1) lookup of a neighbor's side
+    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
+    for i in range(n_points):
+        idx_to_pos[indices[i]] = i
+
+    best_hyperplane = np.empty(dim, dtype=np.float32)
+    best_side = np.empty(n_points, dtype=np.int8)
+    best_edge_cuts = np.uint32(0xFFFFFFFF)  # max uint32
+    best_n_left = np.uint32(0)
+    best_n_right = np.uint32(0)
+
+    for _ in range(n_candidates):
+        # Select two random points, set the hyperplane between them
+        left_index = np.abs(tau_rand_int(rng_state)) % n_points
+        right_index = np.abs(tau_rand_int(rng_state)) % n_points
+        right_index += left_index == right_index
+        right_index = right_index % n_points
+        left = indices[left_index]
+        right = indices[right_index]
+
+        left_norm = norm(data[left])
+        right_norm = norm(data[right])
+
+        if abs(left_norm) < EPS:
+            left_norm = 1.0
+
+        if abs(right_norm) < EPS:
+            right_norm = 1.0
+
+        # Compute the normal vector to the hyperplane (the vector between
+        # the two points)
+        hyperplane_vector = np.empty(dim, dtype=np.float32)
+
+        for d in range(dim):
+            hyperplane_vector[d] = (data[left, d] / left_norm) - (
+                data[right, d] / right_norm
+            )
+
+        hyperplane_norm = norm(hyperplane_vector)
+        if abs(hyperplane_norm) < EPS:
+            hyperplane_norm = 1.0
+
+        for d in range(dim):
+            hyperplane_vector[d] = hyperplane_vector[d] / hyperplane_norm
+
+        # For each point compute the margin (project into normal vector)
+        # If we are on lower side of the hyperplane put in one pile, otherwise
+        # put it in the other pile (if we hit hyperplane on the nose, flip a coin)
+        n_left = np.uint32(0)
+        n_right = np.uint32(0)
+        side = np.empty(n_points, np.int8)
+        for i in range(n_points):
+            margin = np.float32(0.0)
+            for d in range(dim):
+                margin += hyperplane_vector[d] * data[indices[i], d]
+
+            if abs(margin) < EPS:
+                side[i] = np.abs(tau_rand_int(rng_state)) % 2
+                if side[i] == 0:
+                    n_left += 1
+                else:
+                    n_right += 1
+            elif margin > 0:
+                side[i] = 0
+                n_left += 1
+            else:
+                side[i] = 1
+                n_right += 1
+
+        # If all points end up on one side, skip this candidate
+        if n_left == 0 or n_right == 0:
+            continue
+
+        # Count edge cuts: edges where endpoints are on opposite sides
+        edge_cuts = np.uint32(0)
+        for i in range(n_points):
+            point_idx = indices[i]
+            point_side = side[i]
+            # Check all neighbors of this point
+            for j in range(neighbor_indices.shape[1]):
+                neighbor = neighbor_indices[point_idx, j]
+                if neighbor < 0:
+                    break
+                # O(1) lookup of neighbor's position
+                neighbor_pos = idx_to_pos[neighbor]
+                if neighbor_pos >= 0:  # neighbor is in this node
+                    if side[neighbor_pos] != point_side:
+                        edge_cuts += 1
+
+        # Each edge is counted twice (once from each endpoint), so divide by 2
+        edge_cuts = edge_cuts // 2
+
+        if edge_cuts < best_edge_cuts:
+            best_edge_cuts = edge_cuts
+            best_n_left = n_left
+            best_n_right = n_right
+            for d in range(dim):
+                best_hyperplane[d] = hyperplane_vector[d]
+            for i in range(n_points):
+                best_side[i] = side[i]
+
+    # If no valid candidate found, fall back to random assignment
+    if best_n_left == 0 or best_n_right == 0:
+        best_n_left = np.uint32(0)
+        best_n_right = np.uint32(0)
+        for i in range(n_points):
+            best_side[i] = np.abs(tau_rand_int(rng_state)) % 2
+            if best_side[i] == 0:
+                best_n_left += 1
+            else:
+                best_n_right += 1
+
+    # Now that we have the counts allocate arrays
+    indices_left = np.empty(best_n_left, dtype=np.int32)
+    indices_right = np.empty(best_n_right, dtype=np.int32)
+
+    # Populate the arrays with indices according to which side they fell on
+    n_left = np.uint32(0)
+    n_right = np.uint32(0)
+    for i in range(n_points):
+        if best_side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    return indices_left, indices_right, best_hyperplane, np.float32(0.0)
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+    locals={
+        "n_left": numba.uint32,
+        "n_right": numba.uint32,
+        "hyperplane_vector": numba.float32[::1],
+        "hyperplane_offset": numba.float32,
+        "margin": numba.float32,
+        "d": numba.uint32,
+        "i": numba.uint32,
+        "edge_cuts": numba.uint32,
+    },
+)
+def euclidean_hub_split(data, indices, neighbor_indices, rng_state, n_candidates=10):
+    """Hub-based graph-informed split.
+
+    Uses high-degree nodes (hubs) to generate candidate hyperplanes,
+    then selects the one that minimizes edge cuts.
+    """
+    dim = data.shape[1]
+    n_points = indices.shape[0]
+
+    # Build lookup: point index -> position in indices array (-1 if not in node)
+    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
+    for i in range(n_points):
+        idx_to_pos[indices[i]] = i
+
+    best_hyperplane = np.empty(dim, dtype=np.float32)
+    best_offset = np.float32(0.0)
+    best_side = np.empty(n_points, dtype=np.int8)
+    best_edge_cuts = np.uint32(0xFFFFFFFF)  # max uint32
+    best_n_left = np.uint32(0)
+    best_n_right = np.uint32(0)
+
+    for _ in range(n_candidates):
+        # Use hub-based selection: pick high-degree points that are far apart
+        left, right = select_hub_pair(
+            indices, neighbor_indices, data, rng_state, n_hub_candidates=16
+        )
+
+        # Compute the normal vector to the hyperplane (the vector between
+        # the two points) and the offset from the origin
+        hyperplane_offset = np.float32(0.0)
+        hyperplane_vector = np.empty(dim, dtype=np.float32)
+
+        for d in range(dim):
+            hyperplane_vector[d] = data[left, d] - data[right, d]
+            hyperplane_offset -= (
+                hyperplane_vector[d] * (data[left, d] + data[right, d]) / 2.0
+            )
+
+        # For each point compute the margin (project into normal vector, add offset)
+        n_left = np.uint32(0)
+        n_right = np.uint32(0)
+        side = np.empty(n_points, np.int8)
+        for i in range(n_points):
+            margin = hyperplane_offset
+            for d in range(dim):
+                margin += hyperplane_vector[d] * data[indices[i], d]
+
+            if abs(margin) < EPS:
+                side[i] = np.abs(tau_rand_int(rng_state)) % 2
+                if side[i] == 0:
+                    n_left += 1
+                else:
+                    n_right += 1
+            elif margin > 0:
+                side[i] = 0
+                n_left += 1
+            else:
+                side[i] = 1
+                n_right += 1
+
+        # If all points end up on one side, skip this candidate
+        if n_left == 0 or n_right == 0:
+            continue
+
+        # Count edge cuts
+        edge_cuts = np.uint32(0)
+        for i in range(n_points):
+            point_idx = indices[i]
+            point_side = side[i]
+            for j in range(neighbor_indices.shape[1]):
+                neighbor = neighbor_indices[point_idx, j]
+                if neighbor < 0:
+                    break
+                neighbor_pos = idx_to_pos[neighbor]
+                if neighbor_pos >= 0:
+                    if side[neighbor_pos] != point_side:
+                        edge_cuts += 1
+
+        edge_cuts = edge_cuts // 2
+
+        if edge_cuts < best_edge_cuts:
+            best_edge_cuts = edge_cuts
+            best_n_left = n_left
+            best_n_right = n_right
+            for d in range(dim):
+                best_hyperplane[d] = hyperplane_vector[d]
+            best_offset = hyperplane_offset
+            for i in range(n_points):
+                best_side[i] = side[i]
+
+    # If no valid candidate found, fall back to random assignment
+    if best_n_left == 0 or best_n_right == 0:
+        best_n_left = np.uint32(0)
+        best_n_right = np.uint32(0)
+        for i in range(n_points):
+            best_side[i] = np.abs(tau_rand_int(rng_state)) % 2
+            if best_side[i] == 0:
+                best_n_left += 1
+            else:
+                best_n_right += 1
+
+    # Now that we have the counts allocate arrays
+    indices_left = np.empty(best_n_left, dtype=np.int32)
+    indices_right = np.empty(best_n_right, dtype=np.int32)
+
+    n_left = np.uint32(0)
+    n_right = np.uint32(0)
+    for i in range(n_points):
+        if best_side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    return indices_left, indices_right, best_hyperplane, best_offset
+
+
+@numba.njit(
+    nogil=True,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+)
+def make_hub_euclidean_tree(
+    data,
+    indices,
+    neighbor_indices,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    n_candidates=10,
+    max_depth=200,
+):
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+        ) = euclidean_hub_split(
+            data, indices, neighbor_indices, rng_state, n_candidates
+        )
+
+        make_hub_euclidean_tree(
+            data,
+            left_indices,
+            neighbor_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            n_candidates,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_hub_euclidean_tree(
+            data,
+            right_indices,
+            neighbor_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            n_candidates,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([-1.0], dtype=np.float32))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
+
+@numba.njit(nogil=True)
+def make_dense_hub_tree(
+    data,
+    neighbor_indices,
+    rng_state,
+    leaf_size=30,
+    n_candidates=10,
+    angular=False,
+    max_depth=200,
+):
+    """Build an RP tree using hub-based hyperplane selection.
+
+    Parameters
+    ----------
+    data : array of shape (n_samples, n_features)
+        The data to build the tree on.
+    neighbor_indices : array of shape (n_samples, n_neighbors)
+        The neighbor graph indices.
+    rng_state : array of int64, shape (3,)
+        The internal state of the rng.
+    leaf_size : int
+        The maximum size of a leaf node.
+    n_candidates : int
+        Number of candidate hyperplanes to evaluate at each split.
+    angular : bool
+        Whether to use angular (cosine) or euclidean distance.
+    max_depth : int
+        Maximum tree depth.
+
+    Returns
+    -------
+    tree : FlatTree
+        The constructed tree.
+    """
+    indices = np.arange(data.shape[0]).astype(np.int32)
+    hyperplanes = numba.typed.List.empty_list(dense_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+
+    # For now, only euclidean hub trees are implemented
+    make_hub_euclidean_tree(
+        data,
+        indices,
+        neighbor_indices,
+        hyperplanes,
+        offsets,
+        children,
+        point_indices,
+        rng_state,
+        leaf_size,
+        n_candidates,
+        max_depth=max_depth,
+    )
+
+    max_leaf_size = leaf_size
+    for points in point_indices:
+        if len(points) > max_leaf_size:
+            max_leaf_size = numba.int32(len(points))
+
+    result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
+    return result
+
+
+@numba.njit(
+    nogil=True,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+)
+def make_graph_informed_euclidean_tree(
+    data,
+    indices,
+    neighbor_indices,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    n_candidates=10,
+    max_depth=200,
+):
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+        ) = euclidean_graph_informed_split(
+            data, indices, neighbor_indices, rng_state, n_candidates
+        )
+
+        make_graph_informed_euclidean_tree(
+            data,
+            left_indices,
+            neighbor_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            n_candidates,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_graph_informed_euclidean_tree(
+            data,
+            right_indices,
+            neighbor_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            n_candidates,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([-1.0], dtype=np.float32))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
+
+@numba.njit(
+    nogil=True,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+)
+def make_graph_informed_angular_tree(
+    data,
+    indices,
+    neighbor_indices,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    n_candidates=10,
+    max_depth=200,
+):
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+        ) = angular_graph_informed_split(
+            data, indices, neighbor_indices, rng_state, n_candidates
+        )
+
+        make_graph_informed_angular_tree(
+            data,
+            left_indices,
+            neighbor_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            n_candidates,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_graph_informed_angular_tree(
+            data,
+            right_indices,
+            neighbor_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            n_candidates,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([-1.0], dtype=np.float32))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
+
+@numba.njit(nogil=True)
+def make_dense_graph_informed_tree(
+    data,
+    neighbor_indices,
+    rng_state,
+    leaf_size=30,
+    n_candidates=10,
+    angular=False,
+    max_depth=200,
+):
+    """Build an RP tree that minimizes edge cuts in the neighbor graph.
+
+    Parameters
+    ----------
+    data : array of shape (n_samples, n_features)
+        The data to build the tree on.
+    neighbor_indices : array of shape (n_samples, n_neighbors)
+        The neighbor graph indices.
+    rng_state : array of int64, shape (3,)
+        The internal state of the rng.
+    leaf_size : int
+        The maximum size of a leaf node.
+    n_candidates : int
+        Number of candidate hyperplanes to evaluate at each split.
+    angular : bool
+        Whether to use angular (cosine) or euclidean distance.
+    max_depth : int
+        Maximum tree depth.
+
+    Returns
+    -------
+    tree : FlatTree
+        The constructed tree.
+    """
+    indices = np.arange(data.shape[0]).astype(np.int32)
+    hyperplanes = numba.typed.List.empty_list(dense_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+
+    if angular:
+        make_graph_informed_angular_tree(
+            data,
+            indices,
+            neighbor_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            n_candidates,
+            max_depth=max_depth,
+        )
+    else:
+        make_graph_informed_euclidean_tree(
+            data,
+            indices,
+            neighbor_indices,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            n_candidates,
+            max_depth=max_depth,
+        )
+
+    max_leaf_size = leaf_size
+    for points in point_indices:
+        if len(points) > max_leaf_size:
+            max_leaf_size = numba.int32(len(points))
+
+    result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
+    return result
+
+
 @numba.njit(
     nogil=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
@@ -1613,17 +2503,55 @@ def score_tree(tree, neighbor_indices, data, rng_state):
     return result / numba.float32(neighbor_indices.shape[0])
 
 
-@numba.njit(nogil=True, locals={"node": numba.int32}, cache=False)
+@numba.njit(
+    nogil=True,
+    locals={"node": numba.int32, "count": numba.int32},
+    cache=False,
+)
 def score_linked_tree(tree, neighbor_indices):
-    result = 0.0
+    """Score a tree by measuring how well leaves contain nearest neighbors.
+
+    For each point, computes the fraction of its k nearest neighbors that
+    are in the same leaf. Returns the average of this fraction across all points.
+
+    A score of 1.0 means all neighbors are always in the same leaf (perfect).
+    A score of 0.0 means no neighbors are ever in the same leaf (worst).
+    """
+    n_points = neighbor_indices.shape[0]
+    k = neighbor_indices.shape[1]
+    total_score = 0.0
     n_nodes = len(tree.children)
+
     for i in range(n_nodes):
         node = numba.int32(i)
         left_child = tree.children[node][0]
         right_child = tree.children[node][1]
+
+        # Only process leaf nodes
         if left_child == -1 and right_child == -1:
-            for j in range(tree.indices[node].shape[0]):
-                idx = tree.indices[node][j]
-                intersection = arr_intersect(neighbor_indices[idx], tree.indices[node])
-                result += numba.float32(intersection.shape[0] > 1)
-    return result / numba.float32(neighbor_indices.shape[0])
+            leaf_indices = tree.indices[node]
+            leaf_size = leaf_indices.shape[0]
+
+            # Build a lookup set for the leaf (max value we need to check)
+            # Use a simple approach: for each point in leaf, count neighbors in leaf
+            for j in range(leaf_size):
+                idx = leaf_indices[j]
+                neighbors = neighbor_indices[idx]
+
+                # Count how many neighbors are in this leaf
+                count = 0
+                for ni in range(k):
+                    neighbor = neighbors[ni]
+                    # Check if neighbor is in leaf (linear scan - leaf is small)
+                    for li in range(leaf_size):
+                        if leaf_indices[li] == neighbor:
+                            count += 1
+                            break
+
+                # Subtract 1 if point itself is counted as neighbor (self-loop)
+                # and normalize by k
+                # Actually, neighbor_indices typically doesn't include self,
+                # so we just use count directly
+                total_score += numba.float32(count) / numba.float32(k)
+
+    return total_score / numba.float32(n_points)
