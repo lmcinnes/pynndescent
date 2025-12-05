@@ -54,12 +54,9 @@ from pynndescent.rp_trees import (
     select_side_bit,
     sparse_select_side,
     score_linked_tree,
-    make_dense_hub_tree,
+    make_hub_tree,
     make_sparse_hub_tree,
     make_bit_hub_tree,
-    make_simple_hub_tree,
-    make_simple_sparse_hub_tree,
-    make_simple_bit_hub_tree,
 )
 
 INT32_MIN = np.iinfo(np.int32).min + 1
@@ -1023,7 +1020,7 @@ class NNDescent:
 
                 if self._is_sparse:
                     # Sparse data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_simple_sparse_hub_tree(
+                    gi_tree = make_sparse_hub_tree(
                         self._raw_data.indices,
                         self._raw_data.indptr,
                         self._raw_data.data,
@@ -1043,7 +1040,7 @@ class NNDescent:
                     ]
                 elif getattr(self, "_bit_trees", False):
                     # Bit-packed data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_simple_bit_hub_tree(
+                    gi_tree = make_bit_hub_tree(
                         self._raw_data,
                         self._neighbor_graph[0],
                         self.rng_state,
@@ -1058,7 +1055,7 @@ class NNDescent:
                     ]
                 else:
                     # Dense data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_simple_hub_tree(
+                    gi_tree = make_hub_tree(
                         self._raw_data,
                         self._neighbor_graph[0],
                         self.rng_state,

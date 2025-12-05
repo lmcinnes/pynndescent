@@ -20,7 +20,8 @@ from pynndescent.rp_trees import (
     angular_hub_split,
     sparse_euclidean_hub_split,
     sparse_angular_hub_split,
-    bitpacked_hub_split,
+    bit_hub_split,
+    compute_global_degrees,
 )
 
 
@@ -64,9 +65,10 @@ def test_euclidean_hub_split_produces_valid_split(hub_tree_data):
 
     indices = np.arange(100, dtype=np.int32)  # Test with first 100 points
     rng_state = np.array([42, 12345, 67890], dtype=np.int64)
+    global_degrees = compute_global_degrees(neighbor_indices)
 
     left, right, hyperplane, offset = euclidean_hub_split(
-        hub_tree_data, indices, neighbor_indices, rng_state, n_candidates=5
+        hub_tree_data, indices, neighbor_indices, global_degrees, rng_state
     )
 
     # Check that split is valid
@@ -88,9 +90,10 @@ def test_angular_hub_split_produces_valid_split(hub_tree_data):
 
     indices = np.arange(100, dtype=np.int32)
     rng_state = np.array([42, 12345, 67890], dtype=np.int64)
+    global_degrees = compute_global_degrees(neighbor_indices)
 
     left, right, hyperplane, offset = angular_hub_split(
-        angular_data, indices, neighbor_indices, rng_state, n_candidates=5
+        angular_data, indices, neighbor_indices, global_degrees, rng_state
     )
 
     assert len(left) > 0, "Left partition should not be empty"
@@ -106,6 +109,7 @@ def test_sparse_euclidean_hub_split_produces_valid_split(hub_tree_sparse_data):
 
     indices = np.arange(100, dtype=np.int32)
     rng_state = np.array([42, 12345, 67890], dtype=np.int64)
+    global_degrees = compute_global_degrees(neighbor_indices)
 
     sp_data = hub_tree_sparse_data.tocsr()
     left, right, hyperplane, offset = sparse_euclidean_hub_split(
@@ -114,8 +118,8 @@ def test_sparse_euclidean_hub_split_produces_valid_split(hub_tree_sparse_data):
         sp_data.data,
         indices,
         neighbor_indices,
+        global_degrees,
         rng_state,
-        n_candidates=5,
     )
 
     assert len(left) > 0, "Left partition should not be empty"
@@ -132,6 +136,7 @@ def test_sparse_angular_hub_split_produces_valid_split(hub_tree_sparse_data):
 
     indices = np.arange(100, dtype=np.int32)
     rng_state = np.array([42, 12345, 67890], dtype=np.int64)
+    global_degrees = compute_global_degrees(neighbor_indices)
 
     sp_data = normalized_data.tocsr()
     left, right, hyperplane, offset = sparse_angular_hub_split(
@@ -140,8 +145,8 @@ def test_sparse_angular_hub_split_produces_valid_split(hub_tree_sparse_data):
         sp_data.data,
         indices,
         neighbor_indices,
+        global_degrees,
         rng_state,
-        n_candidates=5,
     )
 
     assert len(left) > 0, "Left partition should not be empty"
@@ -150,7 +155,7 @@ def test_sparse_angular_hub_split_produces_valid_split(hub_tree_sparse_data):
 
 
 def test_bitpacked_hub_split_produces_valid_split(hub_tree_bit_data):
-    """Test that bitpacked_hub_split produces a valid split."""
+    """Test that bit_hub_split produces a valid split."""
     nnd = NNDescent(
         hub_tree_bit_data, metric="bit_jaccard", n_neighbors=15, random_state=42
     )
@@ -158,9 +163,10 @@ def test_bitpacked_hub_split_produces_valid_split(hub_tree_bit_data):
 
     indices = np.arange(100, dtype=np.int32)
     rng_state = np.array([42, 12345, 67890], dtype=np.int64)
+    global_degrees = compute_global_degrees(neighbor_indices)
 
-    left, right, hyperplane, offset = bitpacked_hub_split(
-        hub_tree_bit_data, indices, neighbor_indices, rng_state, n_candidates=5
+    left, right, hyperplane, offset = bit_hub_split(
+        hub_tree_bit_data, indices, neighbor_indices, global_degrees, rng_state
     )
 
     assert len(left) > 0, "Left partition should not be empty"
