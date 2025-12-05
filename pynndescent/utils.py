@@ -335,6 +335,20 @@ def mark_visited(table, candidate):
     return
 
 
+@numba.njit("b1(u1[::1],i4)", cache=True)
+def check_and_mark_visited(table, candidate):
+    """Check if candidate was visited and mark it as visited in one operation.
+    
+    Returns True if the candidate was already visited, False otherwise.
+    More efficient than separate has_been_visited + mark_visited calls.
+    """
+    loc = candidate >> 3
+    mask = numba.uint8(1 << (candidate & 7))
+    was_visited = table[loc] & mask
+    table[loc] |= mask
+    return was_visited
+
+
 @numba.njit(
     "i4(f4[::1],i4[::1],f4,i4)",
     fastmath=True,

@@ -34,6 +34,7 @@ from pynndescent.utils import (
     checked_flagged_heap_push,
     has_been_visited,
     mark_visited,
+    check_and_mark_visited,
     generate_graph_update_array,
     apply_graph_update_array,
     initalize_heap_from_graph_indices,
@@ -1030,15 +1031,18 @@ class NNDescent:
                     if self.verbose:
                         gi_score = score_linked_tree(gi_tree, self._neighbor_graph[0])
                         # Also score some random trees for comparison
-                        tree_scores = [
+                        random_tree_scores = [
                             score_linked_tree(tree, self._neighbor_graph[0])
                             for tree in self._rp_forest[: min(5, len(self._rp_forest))]
                         ]
-                        print(ts(), "Hub-based tree score: {:.8f}".format(gi_score))
                         print(
                             ts(),
-                            "Best random tree score: {:.8f}".format(
-                                np.max(tree_scores)
+                            "Hub-based tree score: {:.4f}".format(gi_score),
+                        )
+                        print(
+                            ts(),
+                            "Best random tree score: {:.4f}".format(
+                                np.max(random_tree_scores)
                             ),
                         )
 
@@ -1385,12 +1389,11 @@ class NNDescent:
                 seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
                 # heapq.heapify(seed_set)
 
-                ############ Init ################
+                ############ Init from Tree ################
                 index_bounds = tree_search_closure(current_query, internal_rng_state)
                 candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
 
                 n_initial_points = candidate_indices.shape[0]
-                n_random_samples = min(k, n_neighbors) - n_initial_points
 
                 for j in range(n_initial_points):
                     candidate = candidate_indices[j]
@@ -1400,18 +1403,20 @@ class NNDescent:
                     heapq.heappush(seed_set, (d, candidate))
                     mark_visited(visited_nodes, candidate)
 
+                ############ Random samples if needed ################
+                n_random_samples = min(k, n_neighbors) - n_initial_points
+
                 if n_random_samples > 0:
                     for j in range(n_random_samples):
                         candidate = np.int32(
                             np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
-                        if has_been_visited(visited_nodes, candidate) == 0:
+                        if check_and_mark_visited(visited_nodes, candidate) == 0:
                             d = np.float32(dist(data[candidate], current_query))
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
                             heapq.heappush(seed_set, (d, candidate))
-                            mark_visited(visited_nodes, candidate)
 
                 ############ Search ##############
                 distance_bound = distance_scale * heap_priorities[0]
@@ -1425,8 +1430,7 @@ class NNDescent:
 
                         candidate = indices[j]
 
-                        if has_been_visited(visited_nodes, candidate) == 0:
-                            mark_visited(visited_nodes, candidate)
+                        if check_and_mark_visited(visited_nodes, candidate) == 0:
 
                             d = np.float32(dist(data[candidate], current_query))
 
@@ -1606,7 +1610,7 @@ class NNDescent:
                         candidate = np.int32(
                             np.abs(tau_rand_int(internal_rng_state)) % n_index_points
                         )
-                        if has_been_visited(visited_nodes, candidate) == 0:
+                        if check_and_mark_visited(visited_nodes, candidate) == 0:
                             from_inds = data_inds[
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
@@ -1627,7 +1631,6 @@ class NNDescent:
                                 heap_priorities, heap_indices, d, candidate
                             )
                             heapq.heappush(seed_set, (d, candidate))
-                            mark_visited(visited_nodes, candidate)
 
                 ############ Search ##############
                 distance_bound = distance_scale * heap_priorities[0]
@@ -1641,8 +1644,7 @@ class NNDescent:
 
                         candidate = indices[j]
 
-                        if has_been_visited(visited_nodes, candidate) == 0:
-                            mark_visited(visited_nodes, candidate)
+                        if check_and_mark_visited(visited_nodes, candidate) == 0:
 
                             from_inds = data_inds[
                                 data_indptr[candidate] : data_indptr[candidate + 1]
