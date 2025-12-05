@@ -680,6 +680,32 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
 # ============================================================================
 # Graph-informed tree construction
 # ============================================================================
+
+# Threshold below which we skip edge-cut optimization and just use hub-based split
+# This greatly speeds up tree construction for large datasets
+FAST_SPLIT_THRESHOLD = 5000
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def binary_search(sorted_arr, value):
+    """Binary search returning index if found, -1 otherwise."""
+    lo = 0
+    hi = sorted_arr.shape[0] - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if sorted_arr[mid] == value:
+            return mid
+        elif sorted_arr[mid] < value:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return -1
+
+
 @numba.njit(
     fastmath=True,
     nogil=True,
@@ -767,19 +793,22 @@ def get_top_k_hub_indices(indices, global_degrees, k=5):
     return top_indices
 
 
+# Minimum split balance threshold - if best split is worse than this, don't split
+# A balance of 0.1 means 10/90 split which is quite unbalanced
+MIN_SPLIT_BALANCE = 0.1
+
+
 @numba.njit(
     fastmath=True,
     nogil=True,
     cache=False,
 )
-def euclidean_hub_split(
-    data, indices, neighbor_indices, global_degrees, rng_state
-):
-    """Simplified hub-based graph-informed split using precomputed degrees.
+def euclidean_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
+    """Hub-based graph-informed split using balance-based selection.
 
     Uses the top 3 highest-degree nodes to generate all 3 possible hyperplanes,
-    then selects the one that minimizes edge cuts. Sequential evaluation since
-    3 pairs is too small to benefit from parallelization overhead.
+    then selects the one with the best balance (closest to 50/50 split).
+    This is much faster than edge-cut counting while still producing good quality trees.
 
     Parameters
     ----------
@@ -796,7 +825,8 @@ def euclidean_hub_split(
 
     Returns
     -------
-    indices_left, indices_right, hyperplane, offset
+    indices_left, indices_right, hyperplane, offset, balance
+        The balance is returned so the caller can decide whether to accept the split.
     """
     dim = data.shape[1]
     n_points = indices.shape[0]
@@ -805,13 +835,8 @@ def euclidean_hub_split(
     top_hubs = get_top_k_hub_indices(indices, global_degrees, 3)
     n_hubs = top_hubs.shape[0]
 
-    # Build lookup: point index -> position in indices array
-    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
-    for i in range(n_points):
-        idx_to_pos[indices[i]] = i
-
     # Storage for best result
-    best_edge_cuts = np.uint32(0xFFFFFFFF)
+    best_balance = np.float32(0.0)  # Closer to 0.5 is better
     best_n_left = np.uint32(0)
     best_n_right = np.uint32(0)
     best_hyperplane = np.zeros(dim, dtype=np.float32)
@@ -819,7 +844,7 @@ def euclidean_hub_split(
     best_side = np.zeros(n_points, dtype=np.int8)
     side = np.empty(n_points, dtype=np.int8)
 
-    # Evaluate all hub pairs sequentially (only 3 pairs for k=3)
+    # Evaluate all hub pairs and pick the most balanced split
     for hi in range(n_hubs):
         for hj in range(hi + 1, n_hubs):
             left = top_hubs[hi]
@@ -861,24 +886,11 @@ def euclidean_hub_split(
             if n_left == 0 or n_right == 0:
                 continue
 
-            # Count edge cuts
-            edge_cuts = np.uint32(0)
-            for i in range(n_points):
-                point_idx = indices[i]
-                point_side = side[i]
-                for j_nb in range(neighbor_indices.shape[1]):
-                    neighbor = neighbor_indices[point_idx, j_nb]
-                    if neighbor < 0:
-                        break
-                    neighbor_pos = idx_to_pos[neighbor]
-                    if neighbor_pos >= 0:
-                        if side[neighbor_pos] != point_side:
-                            edge_cuts += 1
+            # Score by balance (how close to 50/50)
+            balance = np.float32(min(n_left, n_right)) / np.float32(n_points)
 
-            edge_cuts = edge_cuts // 2
-
-            if edge_cuts < best_edge_cuts:
-                best_edge_cuts = edge_cuts
+            if balance > best_balance:
+                best_balance = balance
                 best_n_left = n_left
                 best_n_right = n_right
                 best_offset = hyperplane_offset
@@ -912,7 +924,7 @@ def euclidean_hub_split(
             indices_right[n_right] = indices[i]
             n_right += 1
 
-    return indices_left, indices_right, best_hyperplane, best_offset
+    return indices_left, indices_right, best_hyperplane, best_offset, best_balance
 
 
 @numba.njit(
@@ -920,14 +932,16 @@ def euclidean_hub_split(
     nogil=True,
     cache=False,
 )
-def angular_hub_split(
-    data, indices, neighbor_indices, global_degrees, rng_state
-):
-    """Simplified angular hub-based split using precomputed degrees.
+def angular_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
+    """Angular hub-based split using balance-based selection.
 
     Uses the top 3 highest-degree nodes to generate all 3 possible hyperplanes,
-    then selects the one that minimizes edge cuts. Sequential evaluation since
-    3 pairs is too small to benefit from parallelization overhead.
+    then selects the one with the best balance (closest to 50/50 split).
+
+    Returns
+    -------
+    indices_left, indices_right, hyperplane, offset, balance
+        The balance is returned so the caller can decide whether to accept the split.
     """
     dim = data.shape[1]
     n_points = indices.shape[0]
@@ -936,20 +950,15 @@ def angular_hub_split(
     top_hubs = get_top_k_hub_indices(indices, global_degrees, 3)
     n_hubs = top_hubs.shape[0]
 
-    # Build lookup: point index -> position in indices array
-    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
-    for i in range(n_points):
-        idx_to_pos[indices[i]] = i
-
     # Storage for best result
-    best_edge_cuts = np.uint32(0xFFFFFFFF)
+    best_balance = np.float32(0.0)
     best_n_left = np.uint32(0)
     best_n_right = np.uint32(0)
     best_hyperplane = np.zeros(dim, dtype=np.float32)
     best_side = np.zeros(n_points, dtype=np.int8)
     side = np.empty(n_points, dtype=np.int8)
 
-    # Evaluate all hub pairs sequentially (only 3 pairs for k=3)
+    # Evaluate all hub pairs and pick the most balanced split
     for hi in range(n_hubs):
         for hj in range(hi + 1, n_hubs):
             left = top_hubs[hi]
@@ -1002,24 +1011,11 @@ def angular_hub_split(
             if n_left == 0 or n_right == 0:
                 continue
 
-            # Count edge cuts
-            edge_cuts = np.uint32(0)
-            for i in range(n_points):
-                point_idx = indices[i]
-                point_side = side[i]
-                for j_nb in range(neighbor_indices.shape[1]):
-                    neighbor = neighbor_indices[point_idx, j_nb]
-                    if neighbor < 0:
-                        break
-                    neighbor_pos = idx_to_pos[neighbor]
-                    if neighbor_pos >= 0:
-                        if side[neighbor_pos] != point_side:
-                            edge_cuts += 1
+            # Score by balance
+            balance = np.float32(min(n_left, n_right)) / np.float32(n_points)
 
-            edge_cuts = edge_cuts // 2
-
-            if edge_cuts < best_edge_cuts:
-                best_edge_cuts = edge_cuts
+            if balance > best_balance:
+                best_balance = balance
                 best_n_left = n_left
                 best_n_right = n_right
                 for d in range(dim):
@@ -1052,7 +1048,7 @@ def angular_hub_split(
             indices_right[n_right] = indices[i]
             n_right += 1
 
-    return indices_left, indices_right, best_hyperplane, np.float32(0.0)
+    return indices_left, indices_right, best_hyperplane, np.float32(0.0), best_balance
 
 
 @numba.njit(
@@ -1073,16 +1069,31 @@ def make_hub_euclidean_tree(
     leaf_size=30,
     max_depth=200,
 ):
-    """Recursive tree builder using simplified hub splits."""
+    """Recursive tree builder using hub-based splits.
+
+    Stops splitting if:
+    - Node size <= leaf_size
+    - max_depth reached
+    - Best split balance < MIN_SPLIT_BALANCE (creates larger leaf instead of bad split)
+    """
     if indices.shape[0] > leaf_size and max_depth > 0:
         (
             left_indices,
             right_indices,
             hyperplane,
             offset,
+            balance,
         ) = euclidean_hub_split(
             data, indices, neighbor_indices, global_degrees, rng_state
         )
+
+        # If split is too unbalanced, make a leaf instead
+        if balance < MIN_SPLIT_BALANCE:
+            hyperplanes.append(np.array([-1.0], dtype=np.float32))
+            offsets.append(-np.inf)
+            children.append((np.int32(-1), np.int32(-1)))
+            point_indices.append(indices)
+            return
 
         make_hub_euclidean_tree(
             data,
@@ -1147,16 +1158,31 @@ def make_hub_angular_tree(
     leaf_size=30,
     max_depth=200,
 ):
-    """Recursive tree builder using simplified angular hub splits."""
+    """Recursive tree builder using angular hub-based splits.
+
+    Stops splitting if:
+    - Node size <= leaf_size
+    - max_depth reached
+    - Best split balance < MIN_SPLIT_BALANCE (creates larger leaf instead of bad split)
+    """
     if indices.shape[0] > leaf_size and max_depth > 0:
         (
             left_indices,
             right_indices,
             hyperplane,
             offset,
+            balance,
         ) = angular_hub_split(
             data, indices, neighbor_indices, global_degrees, rng_state
         )
+
+        # If split is too unbalanced, make a leaf instead
+        if balance < MIN_SPLIT_BALANCE:
+            hyperplanes.append(np.array([-1.0], dtype=np.float32))
+            offsets.append(-np.inf)
+            children.append((np.int32(-1), np.int32(-1)))
+            point_indices.append(indices)
+            return
 
         make_hub_angular_tree(
             data,
@@ -2034,9 +2060,7 @@ def make_bit_hub_tree_recursive(
             right_indices,
             hyperplane,
             offset,
-        ) = bit_hub_split(
-            data, indices, neighbor_indices, global_degrees, rng_state
-        )
+        ) = bit_hub_split(data, indices, neighbor_indices, global_degrees, rng_state)
 
         make_bit_hub_tree_recursive(
             data,
