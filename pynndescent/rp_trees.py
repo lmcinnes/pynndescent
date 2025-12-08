@@ -1360,7 +1360,7 @@ def make_forest(
         np.int64
     )
     try:
-        if scipy.sparse.isspmatrix_csr(data):
+        if scipy.sparse.isspmatrix_csr(data) or isinstance(data, scipy.sparse.csr_array):
             result = joblib.Parallel(n_jobs=n_jobs, require="sharedmem")(
                 joblib.delayed(make_sparse_tree)(
                     data.indices,
