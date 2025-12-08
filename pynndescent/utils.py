@@ -5,8 +5,6 @@
 import time
 
 import numba
-from numba.core import types
-import numba.experimental.structref as structref
 import numpy as np
 
 
@@ -129,45 +127,6 @@ def rejection_sample(n_samples, pool_size, rng_state):
     return result
 
 
-@structref.register
-class HeapType(types.StructRef):
-    pass
-
-
-class Heap(structref.StructRefProxy):
-    @property
-    def indices(self):
-        return Heap_get_indices(self)
-
-    @property
-    def distances(self):
-        return Heap_get_distances(self)
-
-    @property
-    def flags(self):
-        return Heap_get_flags(self)
-
-
-@numba.njit(cache=True)
-def Heap_get_flags(self):
-    return self.flags
-
-
-@numba.njit(cache=True)
-def Heap_get_distances(self):
-    return self.distances
-
-
-@numba.njit(cache=True)
-def Heap_get_indices(self):
-    return self.indices
-
-
-structref.define_proxy(Heap, HeapType, ["indices", "distances", "flags"])
-
-# Heap = namedtuple("Heap", ("indices", "distances", "flags"))
-
-
 @numba.njit(cache=True)
 def make_heap(n_points, size):
     """Constructor for the numba enabled heap objects. The heaps are used
@@ -197,6 +156,10 @@ def make_heap(n_points, size):
     result = (indices, distances, flags)
 
     return result
+
+
+# Sentinel value for empty/uninitialized graphs
+EMPTY_GRAPH = make_heap(1, 1)
 
 
 @numba.njit(cache=True)
@@ -255,45 +218,6 @@ def deheap_sort(indices, distances):
     return indices, distances
 
 
-# @numba.njit()
-# def smallest_flagged(heap, row):
-#     """Search the heap for the smallest element that is
-#     still flagged.
-#
-#     Parameters
-#     ----------
-#     heap: array of shape (3, n_samples, n_neighbors)
-#         The heaps to search
-#
-#     row: int
-#         Which of the heaps to search
-#
-#     Returns
-#     -------
-#     index: int
-#         The index of the smallest flagged element
-#         of the ``row``th heap, or -1 if no flagged
-#         elements remain in the heap.
-#     """
-#     ind = heap[0][row]
-#     dist = heap[1][row]
-#     flag = heap[2][row]
-#
-#     min_dist = np.inf
-#     result_index = -1
-#
-#     for i in range(ind.shape[0]):
-#         if flag[i] == 1 and dist[i] < min_dist:
-#             min_dist = dist[i]
-#             result_index = i
-#
-#     if result_index >= 0:
-#         flag[result_index] = 0.0
-#         return int(ind[result_index])
-#     else:
-#         return -1
-
-
 @numba.njit(parallel=True, locals={"idx": numba.types.int64}, cache=False)
 def new_build_candidates(current_graph, max_candidates, rng_state, n_threads):
     """Build a heap of candidate neighbors for nearest neighbor descent. For
@@ -332,42 +256,54 @@ def new_build_candidates(current_graph, max_candidates, rng_state, n_threads):
         (n_vertices, max_candidates), np.inf, dtype=np.float32
     )
 
+    block_size = n_vertices // n_threads + 1
+
     for n in numba.prange(n_threads):
         local_rng_state = rng_state + n
+        block_start = n * block_size
+        block_end = min(block_start + block_size, n_vertices)
+
         for i in range(n_vertices):
             for j in range(n_neighbors):
                 idx = current_indices[i, j]
-                isn = current_flags[i, j]
 
-                if idx < 0:
-                    continue
+                if idx >= 0 and (
+                    (i >= block_start and i < block_end)
+                    or (idx >= block_start and idx < block_end)
+                ):
+                    isn = current_flags[i, j]
+                    d = tau_rand(local_rng_state)
 
-                d = tau_rand(local_rng_state)
-
-                if isn:
-                    if i % n_threads == n:
-                        checked_heap_push(
-                            new_candidate_priority[i], new_candidate_indices[i], d, idx
-                        )
-                    if idx % n_threads == n:
-                        checked_heap_push(
-                            new_candidate_priority[idx],
-                            new_candidate_indices[idx],
-                            d,
-                            i,
-                        )
-                else:
-                    if i % n_threads == n:
-                        checked_heap_push(
-                            old_candidate_priority[i], old_candidate_indices[i], d, idx
-                        )
-                    if idx % n_threads == n:
-                        checked_heap_push(
-                            old_candidate_priority[idx],
-                            old_candidate_indices[idx],
-                            d,
-                            i,
-                        )
+                    if isn:
+                        if i >= block_start and i < block_end:
+                            checked_heap_push(
+                                new_candidate_priority[i],
+                                new_candidate_indices[i],
+                                d,
+                                idx,
+                            )
+                        if idx >= block_start and idx < block_end:
+                            checked_heap_push(
+                                new_candidate_priority[idx],
+                                new_candidate_indices[idx],
+                                d,
+                                i,
+                            )
+                    else:
+                        if i >= block_start and i < block_end:
+                            checked_heap_push(
+                                old_candidate_priority[i],
+                                old_candidate_indices[i],
+                                d,
+                                idx,
+                            )
+                        if idx >= block_start and idx < block_end:
+                            checked_heap_push(
+                                old_candidate_priority[idx],
+                                old_candidate_indices[idx],
+                                d,
+                                i,
+                            )
 
     indices = current_graph[0]
     flags = current_graph[2]
@@ -397,6 +333,20 @@ def mark_visited(table, candidate):
     mask = 1 << (candidate & 7)
     table[loc] |= mask
     return
+
+
+@numba.njit("b1(u1[::1],i4)", cache=True)
+def check_and_mark_visited(table, candidate):
+    """Check if candidate was visited and mark it as visited in one operation.
+    
+    Returns True if the candidate was already visited, False otherwise.
+    More efficient than separate has_been_visited + mark_visited calls.
+    """
+    loc = candidate >> 3
+    mask = numba.uint8(1 << (candidate & 7))
+    was_visited = table[loc] & mask
+    table[loc] |= mask
+    return was_visited
 
 
 @numba.njit(
@@ -586,39 +536,195 @@ def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
 @numba.njit(
     parallel=True,
     locals={
+        "dist_thresh_p": numba.float32,
+        "dist_thresh_q": numba.float32,
+        "p": numba.int32,
+        "q": numba.int32,
+        "d": numba.float32,
+        "max_updates": numba.int32,
+        "max_threshold": numba.float32,
+    },
+    cache=False,
+    fastmath=True,
+)
+def generate_graph_update_array(
+    update_array,
+    n_updates_per_thread,
+    new_candidate_block,
+    old_candidate_block,
+    dist_thresholds,
+    data,
+    dist,
+    n_threads,
+):
+    """Generate graph updates into a pre-allocated array.
+
+    This is more efficient than generating lists of tuples because:
+    1. No dynamic memory allocation during the parallel loop
+    2. Better cache locality with contiguous array storage
+    3. Each thread writes to its own section of the array
+
+    Parameters
+    ----------
+    update_array : ndarray of shape (n_threads, max_updates_per_thread, 3)
+        Pre-allocated array to store updates. Each row stores (p, q, d).
+
+    n_updates_per_thread : ndarray of shape (n_threads,)
+        Output array to store the number of updates generated by each thread.
+
+    new_candidate_block : ndarray of shape (block_size, max_candidates)
+        New candidate indices for this block.
+
+    old_candidate_block : ndarray of shape (block_size, max_candidates)
+        Old candidate indices for this block.
+
+    dist_thresholds : ndarray of shape (n_vertices,)
+        Current distance thresholds (max heap distance) for each vertex.
+
+    data : ndarray of shape (n_vertices, n_features)
+        The data points.
+
+    dist : callable
+        Distance function.
+
+    n_threads : int
+        Number of threads to use.
+    """
+    block_size = new_candidate_block.shape[0]
+    max_new_candidates = new_candidate_block.shape[1]
+    max_old_candidates = old_candidate_block.shape[1]
+    rows_per_thread = (block_size // n_threads) + 1
+
+    for t in numba.prange(n_threads):
+        idx = 0
+        max_updates = update_array.shape[1]
+
+        for r in range(rows_per_thread):
+            i = t * rows_per_thread + r
+            if i >= block_size or idx >= max_updates:
+                break
+
+            for j in range(max_new_candidates):
+                if idx >= max_updates:
+                    break
+
+                p = new_candidate_block[i, j]
+                if p < 0:
+                    continue
+
+                data_p = data[p]
+                dist_thresh_p = dist_thresholds[p]
+
+                # Compare with other new candidates (start at j to match original behavior)
+                for k in range(j, max_new_candidates):
+                    if idx >= max_updates:
+                        break
+
+                    q = new_candidate_block[i, k]
+                    if q < 0:
+                        continue
+
+                    d = dist(data_p, data[q])
+
+                    # Use max for better branch prediction than OR condition
+                    dist_thresh_q = dist_thresholds[q]
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+
+                    if d <= max_threshold:
+                        update_array[t, idx, 0] = p
+                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 2] = d
+                        idx += 1
+
+                # Compare with old candidates
+                for k in range(max_old_candidates):
+                    if idx >= max_updates:
+                        break
+
+                    q = old_candidate_block[i, k]
+                    if q < 0:
+                        continue
+
+                    d = dist(data_p, data[q])
+                    dist_thresh_q = dist_thresholds[q]
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+
+                    if d <= max_threshold:
+                        update_array[t, idx, 0] = p
+                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 2] = d
+                        idx += 1
+
+        n_updates_per_thread[t] = idx
+
+
+@numba.njit(
+    parallel=True,
+    cache=True,
+    locals={
         "p": numba.int32,
         "q": numba.int32,
         "d": numba.float32,
         "added": numba.uint8,
         "n": numba.uint32,
-        "i": numba.uint32,
+        "t": numba.uint32,
         "j": numba.uint32,
     },
-    cache=False,
 )
-def apply_graph_updates_low_memory(current_graph, updates, n_threads):
+def apply_graph_update_array(
+    current_graph, update_array, n_updates_per_thread, n_threads
+):
+    """Apply graph updates from a pre-allocated array.
 
+    Uses block-based processing where each thread only updates vertices
+    in its assigned block, avoiding the need for duplicate checking.
+
+    Parameters
+    ----------
+    current_graph : tuple of (indices, distances, flags)
+        The current nearest neighbor graph heap.
+
+    update_array : ndarray of shape (n_threads, max_updates_per_thread, 3)
+        Array of updates where each row is (p, q, d).
+
+    n_updates_per_thread : ndarray of shape (n_threads,)
+        Number of valid updates from each generating thread.
+
+    n_threads : int
+        Number of threads.
+
+    Returns
+    -------
+    n_changes : int
+        Total number of updates that modified the graph.
+    """
     n_changes = 0
     priorities = current_graph[1]
     indices = current_graph[0]
     flags = current_graph[2]
-    # n_threads = numba.get_num_threads()
+
+    n_vertices = priorities.shape[0]
+    vertex_block_size = n_vertices // n_threads + 1
 
     for n in numba.prange(n_threads):
-        for i in range(len(updates)):
-            for j in range(len(updates[i])):
-                p, q, d = updates[i][j]
+        block_start = n * vertex_block_size
+        block_end = min(block_start + vertex_block_size, n_vertices)
 
-                if p == -1 or q == -1:
-                    continue
+        # Each thread scans all updates but only applies those
+        # where p or q falls in its block
+        for t in range(n_threads):
+            for j in range(n_updates_per_thread[t]):
+                p = np.int32(update_array[t, j, 0])
+                q = np.int32(update_array[t, j, 1])
+                d = np.float32(update_array[t, j, 2])
 
-                if p % n_threads == n:
+                if p >= block_start and p < block_end:
                     added = checked_flagged_heap_push(
                         priorities[p], indices[p], flags[p], d, q, 1
                     )
                     n_changes += added
 
-                if q % n_threads == n:
+                if q >= block_start and q < block_end:
                     added = checked_flagged_heap_push(
                         priorities[q], indices[q], flags[q], d, p, 1
                     )
@@ -627,53 +733,104 @@ def apply_graph_updates_low_memory(current_graph, updates, n_threads):
     return n_changes
 
 
-@numba.njit(locals={"p": numba.types.int64, "q": numba.types.int64}, cache=True)
-def apply_graph_updates_high_memory(current_graph, updates, in_graph):
+@numba.njit(
+    parallel=True,
+    cache=False,
+    fastmath=True,
+    locals={
+        "dist_thresh_p": numba.float32,
+        "dist_thresh_q": numba.float32,
+        "p": numba.int32,
+        "q": numba.int32,
+        "d": numba.float32,
+        "max_updates": numba.int32,
+        "max_threshold": numba.float32,
+    },
+)
+def sparse_generate_graph_update_array(
+    update_array,
+    n_updates_per_thread,
+    new_candidate_block,
+    old_candidate_block,
+    dist_thresholds,
+    inds,
+    indptr,
+    data,
+    dist,
+    n_threads,
+):
+    """Generate graph updates for sparse data into a pre-allocated array."""
+    block_size = new_candidate_block.shape[0]
+    max_new_candidates = new_candidate_block.shape[1]
+    max_old_candidates = old_candidate_block.shape[1]
+    rows_per_thread = (block_size // n_threads) + 1
 
-    n_changes = 0
+    for t in numba.prange(n_threads):
+        idx = 0
+        max_updates = update_array.shape[1]
 
-    for i in range(len(updates)):
-        for j in range(len(updates[i])):
-            p, q, d = updates[i][j]
+        for r in range(rows_per_thread):
+            i = t * rows_per_thread + r
+            if i >= block_size or idx >= max_updates:
+                break
 
-            if p == -1 or q == -1:
-                continue
+            for j in range(max_new_candidates):
+                if idx >= max_updates:
+                    break
 
-            if q in in_graph[p] and p in in_graph[q]:
-                continue
-            elif q in in_graph[p]:
-                pass
-            else:
-                added = checked_flagged_heap_push(
-                    current_graph[1][p],
-                    current_graph[0][p],
-                    current_graph[2][p],
-                    d,
-                    q,
-                    1,
-                )
+                p = new_candidate_block[i, j]
+                if p < 0:
+                    continue
 
-                if added > 0:
-                    in_graph[p].add(q)
-                    n_changes += added
+                from_inds = inds[indptr[p] : indptr[p + 1]]
+                from_data = data[indptr[p] : indptr[p + 1]]
+                dist_thresh_p = dist_thresholds[p]
 
-            if p == q or p in in_graph[q]:
-                pass
-            else:
-                added = checked_flagged_heap_push(
-                    current_graph[1][p],
-                    current_graph[0][p],
-                    current_graph[2][p],
-                    d,
-                    q,
-                    1,
-                )
+                # Compare with other new candidates (start at j to match original)
+                for k in range(j, max_new_candidates):
+                    if idx >= max_updates:
+                        break
 
-                if added > 0:
-                    in_graph[q].add(p)
-                    n_changes += added
+                    q = new_candidate_block[i, k]
+                    if q < 0:
+                        continue
 
-    return n_changes
+                    to_inds = inds[indptr[q] : indptr[q + 1]]
+                    to_data = data[indptr[q] : indptr[q + 1]]
+                    d = dist(from_inds, from_data, to_inds, to_data)
+
+                    dist_thresh_q = dist_thresholds[q]
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+
+                    if d <= max_threshold:
+                        update_array[t, idx, 0] = p
+                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 2] = d
+                        idx += 1
+
+                # Compare with old candidates
+                for k in range(max_old_candidates):
+                    if idx >= max_updates:
+                        break
+
+                    q = old_candidate_block[i, k]
+                    if q < 0:
+                        continue
+
+                    to_inds = inds[indptr[q] : indptr[q + 1]]
+                    to_data = data[indptr[q] : indptr[q + 1]]
+                    d = dist(from_inds, from_data, to_inds, to_data)
+
+                    dist_thresh_q = dist_thresholds[q]
+                    max_threshold = max(dist_thresh_p, dist_thresh_q)
+
+                    if d <= max_threshold:
+                        update_array[t, idx, 0] = p
+                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 2] = d
+                        idx += 1
+
+        n_updates_per_thread[t] = idx
 
 
 @numba.njit(cache=False)

@@ -54,9 +54,20 @@ supporting a wide variety of distance metrics by default:
 **Minkowski style metrics**
 
 - euclidean
+- l2
+- sqeuclidean
 - manhattan
+- taxicab
+- l1
 - chebyshev
+- linfinity
 - minkowski
+
+**Standardised/weighted spatial metrics**
+
+- mahalanobis
+- wminkowski (weighted_minkowski)
+- seuclidean (standardised_euclidean)
 
 **Miscellaneous spatial metrics**
 
@@ -64,16 +75,11 @@ supporting a wide variety of distance metrics by default:
 - braycurtis
 - haversine
 
-**Normalized spatial metrics**
-
-- mahalanobis
-- wminkowski
-- seuclidean
-
 **Angular and correlation metrics**
 
 - cosine
 - dot
+- inner_product
 - correlation
 - spearmanr
 - tsss
@@ -82,19 +88,30 @@ supporting a wide variety of distance metrics by default:
 **Probability metrics**
 
 - hellinger
-- wasserstein
+- kantorovich (wasserstein)
+- wasserstein_1d
+- circular_kantorovich (circular_wasserstein)
+- sinkhorn
+- jensen_shannon
+- symmetric_kl
 
 **Metrics for binary data**
 
 - hamming
 - jaccard
 - dice
-- russelrao
+- matching
+- russellrao
 - kulsinski
 - rogerstanimoto
 - sokalmichener
 - sokalsneath
 - yule
+
+**Metrics for bit-packed binary data**
+
+- bit_hamming
+- bit_jaccard
 
 and also custom user defined distance metrics while still retaining performance.
 

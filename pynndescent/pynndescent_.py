@@ -34,11 +34,13 @@ from pynndescent.utils import (
     checked_flagged_heap_push,
     has_been_visited,
     mark_visited,
-    apply_graph_updates_high_memory,
-    apply_graph_updates_low_memory,
+    check_and_mark_visited,
+    generate_graph_update_array,
+    apply_graph_update_array,
     initalize_heap_from_graph_indices,
     initalize_heap_from_graph_indices_and_distances,
     sparse_initalize_heap_from_graph_indices,
+    EMPTY_GRAPH,
 )
 
 from pynndescent.rp_trees import (
@@ -52,10 +54,9 @@ from pynndescent.rp_trees import (
     select_side_bit,
     sparse_select_side,
     score_linked_tree,
-)
-
-update_type = numba.types.List(
-    numba.types.List((numba.types.int64, numba.types.int64, numba.types.float64))
+    make_hub_tree,
+    make_sparse_hub_tree,
+    make_bit_hub_tree,
 )
 
 INT32_MIN = np.iinfo(np.int32).min + 1
@@ -63,43 +64,75 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 FLOAT32_EPS = np.finfo(np.float32).eps
 
-EMPTY_GRAPH = make_heap(1, 1)
-
 
 def is_c_contiguous(array_like):
     flags = getattr(array_like, "flags", None)
     return flags is not None and flags["C_CONTIGUOUS"]
 
 
-@numba.njit(parallel=True, cache=False)
-def generate_leaf_updates(leaf_block, dist_thresholds, data, dist):
+@numba.njit(parallel=True, cache=False, fastmath=True)
+def generate_leaf_updates(
+    updates, n_updates_per_thread, leaf_block, dist_thresholds, data, dist, n_threads
+):
+    """Generate leaf updates into pre-allocated arrays for parallel efficiency."""
+    n_leaves = leaf_block.shape[0]
+    leaves_per_thread = (n_leaves // n_threads) + 1
 
-    updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
+    # Reset update counts
+    for t in range(n_threads):
+        n_updates_per_thread[t] = 0
 
-    for n in numba.prange(leaf_block.shape[0]):
-        for i in range(leaf_block.shape[1]):
-            p = leaf_block[n, i]
-            if p < 0:
-                break
+    for t in numba.prange(n_threads):
+        start_leaf = t * leaves_per_thread
+        end_leaf = min(start_leaf + leaves_per_thread, n_leaves)
+        max_updates = updates.shape[1]
+        count = 0
 
-            for j in range(i + 1, leaf_block.shape[1]):
-                q = leaf_block[n, j]
-                if q < 0:
+        for leaf_idx in range(start_leaf, end_leaf):
+            for i in range(leaf_block.shape[1]):
+                p = leaf_block[leaf_idx, i]
+                if p < 0:
                     break
 
-                d = dist(data[p], data[q])
-                if d < dist_thresholds[p] or d < dist_thresholds[q]:
-                    updates[n].append((p, q, d))
+                for j in range(i + 1, leaf_block.shape[1]):
+                    q = leaf_block[leaf_idx, j]
+                    if q < 0:
+                        break
+
+                    d = dist(data[p], data[q])
+                    max_threshold = max(dist_thresholds[p], dist_thresholds[q])
+                    if d < max_threshold:
+                        if count < max_updates:
+                            updates[t, count, 0] = np.float32(p)
+                            updates[t, count, 1] = np.float32(q)
+                            updates[t, count, 2] = d
+                            count += 1
+
+        n_updates_per_thread[t] = count
 
     return updates
 
 
-@numba.njit(locals={"d": numba.float32, "p": numba.int32, "q": numba.int32}, cache=False)
-def init_rp_tree(data, dist, current_graph, leaf_array):
-
+@numba.njit(
+    locals={"d": numba.float32, "p": numba.int32, "q": numba.int32},
+    cache=False,
+    parallel=True,
+    fastmath=True,
+)
+def init_rp_tree(data, dist, current_graph, leaf_array, n_threads=8):
     n_leaves = leaf_array.shape[0]
-    block_size = 65536
+    block_size = n_threads * 64
     n_blocks = n_leaves // block_size
+
+    max_leaf_size = leaf_array.shape[1]
+    updates_per_thread = (
+        int(block_size * max_leaf_size * (max_leaf_size - 1) / (2 * n_threads)) + 1
+    )
+    updates = np.zeros((n_threads, updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+
+    n_vertices = current_graph[0].shape[0]
+    vertex_block_size = n_vertices // n_threads + 1
 
     for i in range(n_blocks + 1):
         block_start = i * block_size
@@ -108,31 +141,48 @@ def init_rp_tree(data, dist, current_graph, leaf_array):
         leaf_block = leaf_array[block_start:block_end]
         dist_thresholds = current_graph[1][:, 0]
 
-        updates = generate_leaf_updates(leaf_block, dist_thresholds, data, dist)
+        generate_leaf_updates(
+            updates,
+            n_updates_per_thread,
+            leaf_block,
+            dist_thresholds,
+            data,
+            dist,
+            n_threads,
+        )
 
-        for j in range(len(updates)):
-            for k in range(len(updates[j])):
-                p, q, d = updates[j][k]
+        for t in numba.prange(n_threads):
+            v_block_start = t * vertex_block_size
+            v_block_end = min(v_block_start + vertex_block_size, n_vertices)
 
-                if p == -1 or q == -1:
-                    continue
+            for j in range(n_threads):
+                for k in range(n_updates_per_thread[j]):
+                    p = np.int32(updates[j, k, 0])
 
-                checked_flagged_heap_push(
-                    current_graph[1][p],
-                    current_graph[0][p],
-                    current_graph[2][p],
-                    d,
-                    q,
-                    np.uint8(1),
-                )
-                checked_flagged_heap_push(
-                    current_graph[1][q],
-                    current_graph[0][q],
-                    current_graph[2][q],
-                    d,
-                    p,
-                    np.uint8(1),
-                )
+                    if p < 0:
+                        continue
+
+                    q = np.int32(updates[j, k, 1])
+                    d = updates[j, k, 2]
+
+                    if p >= v_block_start and p < v_block_end:
+                        checked_flagged_heap_push(
+                            current_graph[1][p],
+                            current_graph[0][p],
+                            current_graph[2][p],
+                            d,
+                            q,
+                            np.uint8(1),
+                        )
+                    if q >= v_block_start and q < v_block_end:
+                        checked_flagged_heap_push(
+                            current_graph[1][q],
+                            current_graph[0][q],
+                            current_graph[2][q],
+                            d,
+                            p,
+                            np.uint8(1),
+                        )
 
 
 @numba.njit(
@@ -164,42 +214,6 @@ def init_from_neighbor_graph(heap, indices, distances):
     return
 
 
-@numba.njit(parallel=True, cache=False)
-def generate_graph_updates(
-    new_candidate_block, old_candidate_block, dist_thresholds, data, dist
-):
-
-    block_size = new_candidate_block.shape[0]
-    updates = [[(-1, -1, np.inf)] for i in range(block_size)]
-    max_candidates = new_candidate_block.shape[1]
-
-    for i in numba.prange(block_size):
-        for j in range(max_candidates):
-            p = int(new_candidate_block[i, j])
-            if p < 0:
-                continue
-
-            for k in range(j, max_candidates):
-                q = int(new_candidate_block[i, k])
-                if q < 0:
-                    continue
-
-                d = dist(data[p], data[q])
-                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                    updates[i].append((p, q, d))
-
-            for k in range(max_candidates):
-                q = int(old_candidate_block[i, k])
-                if q < 0:
-                    continue
-
-                d = dist(data[p], data[q])
-                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                    updates[i].append((p, q, d))
-
-    return updates
-
-
 @numba.njit(cache=False)
 def process_candidates(
     data,
@@ -210,7 +224,16 @@ def process_candidates(
     n_blocks,
     block_size,
     n_threads,
+    update_array,
+    n_updates_per_thread,
 ):
+    """Process candidate neighbors using array-based update generation.
+
+    This is more efficient than the list-based approach because:
+    1. No dynamic memory allocation during parallel loops
+    2. Better cache locality with contiguous array storage
+    3. Each thread writes to its own section of the array
+    """
     c = 0
     n_vertices = new_candidate_neighbors.shape[0]
     for i in range(n_blocks + 1):
@@ -222,17 +245,26 @@ def process_candidates(
 
         dist_thresholds = current_graph[1][:, 0]
 
-        updates = generate_graph_updates(
-            new_candidate_block, old_candidate_block, dist_thresholds, data, dist
+        generate_graph_update_array(
+            update_array,
+            n_updates_per_thread,
+            new_candidate_block,
+            old_candidate_block,
+            dist_thresholds,
+            data,
+            dist,
+            n_threads,
         )
 
-        c += apply_graph_updates_low_memory(current_graph, updates, n_threads)
+        c += apply_graph_update_array(
+            current_graph, update_array, n_updates_per_thread, n_threads
+        )
 
     return c
 
 
 @numba.njit()
-def nn_descent_internal_low_memory_parallel(
+def nn_descent_internal(
     current_graph,
     data,
     n_neighbors,
@@ -247,6 +279,19 @@ def nn_descent_internal_low_memory_parallel(
     block_size = 16384
     n_blocks = n_vertices // block_size
     n_threads = numba.get_num_threads()
+
+    # Pre-allocate update arrays for efficiency
+    # Estimate max updates: each candidate pair can generate one update
+    max_updates_per_thread = (
+        int(
+            (max_candidates**2 + max_candidates * (max_candidates - 1) / 2)
+            * block_size
+            / n_threads
+        )
+        + 1024
+    )
+    update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
 
     for n in range(n_iters):
         if verbose:
@@ -265,58 +310,9 @@ def nn_descent_internal_low_memory_parallel(
             n_blocks,
             block_size,
             n_threads,
+            update_array,
+            n_updates_per_thread,
         )
-
-        if c <= delta * n_neighbors * data.shape[0]:
-            if verbose:
-                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
-            return
-
-
-@numba.njit()
-def nn_descent_internal_high_memory_parallel(
-    current_graph,
-    data,
-    n_neighbors,
-    rng_state,
-    max_candidates=50,
-    dist=pynnd_dist.euclidean,
-    n_iters=10,
-    delta=0.001,
-    verbose=False,
-):
-    n_vertices = data.shape[0]
-    block_size = 16384
-    n_blocks = n_vertices // block_size
-    n_threads = numba.get_num_threads()
-
-    in_graph = [
-        set(current_graph[0][i].astype(np.int64))
-        for i in range(current_graph[0].shape[0])
-    ]
-
-    for n in range(n_iters):
-        if verbose:
-            print("\t", n + 1, " / ", n_iters)
-
-        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
-        )
-
-        c = 0
-        for i in range(n_blocks + 1):
-            block_start = i * block_size
-            block_end = min(n_vertices, (i + 1) * block_size)
-
-            new_candidate_block = new_candidate_neighbors[block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[block_start:block_end]
-            dist_thresholds = current_graph[1][:, 0]
-
-            updates = generate_graph_updates(
-                new_candidate_block, old_candidate_block, dist_thresholds, data, dist
-            )
-
-            c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
 
         if c <= delta * n_neighbors * data.shape[0]:
             if verbose:
@@ -355,30 +351,17 @@ def nn_descent(
     else:
         raise ValueError("Invalid initial graph specified!")
 
-    if low_memory:
-        nn_descent_internal_low_memory_parallel(
-            current_graph,
-            data,
-            n_neighbors,
-            rng_state,
-            max_candidates=max_candidates,
-            dist=dist,
-            n_iters=n_iters,
-            delta=delta,
-            verbose=verbose,
-        )
-    else:
-        nn_descent_internal_high_memory_parallel(
-            current_graph,
-            data,
-            n_neighbors,
-            rng_state,
-            max_candidates=max_candidates,
-            dist=dist,
-            n_iters=n_iters,
-            delta=delta,
-            verbose=verbose,
-        )
+    nn_descent_internal(
+        current_graph,
+        data,
+        n_neighbors,
+        rng_state,
+        max_candidates=max_candidates,
+        dist=dist,
+        n_iters=n_iters,
+        delta=delta,
+        verbose=verbose,
+    )
 
     return deheap_sort(current_graph[0], current_graph[1])
 
@@ -751,9 +734,9 @@ class NNDescent:
         current_random_state = check_random_state(self.random_state)
 
         self._distance_correction = None
-        
+
         self._set_distance_func()
-        
+
         if metric in (
             "cosine",
             "dot",
@@ -949,7 +932,9 @@ class NNDescent:
             _distance_func = self.metric
         elif self.metric in pynnd_dist.named_distances:
             if self.metric in pynnd_dist.fast_distance_alternatives:
-                _distance_func = pynnd_dist.fast_distance_alternatives[self.metric]["dist"]
+                _distance_func = pynnd_dist.fast_distance_alternatives[self.metric][
+                    "dist"
+                ]
                 self._distance_correction = pynnd_dist.fast_distance_alternatives[
                     self.metric
                 ]["correction"]
@@ -969,7 +954,7 @@ class NNDescent:
             self._distance_func = _partial_dist_func
         else:
             self._distance_func = _distance_func
-            
+
     def __getstate__(self):
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
@@ -1029,24 +1014,61 @@ class NNDescent:
                 else:
                     self._search_forest = []
             else:
-                # convert the best trees into a search forest
-                tree_scores = [
-                    score_linked_tree(tree, self._neighbor_graph[0])
-                    for tree in self._rp_forest
-                ]
+                # Build a graph-informed hub tree that minimizes edge cuts
                 if self.verbose:
-                    print(ts(), "Worst tree score: {:.8f}".format(np.min(tree_scores)))
-                    print(ts(), "Mean tree score: {:.8f}".format(np.mean(tree_scores)))
-                    print(ts(), "Best tree score: {:.8f}".format(np.max(tree_scores)))
-                best_tree_indices = np.argsort(tree_scores)[: self.n_search_trees]
-                best_trees = [self._rp_forest[idx] for idx in best_tree_indices]
-                del self._rp_forest
-                self._search_forest = [
-                    convert_tree_format(
-                        tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                    print(ts(), "Building hub-based search tree")
+
+                if self._is_sparse:
+                    # Sparse data - use simplified hub tree (faster, better quality)
+                    gi_tree = make_sparse_hub_tree(
+                        self._raw_data.indices,
+                        self._raw_data.indptr,
+                        self._raw_data.data,
+                        self._neighbor_graph[0],
+                        self.rng_state,
+                        leaf_size=self.leaf_size if self.leaf_size else 30,
+                        angular=self._angular_trees,
+                        max_depth=self.max_rptree_depth,
                     )
-                    for tree in best_trees
-                ]
+                    del self._rp_forest
+                    self._search_forest = [
+                        convert_tree_format(
+                            gi_tree,
+                            self._raw_data.shape[0],
+                            self._raw_data.indptr.shape[0] - 1,
+                        )
+                    ]
+                elif getattr(self, "_bit_trees", False):
+                    # Bit-packed data - use simplified hub tree (faster, better quality)
+                    gi_tree = make_bit_hub_tree(
+                        self._raw_data,
+                        self._neighbor_graph[0],
+                        self.rng_state,
+                        leaf_size=self.leaf_size if self.leaf_size else 30,
+                        max_depth=self.max_rptree_depth,
+                    )
+                    del self._rp_forest
+                    self._search_forest = [
+                        convert_tree_format(
+                            gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                        )
+                    ]
+                else:
+                    # Dense data - use simplified hub tree (faster, better quality)
+                    gi_tree = make_hub_tree(
+                        self._raw_data,
+                        self._neighbor_graph[0],
+                        self.rng_state,
+                        leaf_size=self.leaf_size if self.leaf_size else 30,
+                        angular=self._angular_trees,
+                        max_depth=self.max_rptree_depth,
+                    )
+                    del self._rp_forest
+                    self._search_forest = [
+                        convert_tree_format(
+                            gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
+                        )
+                    ]
 
         nnz_pre_diversify = np.sum(self._neighbor_graph[0] >= 0)
         if self._is_sparse:
@@ -1110,6 +1132,8 @@ class NNDescent:
         self._search_graph = self._search_graph.tocsr()
         self._search_graph.data[self._search_graph.indices == -1] = 0.0
         self._search_graph.eliminate_zeros()
+
+        self._min_distance = np.min(self._search_graph.data)
 
         if self.verbose:
             print(
@@ -1230,11 +1254,14 @@ class NNDescent:
             tree_children = self._search_forest[0].children
 
             if self._bit_trees:
+
                 @numba.njit(
                     [
                         numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
                             numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-                            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                            numba.types.Array(
+                                numba.types.int64, 1, "C", readonly=False
+                            ),
                         )
                     ],
                     locals={"node": numba.types.uint32, "side": numba.types.boolean},
@@ -1251,12 +1278,18 @@ class NNDescent:
                             node = tree_children[node, 1]
 
                     return -tree_children[node]
+
             else:
+
                 @numba.njit(
                     [
                         numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
-                            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-                            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
+                            numba.types.Array(
+                                numba.types.float32, 1, "C", readonly=True
+                            ),
+                            numba.types.Array(
+                                numba.types.int64, 1, "C", readonly=False
+                            ),
                         )
                     ],
                     locals={"node": numba.types.uint32, "side": numba.types.boolean},
@@ -1293,6 +1326,7 @@ class NNDescent:
         dist = self._distance_func
         n_neighbors = self.n_neighbors
         parallel_search = self.parallel_batch_queries
+        min_distance = self._min_distance
 
         if dist == pynnd_dist.bit_hamming or dist == pynnd_dist.bit_jaccard:
             data_type = numba.types.uint8[::1]
@@ -1350,12 +1384,11 @@ class NNDescent:
                 seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
                 # heapq.heapify(seed_set)
 
-                ############ Init ################
+                ############ Init from Tree ################
                 index_bounds = tree_search_closure(current_query, internal_rng_state)
                 candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
 
                 n_initial_points = candidate_indices.shape[0]
-                n_random_samples = min(k, n_neighbors) - n_initial_points
 
                 for j in range(n_initial_points):
                     candidate = candidate_indices[j]
@@ -1365,21 +1398,25 @@ class NNDescent:
                     heapq.heappush(seed_set, (d, candidate))
                     mark_visited(visited_nodes, candidate)
 
+                ############ Random samples if needed ################
+                n_random_samples = min(k, n_neighbors) - n_initial_points
+
                 if n_random_samples > 0:
                     for j in range(n_random_samples):
                         candidate = np.int32(
                             np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
-                        if has_been_visited(visited_nodes, candidate) == 0:
+                        if check_and_mark_visited(visited_nodes, candidate) == 0:
                             d = np.float32(dist(data[candidate], current_query))
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
                             heapq.heappush(seed_set, (d, candidate))
-                            mark_visited(visited_nodes, candidate)
 
                 ############ Search ##############
-                distance_bound = distance_scale * heap_priorities[0]
+                distance_bound = heap_priorities[0] + (
+                    epsilon * (heap_priorities[0] - min_distance)
+                )
 
                 # Find smallest seed point
                 d_vertex, vertex = heapq.heappop(seed_set)
@@ -1390,8 +1427,7 @@ class NNDescent:
 
                         candidate = indices[j]
 
-                        if has_been_visited(visited_nodes, candidate) == 0:
-                            mark_visited(visited_nodes, candidate)
+                        if check_and_mark_visited(visited_nodes, candidate) == 0:
 
                             d = np.float32(dist(data[candidate], current_query))
 
@@ -1401,7 +1437,9 @@ class NNDescent:
                                 )
                                 heapq.heappush(seed_set, (d, candidate))
                                 # Update bound
-                                distance_bound = distance_scale * heap_priorities[0]
+                                distance_bound = heap_priorities[0] + (
+                                    epsilon * (heap_priorities[0] - min_distance)
+                                )
 
                     # find new smallest seed point
                     if len(seed_set) == 0:
@@ -1571,7 +1609,7 @@ class NNDescent:
                         candidate = np.int32(
                             np.abs(tau_rand_int(internal_rng_state)) % n_index_points
                         )
-                        if has_been_visited(visited_nodes, candidate) == 0:
+                        if check_and_mark_visited(visited_nodes, candidate) == 0:
                             from_inds = data_inds[
                                 data_indptr[candidate] : data_indptr[candidate + 1]
                             ]
@@ -1592,7 +1630,6 @@ class NNDescent:
                                 heap_priorities, heap_indices, d, candidate
                             )
                             heapq.heappush(seed_set, (d, candidate))
-                            mark_visited(visited_nodes, candidate)
 
                 ############ Search ##############
                 distance_bound = distance_scale * heap_priorities[0]
@@ -1606,8 +1643,7 @@ class NNDescent:
 
                         candidate = indices[j]
 
-                        if has_been_visited(visited_nodes, candidate) == 0:
-                            mark_visited(visited_nodes, candidate)
+                        if check_and_mark_visited(visited_nodes, candidate) == 0:
 
                             from_inds = data_inds[
                                 data_indptr[candidate] : data_indptr[candidate + 1]
@@ -1849,10 +1885,14 @@ class NNDescent:
         if xs_fresh is None:
             if self._is_sparse:
                 xs_fresh = csr_matrix(
-                    ([], [], []), shape=(0, self._raw_data.shape[1]), dtype=self._input_dtype
+                    ([], [], []),
+                    shape=(0, self._raw_data.shape[1]),
+                    dtype=self._input_dtype,
                 )
             else:
-                xs_fresh = np.zeros((0, self._raw_data.shape[1]), dtype=self._input_dtype)
+                xs_fresh = np.zeros(
+                    (0, self._raw_data.shape[1]), dtype=self._input_dtype
+                )
         else:
             xs_fresh = check_array(
                 xs_fresh, dtype=self._input_dtype, accept_sparse="csr", order="C"

@@ -3,7 +3,6 @@
 # License: BSD 2 clause
 from warnings import warn
 
-import locale
 import numpy as np
 import numba
 import scipy.sparse
@@ -19,8 +18,6 @@ from pynndescent.utils import tau_rand_int, norm
 import joblib
 
 from collections import namedtuple
-
-locale.setlocale(locale.LC_NUMERIC, "C")
 
 # Used for a floating point "nearly zero" comparison
 EPS = 1e-8
@@ -38,10 +35,8 @@ offset_type = numba.float64
 children_type = numba.typeof((np.int32(-1), np.int32(-1)))
 point_indices_type = numba.int32[::1]
 
-popcnt = np.array(
-    [bin(i).count('1') for i in range(256)],
-    dtype=np.float32
-)
+popcnt = np.array([bin(i).count("1") for i in range(256)], dtype=np.float32)
+
 
 @numba.njit(
     numba.types.Tuple(
@@ -682,6 +677,1499 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
     return indices_left, indices_right, hyperplane, hyperplane_offset
 
 
+# ============================================================================
+# Graph-informed tree construction
+# ============================================================================
+
+# Threshold below which we skip edge-cut optimization and just use hub-based split
+# This greatly speeds up tree construction for large datasets
+FAST_SPLIT_THRESHOLD = 5000
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def binary_search(sorted_arr, value):
+    """Binary search returning index if found, -1 otherwise."""
+    lo = 0
+    hi = sorted_arr.shape[0] - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if sorted_arr[mid] == value:
+            return mid
+        elif sorted_arr[mid] < value:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return -1
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def compute_global_degrees(neighbor_indices):
+    """Compute global in-degree for all points in the graph.
+
+    In-degree of a point is how many times it appears as a neighbor of other points.
+    This is computed once and reused throughout tree construction.
+
+    Parameters
+    ----------
+    neighbor_indices : array of shape (n_samples, n_neighbors)
+        The neighbor graph indices.
+
+    Returns
+    -------
+    global_degrees : array of shape (n_samples,)
+        The in-degree of each point.
+    """
+    n_points = neighbor_indices.shape[0]
+    global_degrees = np.zeros(n_points, dtype=np.int32)
+
+    for i in range(n_points):
+        for j in range(neighbor_indices.shape[1]):
+            neighbor = neighbor_indices[i, j]
+            if neighbor >= 0 and neighbor < n_points:
+                global_degrees[neighbor] += 1
+
+    return global_degrees
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def get_top_k_hub_indices(indices, global_degrees, k=5):
+    """Get the indices of the top k highest-degree points from a subset.
+
+    Uses an efficient O(n) selection for small k by maintaining a min-heap of k elements.
+
+    Parameters
+    ----------
+    indices : array of shape (n,)
+        The point indices in the current split.
+    global_degrees : array of shape (n_total,)
+        Precomputed global degrees for all points.
+    k : int
+        Number of top hubs to return.
+
+    Returns
+    -------
+    top_hubs : array of shape (min(k, n),)
+        The actual point indices (not positions) of the top k hubs.
+    """
+    n_points = indices.shape[0]
+    actual_k = min(k, n_points)
+
+    # For small k, use a simple insertion-sort-based approach which is O(n*k)
+    # but with very low constants for small k
+    top_degrees = np.full(actual_k, np.int32(-1), dtype=np.int32)
+    top_indices = np.empty(actual_k, dtype=np.int32)
+
+    for i in range(n_points):
+        deg = global_degrees[indices[i]]
+
+        # Check if this degree is larger than the smallest in our top-k
+        if deg > top_degrees[actual_k - 1]:
+            # Find insertion point (sorted descending)
+            insert_pos = actual_k - 1
+            while insert_pos > 0 and deg > top_degrees[insert_pos - 1]:
+                insert_pos -= 1
+
+            # Shift elements down
+            for j in range(actual_k - 1, insert_pos, -1):
+                top_degrees[j] = top_degrees[j - 1]
+                top_indices[j] = top_indices[j - 1]
+
+            # Insert new element
+            top_degrees[insert_pos] = deg
+            top_indices[insert_pos] = indices[i]
+
+    return top_indices
+
+
+# Minimum split balance threshold - if best split is worse than this, don't split
+# A balance of 0.1 means 10/90 split which is quite unbalanced
+MIN_SPLIT_BALANCE = 0.1
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def euclidean_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
+    """Hub-based graph-informed split using balance-based selection.
+
+    Uses the top 3 highest-degree nodes to generate all 3 possible hyperplanes,
+    then selects the one with the best balance (closest to 50/50 split).
+    This is much faster than edge-cut counting while still producing good quality trees.
+
+    Parameters
+    ----------
+    data : array of shape (n_samples, n_features)
+        The data array.
+    indices : array of shape (n,)
+        Indices of points in this node.
+    neighbor_indices : array of shape (n_samples, n_neighbors)
+        The neighbor graph.
+    global_degrees : array of shape (n_samples,)
+        Precomputed global in-degrees.
+    rng_state : array of int64, shape (3,)
+        RNG state (only used for fallback).
+
+    Returns
+    -------
+    indices_left, indices_right, hyperplane, offset, balance
+        The balance is returned so the caller can decide whether to accept the split.
+    """
+    dim = data.shape[1]
+    n_points = indices.shape[0]
+
+    # Get top 3 hubs from this subset (3 pairs)
+    top_hubs = get_top_k_hub_indices(indices, global_degrees, 3)
+    n_hubs = top_hubs.shape[0]
+
+    # Storage for best result
+    best_balance = np.float32(0.0)  # Closer to 0.5 is better
+    best_n_left = np.uint32(0)
+    best_n_right = np.uint32(0)
+    best_hyperplane = np.zeros(dim, dtype=np.float32)
+    best_offset = np.float32(0.0)
+    best_side = np.zeros(n_points, dtype=np.int8)
+    side = np.empty(n_points, dtype=np.int8)
+
+    # Evaluate all hub pairs and pick the most balanced split
+    for hi in range(n_hubs):
+        for hj in range(hi + 1, n_hubs):
+            left = top_hubs[hi]
+            right = top_hubs[hj]
+
+            # Compute the hyperplane between the two hub points
+            hyperplane_offset = np.float32(0.0)
+            hyperplane_vector = np.empty(dim, dtype=np.float32)
+
+            for d in range(dim):
+                hyperplane_vector[d] = data[left, d] - data[right, d]
+                hyperplane_offset -= (
+                    hyperplane_vector[d] * (data[left, d] + data[right, d]) / 2.0
+                )
+
+            # Project all points onto hyperplane
+            n_left = np.uint32(0)
+            n_right = np.uint32(0)
+
+            for i in range(n_points):
+                margin = hyperplane_offset
+                for d in range(dim):
+                    margin += hyperplane_vector[d] * data[indices[i], d]
+
+                if margin > EPS:
+                    side[i] = 0
+                    n_left += 1
+                elif margin < -EPS:
+                    side[i] = 1
+                    n_right += 1
+                else:
+                    side[i] = i % 2
+                    if side[i] == 0:
+                        n_left += 1
+                    else:
+                        n_right += 1
+
+            # Skip invalid splits
+            if n_left == 0 or n_right == 0:
+                continue
+
+            # Score by balance (how close to 50/50)
+            balance = np.float32(min(n_left, n_right)) / np.float32(n_points)
+
+            if balance > best_balance:
+                best_balance = balance
+                best_n_left = n_left
+                best_n_right = n_right
+                best_offset = hyperplane_offset
+                for d in range(dim):
+                    best_hyperplane[d] = hyperplane_vector[d]
+                for i in range(n_points):
+                    best_side[i] = side[i]
+
+    # If no valid candidate found, fall back to random assignment
+    if best_n_left == 0 or best_n_right == 0:
+        best_n_left = np.uint32(0)
+        best_n_right = np.uint32(0)
+        for i in range(n_points):
+            best_side[i] = np.abs(tau_rand_int(rng_state)) % 2
+            if best_side[i] == 0:
+                best_n_left += 1
+            else:
+                best_n_right += 1
+
+    # Allocate and populate result arrays
+    indices_left = np.empty(best_n_left, dtype=np.int32)
+    indices_right = np.empty(best_n_right, dtype=np.int32)
+
+    n_left = np.uint32(0)
+    n_right = np.uint32(0)
+    for i in range(n_points):
+        if best_side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    return indices_left, indices_right, best_hyperplane, best_offset, best_balance
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def angular_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
+    """Angular hub-based split using balance-based selection.
+
+    Uses the top 3 highest-degree nodes to generate all 3 possible hyperplanes,
+    then selects the one with the best balance (closest to 50/50 split).
+
+    Returns
+    -------
+    indices_left, indices_right, hyperplane, offset, balance
+        The balance is returned so the caller can decide whether to accept the split.
+    """
+    dim = data.shape[1]
+    n_points = indices.shape[0]
+
+    # Get top 3 hubs from this subset (3 pairs)
+    top_hubs = get_top_k_hub_indices(indices, global_degrees, 3)
+    n_hubs = top_hubs.shape[0]
+
+    # Storage for best result
+    best_balance = np.float32(0.0)
+    best_n_left = np.uint32(0)
+    best_n_right = np.uint32(0)
+    best_hyperplane = np.zeros(dim, dtype=np.float32)
+    best_side = np.zeros(n_points, dtype=np.int8)
+    side = np.empty(n_points, dtype=np.int8)
+
+    # Evaluate all hub pairs and pick the most balanced split
+    for hi in range(n_hubs):
+        for hj in range(hi + 1, n_hubs):
+            left = top_hubs[hi]
+            right = top_hubs[hj]
+
+            # Compute normalized hyperplane (angular distance)
+            left_norm = norm(data[left])
+            right_norm = norm(data[right])
+
+            if abs(left_norm) < EPS:
+                left_norm = 1.0
+            if abs(right_norm) < EPS:
+                right_norm = 1.0
+
+            hyperplane_vector = np.empty(dim, dtype=np.float32)
+            for d in range(dim):
+                hyperplane_vector[d] = (data[left, d] / left_norm) - (
+                    data[right, d] / right_norm
+                )
+
+            hyperplane_norm = norm(hyperplane_vector)
+            if abs(hyperplane_norm) < EPS:
+                hyperplane_norm = 1.0
+            for d in range(dim):
+                hyperplane_vector[d] = hyperplane_vector[d] / hyperplane_norm
+
+            # Project all points onto hyperplane
+            n_left = np.uint32(0)
+            n_right = np.uint32(0)
+
+            for i in range(n_points):
+                margin = np.float32(0.0)
+                for d in range(dim):
+                    margin += hyperplane_vector[d] * data[indices[i], d]
+
+                if margin > EPS:
+                    side[i] = 0
+                    n_left += 1
+                elif margin < -EPS:
+                    side[i] = 1
+                    n_right += 1
+                else:
+                    side[i] = i % 2
+                    if side[i] == 0:
+                        n_left += 1
+                    else:
+                        n_right += 1
+
+            # Skip invalid splits
+            if n_left == 0 or n_right == 0:
+                continue
+
+            # Score by balance
+            balance = np.float32(min(n_left, n_right)) / np.float32(n_points)
+
+            if balance > best_balance:
+                best_balance = balance
+                best_n_left = n_left
+                best_n_right = n_right
+                for d in range(dim):
+                    best_hyperplane[d] = hyperplane_vector[d]
+                for i in range(n_points):
+                    best_side[i] = side[i]
+
+    # If no valid candidate found, fall back to random assignment
+    if best_n_left == 0 or best_n_right == 0:
+        best_n_left = np.uint32(0)
+        best_n_right = np.uint32(0)
+        for i in range(n_points):
+            best_side[i] = np.abs(tau_rand_int(rng_state)) % 2
+            if best_side[i] == 0:
+                best_n_left += 1
+            else:
+                best_n_right += 1
+
+    # Allocate and populate result arrays
+    indices_left = np.empty(best_n_left, dtype=np.int32)
+    indices_right = np.empty(best_n_right, dtype=np.int32)
+
+    n_left = np.uint32(0)
+    n_right = np.uint32(0)
+    for i in range(n_points):
+        if best_side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    return indices_left, indices_right, best_hyperplane, np.float32(0.0), best_balance
+
+
+@numba.njit(
+    nogil=True,
+    cache=False,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+)
+def make_hub_euclidean_tree(
+    data,
+    indices,
+    neighbor_indices,
+    global_degrees,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    max_depth=200,
+):
+    """Recursive tree builder using hub-based splits.
+
+    Stops splitting if:
+    - Node size <= leaf_size
+    - max_depth reached
+    - Best split balance < MIN_SPLIT_BALANCE (creates larger leaf instead of bad split)
+    """
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+            balance,
+        ) = euclidean_hub_split(
+            data, indices, neighbor_indices, global_degrees, rng_state
+        )
+
+        # If split is too unbalanced, make a leaf instead
+        if balance < MIN_SPLIT_BALANCE:
+            hyperplanes.append(np.array([-1.0], dtype=np.float32))
+            offsets.append(-np.inf)
+            children.append((np.int32(-1), np.int32(-1)))
+            point_indices.append(indices)
+            return
+
+        make_hub_euclidean_tree(
+            data,
+            left_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_hub_euclidean_tree(
+            data,
+            right_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([-1.0], dtype=np.float32))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
+
+@numba.njit(
+    nogil=True,
+    cache=False,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+)
+def make_hub_angular_tree(
+    data,
+    indices,
+    neighbor_indices,
+    global_degrees,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    max_depth=200,
+):
+    """Recursive tree builder using angular hub-based splits.
+
+    Stops splitting if:
+    - Node size <= leaf_size
+    - max_depth reached
+    - Best split balance < MIN_SPLIT_BALANCE (creates larger leaf instead of bad split)
+    """
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+            balance,
+        ) = angular_hub_split(
+            data, indices, neighbor_indices, global_degrees, rng_state
+        )
+
+        # If split is too unbalanced, make a leaf instead
+        if balance < MIN_SPLIT_BALANCE:
+            hyperplanes.append(np.array([-1.0], dtype=np.float32))
+            offsets.append(-np.inf)
+            children.append((np.int32(-1), np.int32(-1)))
+            point_indices.append(indices)
+            return
+
+        make_hub_angular_tree(
+            data,
+            left_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_hub_angular_tree(
+            data,
+            right_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([-1.0], dtype=np.float32))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
+
+@numba.njit(nogil=True, cache=False)
+def make_hub_tree(
+    data,
+    neighbor_indices,
+    rng_state,
+    leaf_size=30,
+    angular=False,
+    max_depth=200,
+):
+    """Build an RP tree using simplified hub-based hyperplane selection.
+
+    This version precomputes global degrees once and uses the top 3 highest-degree
+    nodes at each split to generate all 3 possible hyperplanes. This is simpler
+    and significantly faster than the random sampling approach while maintaining
+    or improving tree quality.
+
+    Parameters
+    ----------
+    data : array of shape (n_samples, n_features)
+        The data to build the tree on.
+    neighbor_indices : array of shape (n_samples, n_neighbors)
+        The neighbor graph indices.
+    rng_state : array of int64, shape (3,)
+        The internal state of the rng.
+    leaf_size : int
+        The maximum size of a leaf node.
+    angular : bool
+        Whether to use angular (cosine) or euclidean distance.
+    max_depth : int
+        Maximum tree depth.
+
+    Returns
+    -------
+    tree : FlatTree
+        The constructed tree.
+    """
+    # Precompute global degrees ONCE
+    global_degrees = compute_global_degrees(neighbor_indices)
+
+    indices = np.arange(data.shape[0]).astype(np.int32)
+    hyperplanes = numba.typed.List.empty_list(dense_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+
+    if angular:
+        make_hub_angular_tree(
+            data,
+            indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth=max_depth,
+        )
+    else:
+        make_hub_euclidean_tree(
+            data,
+            indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth=max_depth,
+        )
+
+    max_leaf_size = leaf_size
+    for points in point_indices:
+        if len(points) > max_leaf_size:
+            max_leaf_size = numba.int32(len(points))
+
+    result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
+    return result
+
+
+# ============================================================================
+# Simplified Sparse Hub Trees
+# ============================================================================
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def sparse_euclidean_hub_split(
+    inds, indptr, spdata, indices, neighbor_indices, global_degrees, rng_state
+):
+    """Simplified hub-based split for sparse euclidean data.
+
+    Uses the top 3 highest-degree nodes to generate 3 possible hyperplanes,
+    then selects the one that minimizes edge cuts.
+    """
+    n_points = indices.shape[0]
+
+    # Get top 3 hubs from this subset
+    top_hubs = get_top_k_hub_indices(indices, global_degrees, 3)
+    n_hubs = top_hubs.shape[0]
+
+    # Build lookup
+    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
+    for i in range(n_points):
+        idx_to_pos[indices[i]] = i
+
+    # Storage for best result
+    best_hyperplane_inds = np.array([np.int32(-1)])
+    best_hyperplane_data = np.array([np.float32(-1.0)])
+    best_offset = np.float64(0.0)
+    best_side = np.empty(n_points, dtype=np.int8)
+    best_edge_cuts = np.uint32(0xFFFFFFFF)
+    best_n_left = np.uint32(0)
+    best_n_right = np.uint32(0)
+    side = np.empty(n_points, dtype=np.int8)
+
+    # Evaluate all hub pairs (only 3 pairs for k=3)
+    for hi in range(n_hubs):
+        for hj in range(hi + 1, n_hubs):
+            left = top_hubs[hi]
+            right = top_hubs[hj]
+
+            left_inds = inds[indptr[left] : indptr[left + 1]]
+            left_data = spdata[indptr[left] : indptr[left + 1]]
+            right_inds = inds[indptr[right] : indptr[right + 1]]
+            right_data = spdata[indptr[right] : indptr[right + 1]]
+
+            # Compute hyperplane
+            hyperplane_offset = np.float64(0.0)
+            hyperplane_inds, hyperplane_data = sparse_diff(
+                left_inds, left_data, right_inds, right_data
+            )
+            offset_inds, offset_data = sparse_sum(
+                left_inds, left_data, right_inds, right_data
+            )
+            offset_data = offset_data / 2.0
+            offset_inds, offset_data = sparse_mul(
+                hyperplane_inds,
+                hyperplane_data,
+                offset_inds,
+                offset_data.astype(np.float32),
+            )
+            for val in offset_data:
+                hyperplane_offset -= val
+
+            # Project all points
+            n_left = np.uint32(0)
+            n_right = np.uint32(0)
+
+            for i in range(n_points):
+                margin = hyperplane_offset
+                i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
+                i_data = spdata[indptr[indices[i]] : indptr[indices[i] + 1]]
+
+                _, mul_data = sparse_mul(
+                    hyperplane_inds, hyperplane_data, i_inds, i_data
+                )
+                for val in mul_data:
+                    margin += val
+
+                if margin > EPS:
+                    side[i] = 0
+                    n_left += 1
+                elif margin < -EPS:
+                    side[i] = 1
+                    n_right += 1
+                else:
+                    side[i] = i % 2
+                    if side[i] == 0:
+                        n_left += 1
+                    else:
+                        n_right += 1
+
+            if n_left == 0 or n_right == 0:
+                continue
+
+            # Count edge cuts
+            edge_cuts = np.uint32(0)
+            for i in range(n_points):
+                point_idx = indices[i]
+                point_side = side[i]
+                for j_nb in range(neighbor_indices.shape[1]):
+                    neighbor = neighbor_indices[point_idx, j_nb]
+                    if neighbor < 0:
+                        break
+                    neighbor_pos = idx_to_pos[neighbor]
+                    if neighbor_pos >= 0:
+                        if side[neighbor_pos] != point_side:
+                            edge_cuts += 1
+
+            edge_cuts = edge_cuts // 2
+
+            if edge_cuts < best_edge_cuts:
+                best_edge_cuts = edge_cuts
+                best_n_left = n_left
+                best_n_right = n_right
+                best_hyperplane_inds = hyperplane_inds.copy()
+                best_hyperplane_data = hyperplane_data.copy()
+                best_offset = hyperplane_offset
+                for i in range(n_points):
+                    best_side[i] = side[i]
+
+    # Fallback
+    if best_n_left == 0 or best_n_right == 0:
+        best_n_left = np.uint32(0)
+        best_n_right = np.uint32(0)
+        for i in range(n_points):
+            best_side[i] = np.abs(tau_rand_int(rng_state)) % 2
+            if best_side[i] == 0:
+                best_n_left += 1
+            else:
+                best_n_right += 1
+
+    indices_left = np.empty(best_n_left, dtype=np.int32)
+    indices_right = np.empty(best_n_right, dtype=np.int32)
+
+    n_left = np.uint32(0)
+    n_right = np.uint32(0)
+    for i in range(n_points):
+        if best_side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    hyperplane = np.vstack((best_hyperplane_inds, best_hyperplane_data))
+    return indices_left, indices_right, hyperplane, best_offset
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def sparse_angular_hub_split(
+    inds, indptr, spdata, indices, neighbor_indices, global_degrees, rng_state
+):
+    """Simplified hub-based split for sparse angular data.
+
+    Uses the top 3 highest-degree nodes to generate 3 possible hyperplanes,
+    then selects the one that minimizes edge cuts.
+    """
+    n_points = indices.shape[0]
+
+    # Get top 3 hubs from this subset
+    top_hubs = get_top_k_hub_indices(indices, global_degrees, 3)
+    n_hubs = top_hubs.shape[0]
+
+    # Build lookup
+    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
+    for i in range(n_points):
+        idx_to_pos[indices[i]] = i
+
+    # Storage for best result
+    best_hyperplane_inds = np.array([np.int32(-1)])
+    best_hyperplane_data = np.array([np.float32(-1.0)])
+    best_side = np.empty(n_points, dtype=np.int8)
+    best_edge_cuts = np.uint32(0xFFFFFFFF)
+    best_n_left = np.uint32(0)
+    best_n_right = np.uint32(0)
+    side = np.empty(n_points, dtype=np.int8)
+
+    # Evaluate all hub pairs (only 3 pairs for k=3)
+    for hi in range(n_hubs):
+        for hj in range(hi + 1, n_hubs):
+            left = top_hubs[hi]
+            right = top_hubs[hj]
+
+            left_inds = inds[indptr[left] : indptr[left + 1]]
+            left_data = spdata[indptr[left] : indptr[left + 1]]
+            right_inds = inds[indptr[right] : indptr[right + 1]]
+            right_data = spdata[indptr[right] : indptr[right + 1]]
+
+            # Normalize for angular distance
+            left_norm = norm(left_data)
+            right_norm = norm(right_data)
+
+            if abs(left_norm) < EPS:
+                left_norm = 1.0
+            if abs(right_norm) < EPS:
+                right_norm = 1.0
+
+            normalized_left_data = (left_data / left_norm).astype(np.float32)
+            normalized_right_data = (right_data / right_norm).astype(np.float32)
+
+            hyperplane_inds, hyperplane_data = sparse_diff(
+                left_inds, normalized_left_data, right_inds, normalized_right_data
+            )
+
+            hyperplane_norm = norm(hyperplane_data)
+            if abs(hyperplane_norm) < EPS:
+                hyperplane_norm = 1.0
+            for d in range(hyperplane_data.shape[0]):
+                hyperplane_data[d] = hyperplane_data[d] / hyperplane_norm
+
+            # Project all points
+            n_left = np.uint32(0)
+            n_right = np.uint32(0)
+
+            for i in range(n_points):
+                margin = np.float64(0.0)
+                i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
+                i_data = spdata[indptr[indices[i]] : indptr[indices[i] + 1]]
+
+                _, mul_data = sparse_mul(
+                    hyperplane_inds, hyperplane_data, i_inds, i_data
+                )
+                for val in mul_data:
+                    margin += val
+
+                if margin > EPS:
+                    side[i] = 0
+                    n_left += 1
+                elif margin < -EPS:
+                    side[i] = 1
+                    n_right += 1
+                else:
+                    side[i] = i % 2
+                    if side[i] == 0:
+                        n_left += 1
+                    else:
+                        n_right += 1
+
+            if n_left == 0 or n_right == 0:
+                continue
+
+            # Count edge cuts
+            edge_cuts = np.uint32(0)
+            for i in range(n_points):
+                point_idx = indices[i]
+                point_side = side[i]
+                for j_nb in range(neighbor_indices.shape[1]):
+                    neighbor = neighbor_indices[point_idx, j_nb]
+                    if neighbor < 0:
+                        break
+                    neighbor_pos = idx_to_pos[neighbor]
+                    if neighbor_pos >= 0:
+                        if side[neighbor_pos] != point_side:
+                            edge_cuts += 1
+
+            edge_cuts = edge_cuts // 2
+
+            if edge_cuts < best_edge_cuts:
+                best_edge_cuts = edge_cuts
+                best_n_left = n_left
+                best_n_right = n_right
+                best_hyperplane_inds = hyperplane_inds.copy()
+                best_hyperplane_data = hyperplane_data.copy()
+                for i in range(n_points):
+                    best_side[i] = side[i]
+
+    # Fallback
+    if best_n_left == 0 or best_n_right == 0:
+        best_n_left = np.uint32(0)
+        best_n_right = np.uint32(0)
+        for i in range(n_points):
+            best_side[i] = np.abs(tau_rand_int(rng_state)) % 2
+            if best_side[i] == 0:
+                best_n_left += 1
+            else:
+                best_n_right += 1
+
+    indices_left = np.empty(best_n_left, dtype=np.int32)
+    indices_right = np.empty(best_n_right, dtype=np.int32)
+
+    n_left = np.uint32(0)
+    n_right = np.uint32(0)
+    for i in range(n_points):
+        if best_side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    hyperplane = np.vstack((best_hyperplane_inds, best_hyperplane_data))
+    return indices_left, indices_right, hyperplane, np.float64(0.0)
+
+
+@numba.njit(
+    nogil=True,
+    cache=False,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+)
+def make_sparse_hub_euclidean_tree(
+    inds,
+    indptr,
+    spdata,
+    indices,
+    neighbor_indices,
+    global_degrees,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    max_depth=200,
+):
+    """Recursive tree builder using simplified sparse euclidean hub splits."""
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+        ) = sparse_euclidean_hub_split(
+            inds, indptr, spdata, indices, neighbor_indices, global_degrees, rng_state
+        )
+
+        make_sparse_hub_euclidean_tree(
+            inds,
+            indptr,
+            spdata,
+            left_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_sparse_hub_euclidean_tree(
+            inds,
+            indptr,
+            spdata,
+            right_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([[-1.0], [-1.0]], dtype=np.float64))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
+
+@numba.njit(
+    nogil=True,
+    cache=False,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+)
+def make_sparse_hub_angular_tree(
+    inds,
+    indptr,
+    spdata,
+    indices,
+    neighbor_indices,
+    global_degrees,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    max_depth=200,
+):
+    """Recursive tree builder using simplified sparse angular hub splits."""
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+        ) = sparse_angular_hub_split(
+            inds, indptr, spdata, indices, neighbor_indices, global_degrees, rng_state
+        )
+
+        make_sparse_hub_angular_tree(
+            inds,
+            indptr,
+            spdata,
+            left_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_sparse_hub_angular_tree(
+            inds,
+            indptr,
+            spdata,
+            right_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([[-1.0], [-1.0]], dtype=np.float64))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
+
+@numba.njit(nogil=True, cache=False)
+def make_sparse_hub_tree(
+    inds,
+    indptr,
+    spdata,
+    neighbor_indices,
+    rng_state,
+    leaf_size=30,
+    angular=False,
+    max_depth=200,
+):
+    """Build a sparse RP tree using simplified hub-based hyperplane selection.
+
+    This version precomputes global degrees once and uses the top 3 highest-degree
+    nodes at each split to generate all 3 possible hyperplanes.
+
+    Parameters
+    ----------
+    inds : array
+        CSR format index array of the matrix.
+    indptr : array
+        CSR format index pointer array of the matrix.
+    spdata : array
+        CSR format data array of the matrix.
+    neighbor_indices : array of shape (n_samples, n_neighbors)
+        The neighbor graph indices.
+    rng_state : array of int64, shape (3,)
+        The internal state of the rng.
+    leaf_size : int
+        The maximum size of a leaf node.
+    angular : bool
+        Whether to use angular (cosine) or euclidean distance.
+    max_depth : int
+        Maximum tree depth.
+
+    Returns
+    -------
+    tree : FlatTree
+        The constructed tree.
+    """
+    # Precompute global degrees ONCE
+    global_degrees = compute_global_degrees(neighbor_indices)
+
+    indices = np.arange(indptr.shape[0] - 1).astype(np.int32)
+    hyperplanes = numba.typed.List.empty_list(sparse_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+
+    if angular:
+        make_sparse_hub_angular_tree(
+            inds,
+            indptr,
+            spdata,
+            indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth=max_depth,
+        )
+    else:
+        make_sparse_hub_euclidean_tree(
+            inds,
+            indptr,
+            spdata,
+            indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth=max_depth,
+        )
+
+    max_leaf_size = leaf_size
+    for points in point_indices:
+        if len(points) > max_leaf_size:
+            max_leaf_size = numba.int32(len(points))
+
+    result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
+    return result
+
+
+# ============================================================================
+# Simplified Bit-packed Hub Trees
+# ============================================================================
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def get_top_k_hub_indices_bit(indices, data, global_degrees, k=3):
+    """Get the indices of the top k highest-degree points for bit data.
+
+    Also returns the pair with maximum Hamming distance among the top k.
+    """
+    n_points = indices.shape[0]
+    actual_k = min(k, n_points)
+
+    # Find top k by degree using insertion sort approach
+    top_degrees = np.full(actual_k, np.int32(-1), dtype=np.int32)
+    top_indices = np.empty(actual_k, dtype=np.int32)
+
+    for i in range(n_points):
+        deg = global_degrees[indices[i]]
+
+        if deg > top_degrees[actual_k - 1]:
+            insert_pos = actual_k - 1
+            while insert_pos > 0 and deg > top_degrees[insert_pos - 1]:
+                insert_pos -= 1
+
+            for j in range(actual_k - 1, insert_pos, -1):
+                top_degrees[j] = top_degrees[j - 1]
+                top_indices[j] = top_indices[j - 1]
+
+            top_degrees[insert_pos] = deg
+            top_indices[insert_pos] = indices[i]
+
+    return top_indices
+
+
+@numba.njit(
+    fastmath=True,
+    nogil=True,
+    cache=False,
+)
+def bit_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
+    """Simplified hub-based split for bit-packed data.
+
+    Uses the top 3 highest-degree nodes to generate 3 possible hyperplanes,
+    then selects the one that minimizes edge cuts.
+    """
+    dim = data.shape[1]
+    n_points = indices.shape[0]
+
+    # Get top 3 hubs from this subset
+    top_hubs = get_top_k_hub_indices_bit(indices, data, global_degrees, 3)
+    n_hubs = top_hubs.shape[0]
+
+    # Build lookup
+    idx_to_pos = np.full(neighbor_indices.shape[0], -1, dtype=np.int32)
+    for i in range(n_points):
+        idx_to_pos[indices[i]] = i
+
+    # Storage for best result
+    best_hyperplane = np.zeros(dim * 2, dtype=np.uint8)
+    best_side = np.empty(n_points, dtype=np.int8)
+    best_edge_cuts = np.uint32(0xFFFFFFFF)
+    best_n_left = np.uint32(0)
+    best_n_right = np.uint32(0)
+    side = np.empty(n_points, dtype=np.int8)
+
+    # Evaluate all hub pairs (only 3 pairs for k=3)
+    for hi in range(n_hubs):
+        for hj in range(hi + 1, n_hubs):
+            left = top_hubs[hi]
+            right = top_hubs[hj]
+
+            # Compute hyperplane for bit data
+            hyperplane_vector = np.empty(dim * 2, dtype=np.uint8)
+            positive_hyperplane_component = hyperplane_vector[:dim]
+            negative_hyperplane_component = hyperplane_vector[dim:]
+
+            for d in range(dim):
+                xor_vector = data[left, d] ^ data[right, d]
+                positive_hyperplane_component[d] = xor_vector & data[left, d]
+                negative_hyperplane_component[d] = xor_vector & data[right, d]
+
+            # Project all points onto hyperplane
+            n_left = np.uint32(0)
+            n_right = np.uint32(0)
+
+            for i in range(n_points):
+                margin = np.float32(0.0)
+                for d in range(dim):
+                    margin += popcnt[
+                        positive_hyperplane_component[d] & data[indices[i], d]
+                    ]
+                    margin -= popcnt[
+                        negative_hyperplane_component[d] & data[indices[i], d]
+                    ]
+
+                if margin > EPS:
+                    side[i] = 0
+                    n_left += 1
+                elif margin < -EPS:
+                    side[i] = 1
+                    n_right += 1
+                else:
+                    side[i] = i % 2
+                    if side[i] == 0:
+                        n_left += 1
+                    else:
+                        n_right += 1
+
+            if n_left == 0 or n_right == 0:
+                continue
+
+            # Count edge cuts
+            edge_cuts = np.uint32(0)
+            for i in range(n_points):
+                point_idx = indices[i]
+                point_side = side[i]
+                for j_nb in range(neighbor_indices.shape[1]):
+                    neighbor = neighbor_indices[point_idx, j_nb]
+                    if neighbor < 0:
+                        break
+                    neighbor_pos = idx_to_pos[neighbor]
+                    if neighbor_pos >= 0:
+                        if side[neighbor_pos] != point_side:
+                            edge_cuts += 1
+
+            edge_cuts = edge_cuts // 2
+
+            if edge_cuts < best_edge_cuts:
+                best_edge_cuts = edge_cuts
+                best_n_left = n_left
+                best_n_right = n_right
+                for d in range(dim * 2):
+                    best_hyperplane[d] = hyperplane_vector[d]
+                for i in range(n_points):
+                    best_side[i] = side[i]
+
+    # Fallback
+    if best_n_left == 0 or best_n_right == 0:
+        best_n_left = np.uint32(0)
+        best_n_right = np.uint32(0)
+        for i in range(n_points):
+            best_side[i] = np.abs(tau_rand_int(rng_state)) % 2
+            if best_side[i] == 0:
+                best_n_left += 1
+            else:
+                best_n_right += 1
+
+    indices_left = np.empty(best_n_left, dtype=np.int32)
+    indices_right = np.empty(best_n_right, dtype=np.int32)
+
+    n_left = np.uint32(0)
+    n_right = np.uint32(0)
+    for i in range(n_points):
+        if best_side[i] == 0:
+            indices_left[n_left] = indices[i]
+            n_left += 1
+        else:
+            indices_right[n_right] = indices[i]
+            n_right += 1
+
+    return indices_left, indices_right, best_hyperplane, np.float32(0.0)
+
+
+@numba.njit(
+    nogil=True,
+    cache=False,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
+)
+def make_bit_hub_tree_recursive(
+    data,
+    indices,
+    neighbor_indices,
+    global_degrees,
+    hyperplanes,
+    offsets,
+    children,
+    point_indices,
+    rng_state,
+    leaf_size=30,
+    max_depth=200,
+):
+    """Recursive tree builder using simplified bit hub splits."""
+    if indices.shape[0] > leaf_size and max_depth > 0:
+        (
+            left_indices,
+            right_indices,
+            hyperplane,
+            offset,
+        ) = bit_hub_split(data, indices, neighbor_indices, global_degrees, rng_state)
+
+        make_bit_hub_tree_recursive(
+            data,
+            left_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        left_node_num = len(point_indices) - 1
+
+        make_bit_hub_tree_recursive(
+            data,
+            right_indices,
+            neighbor_indices,
+            global_degrees,
+            hyperplanes,
+            offsets,
+            children,
+            point_indices,
+            rng_state,
+            leaf_size,
+            max_depth - 1,
+        )
+
+        right_node_num = len(point_indices) - 1
+
+        hyperplanes.append(hyperplane)
+        offsets.append(offset)
+        children.append((np.int32(left_node_num), np.int32(right_node_num)))
+        point_indices.append(np.array([-1], dtype=np.int32))
+    else:
+        hyperplanes.append(np.array([np.uint8(0)], dtype=np.uint8))
+        offsets.append(-np.inf)
+        children.append((np.int32(-1), np.int32(-1)))
+        point_indices.append(indices)
+
+    return
+
+
+@numba.njit(nogil=True, cache=False)
+def make_bit_hub_tree(
+    data,
+    neighbor_indices,
+    rng_state,
+    leaf_size=30,
+    max_depth=200,
+):
+    """Build a bit-packed RP tree using simplified hub-based hyperplane selection.
+
+    This version precomputes global degrees once and uses the top 3 highest-degree
+    nodes at each split to generate all 3 possible hyperplanes.
+
+    Parameters
+    ----------
+    data : array of shape (n_samples, n_features)
+        The bit-packed data to build the tree on.
+    neighbor_indices : array of shape (n_samples, n_neighbors)
+        The neighbor graph indices.
+    rng_state : array of int64, shape (3,)
+        The internal state of the rng.
+    leaf_size : int
+        The maximum size of a leaf node.
+    max_depth : int
+        Maximum tree depth.
+
+    Returns
+    -------
+    tree : FlatTree
+        The constructed tree.
+    """
+    # Precompute global degrees ONCE
+    global_degrees = compute_global_degrees(neighbor_indices)
+
+    indices = np.arange(data.shape[0]).astype(np.int32)
+    hyperplanes = numba.typed.List.empty_list(bit_hyperplane_type)
+    offsets = numba.typed.List.empty_list(offset_type)
+    children = numba.typed.List.empty_list(children_type)
+    point_indices = numba.typed.List.empty_list(point_indices_type)
+
+    make_bit_hub_tree_recursive(
+        data,
+        indices,
+        neighbor_indices,
+        global_degrees,
+        hyperplanes,
+        offsets,
+        children,
+        point_indices,
+        rng_state,
+        leaf_size,
+        max_depth=max_depth,
+    )
+
+    max_leaf_size = leaf_size
+    for points in point_indices:
+        if len(points) > max_leaf_size:
+            max_leaf_size = numba.int32(len(points))
+
+    result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
+    return result
+
+
 @numba.njit(
     nogil=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
@@ -812,6 +2300,7 @@ def make_angular_tree(
         point_indices.append(indices)
 
     return
+
 
 @numba.njit(
     nogil=True,
@@ -1151,6 +2640,7 @@ def make_dense_bit_tree(data, rng_state, leaf_size=30, angular=False, max_depth=
     result = FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
     return result
 
+
 @numba.njit(
     [
         "b1(f4[::1],f4,f4[::1],i8[::1])",
@@ -1277,6 +2767,7 @@ def search_flat_bit_tree(point, hyperplanes, offsets, children, indices, rng_sta
 
     return indices[-children[node, 0] : -children[node, 1]]
 
+
 @numba.njit(fastmath=True, cache=True)
 def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
     margin = offset
@@ -1376,22 +2867,14 @@ def make_forest(
         elif bit_tree:
             result = joblib.Parallel(n_jobs=n_jobs, require="sharedmem")(
                 joblib.delayed(make_dense_bit_tree)(
-                    data,
-                    rng_states[i],
-                    leaf_size,
-                    angular,
-                    max_depth=max_depth
+                    data, rng_states[i], leaf_size, angular, max_depth=max_depth
                 )
                 for i in range(n_trees)
             )
         else:
             result = joblib.Parallel(n_jobs=n_jobs, require="sharedmem")(
                 joblib.delayed(make_dense_tree)(
-                    data,
-                    rng_states[i],
-                    leaf_size,
-                    angular,
-                    max_depth=max_depth
+                    data, rng_states[i], leaf_size, angular, max_depth=max_depth
                 )
                 for i in range(n_trees)
             )
@@ -1426,7 +2909,8 @@ def get_leaves_from_tree(tree, max_leaf_size):
 def rptree_leaf_array_parallel(rp_forest):
     max_leaf_size = np.max([rp_tree.leaf_size for rp_tree in rp_forest])
     result = joblib.Parallel(n_jobs=-1, require="sharedmem")(
-        joblib.delayed(get_leaves_from_tree)(rp_tree, max_leaf_size) for rp_tree in rp_forest
+        joblib.delayed(get_leaves_from_tree)(rp_tree, max_leaf_size)
+        for rp_tree in rp_forest
     )
     return result
 
@@ -1438,7 +2922,7 @@ def rptree_leaf_array(rp_forest):
         return np.array([[-1]])
 
 
-#@numba.njit()
+# @numba.njit()
 def recursive_convert(
     tree, hyperplanes, offsets, children, indices, node_num, leaf_start, tree_node
 ):
@@ -1488,9 +2972,9 @@ def recursive_convert_sparse(
         indices[leaf_start:leaf_end] = tree.indices[tree_node]
         return node_num, leaf_end
     else:
-        hyperplanes[
-            node_num, :, : tree.hyperplanes[tree_node].shape[1]
-        ] = tree.hyperplanes[tree_node]
+        hyperplanes[node_num, :, : tree.hyperplanes[tree_node].shape[1]] = (
+            tree.hyperplanes[tree_node]
+        )
         offsets[node_num] = tree.offsets[tree_node]
         children[node_num, 0] = node_num + 1
         old_node_num = node_num
@@ -1541,7 +3025,9 @@ def convert_tree_format(tree, data_size, data_dim):
             hyperplane_dim = data_dim * 2
         else:
             hyperplane_dim = data_dim
-        hyperplanes = np.zeros((n_nodes, hyperplane_dim), dtype=tree.hyperplanes[0].dtype)
+        hyperplanes = np.zeros(
+            (n_nodes, hyperplane_dim), dtype=tree.hyperplanes[0].dtype
+        )
     else:
         # sparse hyperplanes
         is_sparse = True
@@ -1620,17 +3106,55 @@ def score_tree(tree, neighbor_indices, data, rng_state):
     return result / numba.float32(neighbor_indices.shape[0])
 
 
-@numba.njit(nogil=True, locals={"node": numba.int32}, cache=False)
+@numba.njit(
+    nogil=True,
+    locals={"node": numba.int32, "count": numba.int32},
+    cache=False,
+)
 def score_linked_tree(tree, neighbor_indices):
-    result = 0.0
+    """Score a tree by measuring how well leaves contain nearest neighbors.
+
+    For each point, computes the fraction of its k nearest neighbors that
+    are in the same leaf. Returns the average of this fraction across all points.
+
+    A score of 1.0 means all neighbors are always in the same leaf (perfect).
+    A score of 0.0 means no neighbors are ever in the same leaf (worst).
+    """
+    n_points = neighbor_indices.shape[0]
+    k = neighbor_indices.shape[1]
+    total_score = 0.0
     n_nodes = len(tree.children)
+
     for i in range(n_nodes):
         node = numba.int32(i)
         left_child = tree.children[node][0]
         right_child = tree.children[node][1]
+
+        # Only process leaf nodes
         if left_child == -1 and right_child == -1:
-            for j in range(tree.indices[node].shape[0]):
-                idx = tree.indices[node][j]
-                intersection = arr_intersect(neighbor_indices[idx], tree.indices[node])
-                result += numba.float32(intersection.shape[0] > 1)
-    return result / numba.float32(neighbor_indices.shape[0])
+            leaf_indices = tree.indices[node]
+            leaf_size = leaf_indices.shape[0]
+
+            # Build a lookup set for the leaf (max value we need to check)
+            # Use a simple approach: for each point in leaf, count neighbors in leaf
+            for j in range(leaf_size):
+                idx = leaf_indices[j]
+                neighbors = neighbor_indices[idx]
+
+                # Count how many neighbors are in this leaf
+                count = 0
+                for ni in range(k):
+                    neighbor = neighbors[ni]
+                    # Check if neighbor is in leaf (linear scan - leaf is small)
+                    for li in range(leaf_size):
+                        if leaf_indices[li] == neighbor:
+                            count += 1
+                            break
+
+                # Subtract 1 if point itself is counted as neighbor (self-loop)
+                # and normalize by k
+                # Actually, neighbor_indices typically doesn't include self,
+                # so we just use count directly
+                total_score += numba.float32(count) / numba.float32(k)
+
+    return total_score / numba.float32(n_points)

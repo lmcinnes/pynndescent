@@ -3,7 +3,6 @@
 #
 # License: BSD 3 clause
 from __future__ import print_function
-import locale
 import numpy as np
 import numba
 
@@ -13,52 +12,89 @@ from pynndescent.utils import (
     new_build_candidates,
     deheap_sort,
     checked_flagged_heap_push,
-    apply_graph_updates_high_memory,
-    apply_graph_updates_low_memory,
+    sparse_generate_graph_update_array,
+    apply_graph_update_array,
+    EMPTY_GRAPH,
 )
 
 from pynndescent.sparse import sparse_euclidean
 
-locale.setlocale(locale.LC_NUMERIC, "C")
-
-EMPTY_GRAPH = make_heap(1, 1)
-
 
 @numba.njit(parallel=True, cache=False)
-def generate_leaf_updates(leaf_block, dist_thresholds, inds, indptr, data, dist):
+def generate_leaf_updates(
+    updates,
+    n_updates_per_thread,
+    leaf_block,
+    dist_thresholds,
+    inds,
+    indptr,
+    data,
+    dist,
+    n_threads,
+):
+    """Generate leaf updates into pre-allocated arrays for parallel efficiency."""
+    n_leaves = leaf_block.shape[0]
+    leaves_per_thread = (n_leaves + n_threads - 1) // n_threads
 
-    updates = [[(-1, -1, np.inf)] for i in range(leaf_block.shape[0])]
+    # Reset update counts
+    for t in range(n_threads):
+        n_updates_per_thread[t] = 0
 
-    for n in numba.prange(leaf_block.shape[0]):
-        for i in range(leaf_block.shape[1]):
-            p = leaf_block[n, i]
-            if p < 0:
-                break
+    for t in numba.prange(n_threads):
+        start_leaf = t * leaves_per_thread
+        end_leaf = min(start_leaf + leaves_per_thread, n_leaves)
+        max_updates = updates.shape[1]
+        count = 0
 
-            for j in range(i + 1, leaf_block.shape[1]):
-                q = leaf_block[n, j]
-                if q < 0:
+        for leaf_idx in range(start_leaf, end_leaf):
+            for i in range(leaf_block.shape[1]):
+                p = leaf_block[leaf_idx, i]
+                if p < 0:
                     break
 
-                from_inds = inds[indptr[p] : indptr[p + 1]]
-                from_data = data[indptr[p] : indptr[p + 1]]
+                for j in range(i + 1, leaf_block.shape[1]):
+                    q = leaf_block[leaf_idx, j]
+                    if q < 0:
+                        break
 
-                to_inds = inds[indptr[q] : indptr[q + 1]]
-                to_data = data[indptr[q] : indptr[q + 1]]
-                d = dist(from_inds, from_data, to_inds, to_data)
+                    from_inds = inds[indptr[p] : indptr[p + 1]]
+                    from_data = data[indptr[p] : indptr[p + 1]]
 
-                if d < dist_thresholds[p] or d < dist_thresholds[q]:
-                    updates[n].append((p, q, d))
+                    to_inds = inds[indptr[q] : indptr[q + 1]]
+                    to_data = data[indptr[q] : indptr[q + 1]]
+                    d = dist(from_inds, from_data, to_inds, to_data)
+
+                    if d < dist_thresholds[p] or d < dist_thresholds[q]:
+                        if count < max_updates:
+                            updates[t, count, 0] = np.float32(p)
+                            updates[t, count, 1] = np.float32(q)
+                            updates[t, count, 2] = d
+                            count += 1
+
+        n_updates_per_thread[t] = count
 
     return updates
 
 
-@numba.njit(locals={"d": numba.float32, "p": numba.int32, "q": numba.int32}, cache=False)
-def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
-
+@numba.njit(
+    locals={"d": numba.float32, "p": numba.int32, "q": numba.int32},
+    cache=False,
+    parallel=True,
+)
+def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array, n_threads=8):
     n_leaves = leaf_array.shape[0]
-    block_size = 65536
+    block_size = n_threads * 64
     n_blocks = n_leaves // block_size
+
+    max_leaf_size = leaf_array.shape[1]
+    updates_per_thread = (
+        int(block_size * max_leaf_size * (max_leaf_size - 1) / (2 * n_threads)) + 1
+    )
+    updates = np.zeros((n_threads, updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+
+    n_vertices = current_graph[0].shape[0]
+    vertex_block_size = n_vertices // n_threads + 1
 
     for i in range(n_blocks + 1):
         block_start = i * block_size
@@ -67,33 +103,46 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array):
         leaf_block = leaf_array[block_start:block_end]
         dist_thresholds = current_graph[1][:, 0]
 
-        updates = generate_leaf_updates(
-            leaf_block, dist_thresholds, inds, indptr, data, dist
+        generate_leaf_updates(
+            updates,
+            n_updates_per_thread,
+            leaf_block,
+            dist_thresholds,
+            inds,
+            indptr,
+            data,
+            dist,
+            n_threads,
         )
 
-        for j in range(len(updates)):
-            for k in range(len(updates[j])):
-                p, q, d = updates[j][k]
+        for t in numba.prange(n_threads):
+            v_block_start = t * vertex_block_size
+            v_block_end = min(v_block_start + vertex_block_size, n_vertices)
 
-                if p == -1 or q == -1:
-                    continue
+            for j in range(n_threads):
+                for k in range(n_updates_per_thread[j]):
+                    p = np.int32(updates[j, k, 0])
+                    q = np.int32(updates[j, k, 1])
+                    d = updates[j, k, 2]
 
-                checked_flagged_heap_push(
-                    current_graph[1][p],
-                    current_graph[0][p],
-                    current_graph[2][p],
-                    d,
-                    q,
-                    np.uint8(1),
-                )
-                checked_flagged_heap_push(
-                    current_graph[1][q],
-                    current_graph[0][q],
-                    current_graph[2][q],
-                    d,
-                    p,
-                    np.uint8(1),
-                )
+                    if p >= v_block_start and p < v_block_end:
+                        checked_flagged_heap_push(
+                            current_graph[1][p],
+                            current_graph[0][p],
+                            current_graph[2][p],
+                            d,
+                            q,
+                            np.uint8(1),
+                        )
+                    if q >= v_block_start and q < v_block_end:
+                        checked_flagged_heap_push(
+                            current_graph[1][q],
+                            current_graph[0][q],
+                            current_graph[2][q],
+                            d,
+                            p,
+                            np.uint8(1),
+                        )
 
 
 @numba.njit(
@@ -122,55 +171,55 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
     return
 
 
-@numba.njit(parallel=True, cache=False)
-def generate_graph_updates(
-    new_candidate_block, old_candidate_block, dist_thresholds, inds, indptr, data, dist
+@numba.njit(cache=False)
+def sparse_process_candidates(
+    inds,
+    indptr,
+    data,
+    dist,
+    current_graph,
+    new_candidate_neighbors,
+    old_candidate_neighbors,
+    n_blocks,
+    block_size,
+    n_threads,
+    update_array,
+    n_updates_per_thread,
 ):
+    """Process candidate neighbors for sparse data using array-based updates."""
+    c = 0
+    n_vertices = new_candidate_neighbors.shape[0]
+    for i in range(n_blocks + 1):
+        block_start = i * block_size
+        block_end = min(n_vertices, (i + 1) * block_size)
 
-    block_size = new_candidate_block.shape[0]
-    updates = [[(-1, -1, np.inf)] for i in range(block_size)]
-    max_candidates = new_candidate_block.shape[1]
+        new_candidate_block = new_candidate_neighbors[block_start:block_end]
+        old_candidate_block = old_candidate_neighbors[block_start:block_end]
 
-    for i in numba.prange(block_size):
-        for j in range(max_candidates):
-            p = int(new_candidate_block[i, j])
-            if p < 0:
-                continue
-            for k in range(j, max_candidates):
-                q = int(new_candidate_block[i, k])
-                if q < 0:
-                    continue
+        dist_thresholds = current_graph[1][:, 0]
 
-                from_inds = inds[indptr[p] : indptr[p + 1]]
-                from_data = data[indptr[p] : indptr[p + 1]]
+        sparse_generate_graph_update_array(
+            update_array,
+            n_updates_per_thread,
+            new_candidate_block,
+            old_candidate_block,
+            dist_thresholds,
+            inds,
+            indptr,
+            data,
+            dist,
+            n_threads,
+        )
 
-                to_inds = inds[indptr[q] : indptr[q + 1]]
-                to_data = data[indptr[q] : indptr[q + 1]]
-                d = dist(from_inds, from_data, to_inds, to_data)
+        c += apply_graph_update_array(
+            current_graph, update_array, n_updates_per_thread, n_threads
+        )
 
-                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                    updates[i].append((p, q, d))
-
-            for k in range(max_candidates):
-                q = int(old_candidate_block[i, k])
-                if q < 0:
-                    continue
-
-                from_inds = inds[indptr[p] : indptr[p + 1]]
-                from_data = data[indptr[p] : indptr[p + 1]]
-
-                to_inds = inds[indptr[q] : indptr[q + 1]]
-                to_data = data[indptr[q] : indptr[q + 1]]
-                d = dist(from_inds, from_data, to_inds, to_data)
-
-                if d <= dist_thresholds[p] or d <= dist_thresholds[q]:
-                    updates[i].append((p, q, d))
-
-    return updates
+    return c
 
 
 @numba.njit()
-def nn_descent_internal_low_memory_parallel(
+def nn_descent_internal(
     current_graph,
     inds,
     indptr,
@@ -188,64 +237,17 @@ def nn_descent_internal_low_memory_parallel(
     n_blocks = n_vertices // block_size
     n_threads = numba.get_num_threads()
 
-    for n in range(n_iters):
-        if verbose:
-            print("\t", n + 1, " / ", n_iters)
-
-        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+    # Pre-allocate update arrays
+    max_updates_per_thread = (
+        int(
+            (max_candidates**2 + max_candidates * (max_candidates - 1) / 2)
+            * block_size
+            / n_threads
         )
-
-        c = 0
-        for i in range(n_blocks + 1):
-            block_start = i * block_size
-            block_end = min(n_vertices, (i + 1) * block_size)
-
-            new_candidate_block = new_candidate_neighbors[block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[block_start:block_end]
-            dist_thresholds = current_graph[1][:, 0]
-
-            updates = generate_graph_updates(
-                new_candidate_block,
-                old_candidate_block,
-                dist_thresholds,
-                inds,
-                indptr,
-                data,
-                dist,
-            )
-
-            c += apply_graph_updates_low_memory(current_graph, updates, n_threads)
-
-        if c <= delta * n_neighbors * n_vertices:
-            if verbose:
-                print("\tStopping threshold met -- exiting after", n + 1, "iterations")
-            return
-
-
-@numba.njit()
-def nn_descent_internal_high_memory_parallel(
-    current_graph,
-    inds,
-    indptr,
-    data,
-    n_neighbors,
-    rng_state,
-    max_candidates=50,
-    dist=sparse_euclidean,
-    n_iters=10,
-    delta=0.001,
-    verbose=False,
-):
-    n_vertices = indptr.shape[0] - 1
-    block_size = 16384
-    n_blocks = n_vertices // block_size
-    n_threads = numba.get_num_threads()
-
-    in_graph = [
-        set(current_graph[0][i].astype(np.int64))
-        for i in range(current_graph[0].shape[0])
-    ]
+        + 1024
+    )
+    update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
+    n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
 
     for n in range(n_iters):
         if verbose:
@@ -255,26 +257,20 @@ def nn_descent_internal_high_memory_parallel(
             current_graph, max_candidates, rng_state, n_threads
         )
 
-        c = 0
-        for i in range(n_blocks + 1):
-            block_start = i * block_size
-            block_end = min(n_vertices, (i + 1) * block_size)
-
-            new_candidate_block = new_candidate_neighbors[block_start:block_end]
-            old_candidate_block = old_candidate_neighbors[block_start:block_end]
-            dist_thresholds = current_graph[1][:, 0]
-
-            updates = generate_graph_updates(
-                new_candidate_block,
-                old_candidate_block,
-                dist_thresholds,
-                inds,
-                indptr,
-                data,
-                dist,
-            )
-
-            c += apply_graph_updates_high_memory(current_graph, updates, in_graph)
+        c = sparse_process_candidates(
+            inds,
+            indptr,
+            data,
+            dist,
+            current_graph,
+            new_candidate_neighbors,
+            old_candidate_neighbors,
+            n_blocks,
+            block_size,
+            n_threads,
+            update_array,
+            n_updates_per_thread,
+        )
 
         if c <= delta * n_neighbors * n_vertices:
             if verbose:
@@ -314,33 +310,20 @@ def nn_descent(
     else:
         raise ValueError("Invalid initial graph specified!")
 
-    if low_memory:
-        nn_descent_internal_low_memory_parallel(
-            current_graph,
-            inds,
-            indptr,
-            data,
-            n_neighbors,
-            rng_state,
-            max_candidates=max_candidates,
-            dist=dist,
-            n_iters=n_iters,
-            delta=delta,
-            verbose=verbose,
-        )
-    else:
-        nn_descent_internal_high_memory_parallel(
-            current_graph,
-            inds,
-            indptr,
-            data,
-            n_neighbors,
-            rng_state,
-            max_candidates=max_candidates,
-            dist=dist,
-            n_iters=n_iters,
-            delta=delta,
-            verbose=verbose,
-        )
+    # Note: low_memory parameter is kept for API compatibility but
+    # now uses the efficient array-based implementation
+    nn_descent_internal(
+        current_graph,
+        inds,
+        indptr,
+        data,
+        n_neighbors,
+        rng_state,
+        max_candidates=max_candidates,
+        dist=dist,
+        n_iters=n_iters,
+        delta=delta,
+        verbose=verbose,
+    )
 
     return deheap_sort(current_graph[0], current_graph[1])
