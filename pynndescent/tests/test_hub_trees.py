@@ -67,7 +67,7 @@ def test_euclidean_hub_split_produces_valid_split(hub_tree_data):
     rng_state = np.array([42, 12345, 67890], dtype=np.int64)
     global_degrees = compute_global_degrees(neighbor_indices)
 
-    left, right, hyperplane, offset = euclidean_hub_split(
+    left, right, hyperplane, offset, balance = euclidean_hub_split(
         hub_tree_data, indices, neighbor_indices, global_degrees, rng_state
     )
 
@@ -92,7 +92,7 @@ def test_angular_hub_split_produces_valid_split(hub_tree_data):
     rng_state = np.array([42, 12345, 67890], dtype=np.int64)
     global_degrees = compute_global_degrees(neighbor_indices)
 
-    left, right, hyperplane, offset = angular_hub_split(
+    left, right, hyperplane, offset, balance = angular_hub_split(
         angular_data, indices, neighbor_indices, global_degrees, rng_state
     )
 
