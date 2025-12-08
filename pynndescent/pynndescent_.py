@@ -10,8 +10,8 @@ from sklearn.utils import check_random_state, check_array
 from sklearn.preprocessing import normalize
 from sklearn.base import BaseEstimator, TransformerMixin
 from scipy.sparse import (
-    csr_matrix,
-    coo_matrix,
+    csr_array,
+    coo_array,
     isspmatrix_csr,
     vstack as sparse_vstack,
     issparse,
@@ -818,7 +818,7 @@ class NNDescent:
         if self.n_jobs != -1 and self.n_jobs is not None:
             numba.set_num_threads(self.n_jobs)
 
-        if isspmatrix_csr(self._raw_data):
+        if isspmatrix_csr(self._raw_data) or isinstance(self._raw_data, csr_array):
 
             self._is_sparse = True
 
@@ -1092,7 +1092,7 @@ class NNDescent:
                     self.diversify_prob,
                 )
 
-        self._search_graph = coo_matrix(
+        self._search_graph = coo_array(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
         )
 
@@ -1754,8 +1754,8 @@ class NNDescent:
                 self._init_sparse_search_function()
 
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
-            if not isspmatrix_csr(query_data):
-                query_data = csr_matrix(query_data, dtype=np.float32)
+            if not isspmatrix_csr(query_data) and not isinstance(csr_array, query_data):
+                query_data = csr_array(query_data, dtype=np.float32)
             if not query_data.has_sorted_indices:
                 query_data.sort_indices()
 
@@ -1848,7 +1848,7 @@ class NNDescent:
             updated_indices = []
         if xs_fresh is None:
             if self._is_sparse:
-                xs_fresh = csr_matrix(
+                xs_fresh = csr_array(
                     ([], [], []), shape=(0, self._raw_data.shape[1]), dtype=self._input_dtype
                 )
             else:
@@ -2224,7 +2224,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
 
         if self.verbose:
             print(ts(), "Constructing neighbor matrix")
-        result = coo_matrix((n_samples_transform, self.n_samples_fit), dtype=np.float32)
+        result = coo_array((n_samples_transform, self.n_samples_fit), dtype=np.float32)
         result.row = np.repeat(
             np.arange(indices.shape[0], dtype=np.int32), indices.shape[1]
         )
