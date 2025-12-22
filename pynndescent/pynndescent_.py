@@ -492,6 +492,23 @@ def resort_tree_indices(tree, tree_order):
     return new_tree
 
 
+@numba.njit(cache=False, parallel=True, fastmath=True)
+def rerank(nn_inds, queries, data, dist, n_neighbors):
+    heap = make_heap(queries.shape[0], n_neighbors)
+    for i in numba.prange(queries.shape[0]):
+        indices = heap[0][i]
+        distances = heap[1][i]
+        for j in range(nn_inds.shape[1]):
+            idx = nn_inds[i, j]
+            if idx < 0:
+                continue
+            d = dist(queries[i], data[idx])
+            simple_heap_push(distances, indices, d, idx)
+
+    result_nn_inds, result_nn_dists = deheap_sort(heap[0], heap[1])
+    return result_nn_inds, result_nn_dists
+
+
 class NNDescent:
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
     very flexible and supports a wide variety of distances, including
