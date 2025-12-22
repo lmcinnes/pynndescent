@@ -800,6 +800,9 @@ def alternative_inner_product(x, y):
     fastmath=True,
     locals={
         "result": numba.types.float32,
+        "ip_result": numba.types.float32,
+        "norm_x": numba.types.float32,
+        "norm_y": numba.types.float32,
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
@@ -807,7 +810,7 @@ def alternative_inner_product(x, y):
 def proxy_inner_product(x, y):
     r"""A proxy for inner product distance (negative inner product).
 
-    Inner product distance has undesireable properties for nearest neighbor
+    Inner product distance has undesirable properties for nearest neighbor
     graph based search, and NNDescent in general. This is a proxy function
     that behaves similarly to inner product distance for ranking neighbors,
     but avoids some of the pitfalls.
@@ -848,6 +851,357 @@ def correct_alternative_inner_product(d):
     if d >= FLOAT32_MAX:
         return 0.0
     return -1.0 / d
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "cdf_x": numba.types.float32,
+        "cdf_y": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def proxy_wasserstein_1d(x, y):
+    r"""A proxy for 1D Wasserstein distance.
+
+    Uses L1 distance on the cumulative distribution functions, which is
+    exactly equal to Wasserstein-1 distance for 1D distributions. This
+    avoids the more expensive Minkowski computation with allocation.
+
+    For Wasserstein-p with p > 1, this is a lower bound and correlates
+    well for nearest neighbor search.
+
+    .. math::
+        D_{proxy}(x, y) = \sum_i |F_x(i) - F_y(i)|
+
+    where :math:`F_x, F_y` are the cumulative distribution functions.
+
+    Results should be reranked with true wasserstein_1d distance if p > 1.
+    """
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0.0 or l1_norm_y == 0.0:
+        return FLOAT32_MAX
+
+    # Compute CDF difference inline to avoid allocation
+    cdf_x = 0.0
+    cdf_y = 0.0
+    result = 0.0
+
+    for i in range(dim):
+        cdf_x += x[i] / l1_norm_x
+        cdf_y += y[i] / l1_norm_y
+        result += np.abs(cdf_x - cdf_y)
+
+    return result
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "tv_result": numba.types.float32,
+        "hellinger_result": numba.types.float32,
+        "px": numba.types.float32,
+        "py": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def proxy_kantorovich(x, y):
+    r"""A proxy for Kantorovich (Earth Mover's) distance.
+
+    The full Kantorovich distance requires solving an optimal transport
+    problem via network simplex, which is expensive. This proxy uses a
+    combination of:
+    1. Total variation distance (L1 on normalized distributions)
+    2. Hellinger-like term for better correlation
+
+    This is much cheaper to compute and correlates reasonably well with
+    true optimal transport distance for nearest neighbor search.
+
+    Results should be reranked with true kantorovich distance.
+    """
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0.0 or l1_norm_y == 0.0:
+        return FLOAT32_MAX
+
+    # Total variation distance + Hellinger-like term
+    tv_result = 0.0
+    hellinger_result = 0.0
+
+    for i in range(dim):
+        px = x[i] / l1_norm_x
+        py = y[i] / l1_norm_y
+        tv_result += np.abs(px - py)
+        hellinger_result += np.sqrt(px * py)
+
+    # Combine: TV captures mass difference, Hellinger captures shape similarity
+    return 0.5 * tv_result + (1.0 - hellinger_result)
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "cdf_x": numba.types.float32,
+        "cdf_y": numba.types.float32,
+        "mu": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def proxy_circular_kantorovich(x, y):
+    r"""A proxy for circular Kantorovich distance.
+
+    Uses mean-shifted CDF L1 distance instead of the more expensive
+    median-shifted Minkowski distance. The mean is a reasonable
+    approximation to the median for most distributions and avoids
+    the expensive median computation.
+
+    Results should be reranked with true circular_kantorovich distance.
+    """
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0.0 or l1_norm_y == 0.0:
+        return FLOAT32_MAX
+
+    # Compute CDF differences and their mean
+    cdf_x = 0.0
+    cdf_y = 0.0
+    mu = 0.0
+
+    for i in range(dim):
+        cdf_x += x[i] / l1_norm_x
+        cdf_y += y[i] / l1_norm_y
+        mu += cdf_x - cdf_y
+
+    mu /= dim
+
+    # L1 on shifted CDFs
+    cdf_x = 0.0
+    cdf_y = 0.0
+    result = 0.0
+
+    for i in range(dim):
+        cdf_x += x[i] / l1_norm_x
+        cdf_y += y[i] / l1_norm_y
+        result += np.abs(cdf_x - cdf_y - mu)
+
+    return result
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "bc": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def proxy_jensen_shannon(x, y):
+    r"""A proxy for Jensen-Shannon divergence.
+
+    Jensen-Shannon requires computing logs and the mixture distribution,
+    which is expensive. This proxy uses squared Hellinger distance, which
+    is also a proper divergence on probability distributions and much
+    cheaper to compute (no logs required).
+
+    .. math::
+        D_{proxy}(x, y) = 1 - \left(\sum_i \sqrt{p_i q_i}\right)^2
+
+    where p, q are the normalized distributions.
+
+    Results should be reranked with true jensen_shannon_divergence.
+    """
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0.0 or l1_norm_y == 0.0:
+        return FLOAT32_MAX
+
+    # Bhattacharyya coefficient
+    bc = 0.0
+    for i in range(dim):
+        bc += np.sqrt((x[i] / l1_norm_x) * (y[i] / l1_norm_y))
+
+    # Squared Hellinger-like distance: 1 - BC^2
+    # This spreads values more than standard Hellinger and correlates
+    # well with Jensen-Shannon divergence
+    return 1.0 - bc * bc
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "px": numba.types.float32,
+        "py": numba.types.float32,
+        "denom": numba.types.float32,
+        "diff": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def proxy_symmetric_kl(x, y):
+    r"""A proxy for symmetric KL divergence.
+
+    Symmetric KL requires computing logs which is expensive. This proxy
+    uses triangular discrimination (symmetric chi-squared divergence),
+    which is a second-order approximation to KL divergence and much cheaper.
+
+    .. math::
+        D_{proxy}(x, y) = \sum_i \frac{(p_i - q_i)^2}{p_i + q_i}
+
+    Results should be reranked with true symmetric_kl_divergence.
+    """
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0.0 or l1_norm_y == 0.0:
+        return FLOAT32_MAX
+
+    # Triangular discrimination / symmetric chi-squared
+    result = 0.0
+    for i in range(dim):
+        px = x[i] / l1_norm_x
+        py = y[i] / l1_norm_y
+        denom = px + py
+        if denom > 0:
+            diff = px - py
+            result += (diff * diff) / denom
+
+    return result
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "l1_norm_x": numba.types.float32,
+        "l1_norm_y": numba.types.float32,
+        "tv_result": numba.types.float32,
+        "hellinger_result": numba.types.float32,
+        "px": numba.types.float32,
+        "py": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def proxy_sinkhorn(x, y):
+    r"""A proxy for Sinkhorn (entropy-regularized optimal transport) distance.
+
+    Sinkhorn distance requires iterative matrix scaling which is expensive.
+    This proxy uses the same combination as proxy_kantorovich since Sinkhorn
+    approximates Kantorovich.
+
+    Results should be reranked with true sinkhorn distance.
+    """
+    l1_norm_x = 0.0
+    l1_norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        l1_norm_x += x[i]
+        l1_norm_y += y[i]
+
+    if l1_norm_x == 0.0 or l1_norm_y == 0.0:
+        return FLOAT32_MAX
+
+    # Total variation distance + Hellinger-like term
+    tv_result = 0.0
+    hellinger_result = 0.0
+
+    for i in range(dim):
+        px = x[i] / l1_norm_x
+        py = y[i] / l1_norm_y
+        tv_result += np.abs(px - py)
+        hellinger_result += np.sqrt(px * py)
+
+    return 0.5 * tv_result + (1.0 - hellinger_result)
 
 
 @numba.njit(fastmath=True)
@@ -1580,5 +1934,49 @@ proxy_distances = {
     "proxy_inner_product": {
         "proxy_dist": proxy_inner_product,
         "true_dist": inner_product,
-    }
+    },
+    "proxy_wasserstein_1d": {
+        "proxy_dist": proxy_wasserstein_1d,
+        "true_dist": wasserstein_1d,
+    },
+    "proxy_wasserstein-1d": {
+        "proxy_dist": proxy_wasserstein_1d,
+        "true_dist": wasserstein_1d,
+    },
+    "proxy_kantorovich": {
+        "proxy_dist": proxy_kantorovich,
+        "true_dist": kantorovich,
+    },
+    "proxy_wasserstein": {
+        "proxy_dist": proxy_kantorovich,
+        "true_dist": kantorovich,
+    },
+    "proxy_circular_kantorovich": {
+        "proxy_dist": proxy_circular_kantorovich,
+        "true_dist": circular_kantorovich,
+    },
+    "proxy_circular_wasserstein": {
+        "proxy_dist": proxy_circular_kantorovich,
+        "true_dist": circular_kantorovich,
+    },
+    "proxy_jensen_shannon": {
+        "proxy_dist": proxy_jensen_shannon,
+        "true_dist": jensen_shannon_divergence,
+    },
+    "proxy_jensen-shannon": {
+        "proxy_dist": proxy_jensen_shannon,
+        "true_dist": jensen_shannon_divergence,
+    },
+    "proxy_symmetric_kl": {
+        "proxy_dist": proxy_symmetric_kl,
+        "true_dist": symmetric_kl_divergence,
+    },
+    "proxy_symmetric-kl": {
+        "proxy_dist": proxy_symmetric_kl,
+        "true_dist": symmetric_kl_divergence,
+    },
+    "proxy_sinkhorn": {
+        "proxy_dist": proxy_sinkhorn,
+        "true_dist": sinkhorn,
+    },
 }
