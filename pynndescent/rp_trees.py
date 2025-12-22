@@ -2843,7 +2843,7 @@ def make_forest(
     # print(ts(), "Started forest construction")
     result = []
     if leaf_size is None:
-        leaf_size = max(10, np.int32(n_neighbors))
+        leaf_size = max(60, min(256, 5 * np.int32(n_neighbors)))
     if n_jobs is None:
         n_jobs = -1
 
