@@ -945,8 +945,15 @@ class NNDescent:
         numba.set_num_threads(self._original_num_threads)
 
     def _set_distance_func(self):
+        self._is_proxy_distance = False
         if callable(self.metric):
             _distance_func = self.metric
+        elif self.metric in pynnd_dist.proxy_distances:
+            self._is_proxy_distance = True
+            _distance_func = pynnd_dist.proxy_distances[self.metric]["proxy_dist"]
+            self._true_distance_func = pynnd_dist.proxy_distances[self.metric][
+                "true_dist"
+            ]
         elif self.metric in pynnd_dist.named_distances:
             if self.metric in pynnd_dist.fast_distance_alternatives:
                 _distance_func = pynnd_dist.fast_distance_alternatives[self.metric][
@@ -1754,7 +1761,7 @@ class NNDescent:
                 self._init_search_function()
         return
 
-    def query(self, query_data, k=10, epsilon=0.1):
+    def query(self, query_data, k=10, epsilon=0.1, proxy_beam_size=4):
         """Query the training graph_data for the k nearest neighbors
 
         Parameters
@@ -1788,6 +1795,11 @@ class NNDescent:
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
 
+        if self._is_proxy_distance:
+            search_k = proxy_beam_size * k
+        else:
+            search_k = k
+
         if not self._is_sparse:
             # Standard case
             if not hasattr(self, "_search_function"):
@@ -1799,7 +1811,7 @@ class NNDescent:
                 query_data = np.asarray(query_data).astype(np.float32, order="C")
 
             indices, dists, _ = self._search_function(
-                query_data, k, epsilon, self._visited, self.search_rng_state
+                query_data, search_k, epsilon, self._visited, self.search_rng_state
             )
         else:
             # Sparse case
@@ -1816,13 +1828,19 @@ class NNDescent:
                 query_data.indices,
                 query_data.indptr,
                 query_data.data,
-                k,
+                search_k,
                 epsilon,
                 self._visited,
                 self.search_rng_state,
             )
 
         indices, dists = self._deheap_function(indices, dists)
+
+        if self._is_proxy_distance:
+            indices, dists = rerank(
+                indices, query_data, self._raw_data, self._true_distance_func, k
+            )
+
         # Sort to input graph_data order
         indices = self._vertex_order[indices]
 

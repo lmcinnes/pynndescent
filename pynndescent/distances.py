@@ -789,6 +789,52 @@ def alternative_inner_product(x, y):
         return 1.0 / result
 
 
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def proxy_inner_product(x, y):
+    r"""A proxy for inner product distance (negative inner product).
+
+    Inner product distance has undesireable properties for nearest neighbor
+    graph based search, and NNDescent in general. This is a proxy function
+    that behaves similarly to inner product distance for ranking neighbors,
+    but avoids some of the pitfalls.
+
+    This is to be used internally, and results should use reranking with true
+    inner product distance.
+    """
+    ip_result = 0.0
+    norm_x = 0.0
+    norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        ip_result += x[i] * y[i]
+        norm_x += x[i] * x[i]
+        norm_y += y[i] * y[i]
+
+    if norm_x == 0 or norm_y == 0:
+        return FLOAT32_MAX
+
+    cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
+    if ip_result >= 0:
+        return cosine_result + 1.0 / np.sqrt(ip_result)
+    else:
+        return FLOAT32_MAX
+
+
 @numba.vectorize(fastmath=True)
 def correct_alternative_inner_product(d):
     r"""Convert alternative inner product distance back to negative inner product.
@@ -1528,4 +1574,11 @@ fast_distance_alternatives = {
         "correction": correct_alternative_hellinger,
     },
     "jaccard": {"dist": alternative_jaccard, "correction": correct_alternative_jaccard},
+}
+
+proxy_distances = {
+    "proxy_inner_product": {
+        "proxy_dist": proxy_inner_product,
+        "true_dist": inner_product,
+    }
 }
