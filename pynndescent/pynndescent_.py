@@ -712,12 +712,7 @@ class NNDescent:
     ):
 
         if n_trees is None:
-            # Benchmarks on standard ANN datasets (Fashion-MNIST, GloVe, SIFT) at
-            # scales up to 500k points show that 2-4 trees achieve the best or
-            # near-best recall. More trees do not improve recall and increase
-            # build time. We use a mild scaling with log(n) to add robustness
-            # for very large datasets, but cap at 8 for efficiency.
-            n_trees = max(3, min(8, int(round(np.log10(data.shape[0])))))
+            n_trees = max(3, min(12, int(round(2.0 * np.log10(data.shape[0])))))
         if n_iters is None:
             n_iters = max(5, int(round(np.log2(data.shape[0]))))
 
