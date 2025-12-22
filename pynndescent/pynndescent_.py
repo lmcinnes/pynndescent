@@ -568,13 +568,13 @@ class NNDescent:
         build process. This parameter controls the number of trees in that forest. A
         larger number will result in more accurate neighbor computation at the cost
         of performance. The default of None means a value will be chosen based on the
-        size of the data (typically 3-8 trees). Benchmarks show that 2-4 trees are
+        size of the data (typically 3-12 trees). Benchmarks show that 2-4 trees are
         usually sufficient for best recall.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
         The default of None means a value will be chosen based on n_neighbors
-        (typically 60-200, computed as 5 * n_neighbors capped at 200). Benchmarks
+        (typically 60-200, computed as 5 * n_neighbors capped at 256). Benchmarks
         show that larger leaf sizes (100-200) often yield the best recall.
 
     pruning_degree_multiplier: float (optional, default=1.5)
