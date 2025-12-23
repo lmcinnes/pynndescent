@@ -1071,6 +1071,13 @@ class NNDescent:
                 # Build a graph-informed hub tree that minimizes edge cuts
                 if self.verbose:
                     print(ts(), "Building hub-based search tree")
+                    print(
+                        ts(),
+                        "Quantization:",
+                        str(self.quantization),
+                        " and quantized data is available:",
+                        hasattr(self, "_quantized_data"),
+                    )
 
                 if self._is_sparse:
                     # Sparse data - use simplified hub tree (faster, better quality)
@@ -1107,6 +1114,24 @@ class NNDescent:
                             gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
                         )
                     ]
+                elif self.quantization == "binary" and hasattr(self, "_quantized_data"):
+                    # Quantized binary data - use simplified hub tree (faster, better quality)
+                    gi_tree = make_bit_hub_tree(
+                        self._quantized_data,
+                        self._neighbor_graph[0],
+                        self.rng_state,
+                        leaf_size=search_leaf_size,
+                        max_depth=search_tree_depth,
+                    )
+                    del self._rp_forest
+                    self._search_forest = [
+                        convert_tree_format(
+                            gi_tree,
+                            self._quantized_data.shape[0],
+                            self._quantized_data.shape[1],
+                        )
+                    ]
+                    self._bit_trees = True
                 else:
                     # Dense data - use simplified hub tree (faster, better quality)
                     gi_tree = make_hub_tree(
@@ -1278,6 +1303,10 @@ class NNDescent:
                 self._raw_data = np.ascontiguousarray(
                     self._raw_data[self._vertex_order, :]
                 )
+                if hasattr(self, "_quantized_data"):
+                    self._quantized_data = np.ascontiguousarray(
+                        self._quantized_data[self._vertex_order, :]
+                    )
 
             tree_order = np.argsort(self._vertex_order)
             self._search_forest = tuple(
@@ -1300,6 +1329,8 @@ class NNDescent:
 
         if self.verbose:
             print(ts(), "Building and compiling search function")
+            print(ts(), "Tree init is", str(self.tree_init))
+            print(ts(), "Bit trees is", str(getattr(self, "_bit_trees", False)))
 
         if self.tree_init:
             tree_hyperplanes = self._search_forest[0].hyperplanes
@@ -1308,6 +1339,7 @@ class NNDescent:
             tree_children = self._search_forest[0].children
 
             if self._bit_trees:
+                print("Using bit tree search")
 
                 @numba.njit(
                     [
@@ -1334,6 +1366,7 @@ class NNDescent:
                     return -tree_children[node]
 
             else:
+                print("Using float tree search")
 
                 @numba.njit(
                     [
@@ -1517,7 +1550,11 @@ class NNDescent:
             self._deheap_function = deheap_sort
 
         # Force compilation of the search function (hardcoded k, epsilon)
-        query_data = self._raw_data[:1]
+        query_data = (
+            self._raw_data[:1]
+            if self.quantization is None
+            else self._quantized_data[:1]
+        )
         inds, dists, _ = self._search_function(
             query_data, 5, 0.0, self._visited, self.search_rng_state
         )
@@ -1745,11 +1782,7 @@ class NNDescent:
             self._deheap_function = deheap_sort
 
         # Force compilation of the search function (hardcoded k, epsilon)
-        query_data = (
-            self._raw_data[:1]
-            if self.quantization is None
-            else self._quantized_data[:1]
-        )
+        query_data = self._raw_data[:1]
         inds, dists, _ = self._search_function(
             query_data.indices,
             query_data.indptr,
@@ -1791,9 +1824,6 @@ class NNDescent:
         return
 
     def prepare(self):
-        if not hasattr(self, "_search_graph"):
-            self._init_search_graph()
-
         print("Quantization is:", self.quantization)
         if self.quantization is not None:
             if self.quantization == "binary":
@@ -1807,12 +1837,16 @@ class NNDescent:
                         "binary"
                     ][self.metric]
                     self._is_proxy_distance = True
+                    self._true_distance_func = self._distance_func
                 else:
                     raise ValueError(
                         f"Not binary quantization version of {self.metric}"
                     )
             else:
                 raise ValueError(f"Unrecognized quantization type {self.quantization}")
+
+        if not hasattr(self, "_search_graph"):
+            self._init_search_graph()
 
         if not hasattr(self, "_search_function"):
             if self._is_sparse:
