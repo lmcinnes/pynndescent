@@ -1071,13 +1071,6 @@ class NNDescent:
                 # Build a graph-informed hub tree that minimizes edge cuts
                 if self.verbose:
                     print(ts(), "Building hub-based search tree")
-                    print(
-                        ts(),
-                        "Quantization:",
-                        str(self.quantization),
-                        " and quantized data is available:",
-                        hasattr(self, "_quantized_data"),
-                    )
 
                 if self._is_sparse:
                     # Sparse data - use simplified hub tree (faster, better quality)
@@ -1329,8 +1322,6 @@ class NNDescent:
 
         if self.verbose:
             print(ts(), "Building and compiling search function")
-            print(ts(), "Tree init is", str(self.tree_init))
-            print(ts(), "Bit trees is", str(getattr(self, "_bit_trees", False)))
 
         if self.tree_init:
             tree_hyperplanes = self._search_forest[0].hyperplanes
@@ -1339,7 +1330,6 @@ class NNDescent:
             tree_children = self._search_forest[0].children
 
             if self._bit_trees:
-                print("Using bit tree search")
 
                 @numba.njit(
                     [
@@ -1366,7 +1356,6 @@ class NNDescent:
                     return -tree_children[node]
 
             else:
-                print("Using float tree search")
 
                 @numba.njit(
                     [
@@ -1824,10 +1813,8 @@ class NNDescent:
         return
 
     def prepare(self):
-        print("Quantization is:", self.quantization)
         if self.quantization is not None:
             if self.quantization == "binary":
-                print("Using binary quantization for index data")
                 # Quantize data to binary and set bit-based distance functions
                 self._quantized_data = np.packbits(
                     (self._raw_data > 0).astype(np.uint8), axis=1
