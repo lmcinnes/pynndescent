@@ -1980,3 +1980,14 @@ proxy_distances = {
         "true_dist": sinkhorn,
     },
 }
+
+quantized_distances = {
+    "binary": {
+        "euclidean": bit_hamming,
+        "l2": bit_hamming,
+        "cosine": bit_jaccard,
+        "dot": bit_jaccard,
+        "hamming": bit_hamming,
+        "jaccard": bit_jaccard,
+    }
+}

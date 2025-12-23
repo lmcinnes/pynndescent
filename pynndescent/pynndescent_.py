@@ -696,6 +696,7 @@ class NNDescent:
         n_search_trees=1,
         search_tree_leaf_size=None,
         max_search_tree_depth=None,
+        quantization=None,
         tree_init=True,
         init_graph=None,
         init_dist=None,
@@ -729,6 +730,7 @@ class NNDescent:
         self.max_search_tree_depth = max_search_tree_depth
         self.max_rptree_depth = max_rptree_depth
         self.max_candidates = max_candidates
+        self.quantization = quantization
         self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
@@ -1372,10 +1374,15 @@ class NNDescent:
         alternative_dot = pynnd_dist.alternative_dot
         alternative_cosine = pynnd_dist.alternative_cosine
 
-        data = self._raw_data
+        if self.quantization is not None:
+            data = self._quantized_data
+            dist = self._quantized_distance_func
+        else:
+            data = self._raw_data
+            dist = self._distance_func
+
         indptr = self._search_graph.indptr
         indices = self._search_graph.indices
-        dist = self._distance_func
         n_neighbors = self.n_neighbors
         parallel_search = self.parallel_batch_queries
         min_distance = self._min_distance
@@ -1738,7 +1745,11 @@ class NNDescent:
             self._deheap_function = deheap_sort
 
         # Force compilation of the search function (hardcoded k, epsilon)
-        query_data = self._raw_data[:1]
+        query_data = (
+            self._raw_data[:1]
+            if self.quantization is None
+            else self._quantized_data[:1]
+        )
         inds, dists, _ = self._search_function(
             query_data.indices,
             query_data.indptr,
@@ -1782,6 +1793,27 @@ class NNDescent:
     def prepare(self):
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
+
+        print("Quantization is:", self.quantization)
+        if self.quantization is not None:
+            if self.quantization == "binary":
+                print("Using binary quantization for index data")
+                # Quantize data to binary and set bit-based distance functions
+                self._quantized_data = np.packbits(
+                    (self._raw_data > 0).astype(np.uint8), axis=1
+                )
+                if self.metric in pynnd_dist.quantized_distances["binary"]:
+                    self._quantized_distance_func = pynnd_dist.quantized_distances[
+                        "binary"
+                    ][self.metric]
+                    self._is_proxy_distance = True
+                else:
+                    raise ValueError(
+                        f"Not binary quantization version of {self.metric}"
+                    )
+            else:
+                raise ValueError(f"Unrecognized quantization type {self.quantization}")
+
         if not hasattr(self, "_search_function"):
             if self._is_sparse:
                 self._init_sparse_search_function()
@@ -1820,8 +1852,8 @@ class NNDescent:
             from the ith query point to its jth nearest neighbor in the
             training graph_data.
         """
-        if not hasattr(self, "_search_graph"):
-            self._init_search_graph()
+        if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
+            self.prepare()
 
         if self._is_proxy_distance:
             search_k = proxy_beam_size * k
@@ -1830,22 +1862,33 @@ class NNDescent:
 
         if not self._is_sparse:
             # Standard case
-            if not hasattr(self, "_search_function"):
-                self._init_search_function()
-
             if self.metric in ("bit_hamming", "bit_jaccard"):
                 query_data = np.asarray(query_data).astype(np.uint8, order="C")
             else:
                 query_data = np.asarray(query_data).astype(np.float32, order="C")
 
+            if self.quantization is not None:
+                if self.quantization == "binary":
+                    print("Using binary quantization for queries")
+                    proxy_query_data = np.packbits(
+                        (query_data > 0).astype(np.uint8), axis=1
+                    )
+                else:
+                    raise ValueError(
+                        f"Unrecognized quantization type {self.quantization}"
+                    )
+            else:
+                proxy_query_data = query_data
+
             indices, dists, _ = self._search_function(
-                query_data, search_k, epsilon, self._visited, self.search_rng_state
+                proxy_query_data,
+                search_k,
+                epsilon,
+                self._visited,
+                self.search_rng_state,
             )
         else:
             # Sparse case
-            if not hasattr(self, "_search_function"):
-                self._init_sparse_search_function()
-
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
             if not isspmatrix_csr(query_data):
                 query_data = csr_matrix(query_data, dtype=np.float32)
