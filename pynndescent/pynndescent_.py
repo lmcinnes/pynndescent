@@ -1890,7 +1890,6 @@ class NNDescent:
 
             if self.quantization is not None:
                 if self.quantization == "binary":
-                    print("Using binary quantization for queries")
                     proxy_query_data = np.packbits(
                         (query_data > 0).astype(np.uint8), axis=1
                     )
