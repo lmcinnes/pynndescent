@@ -492,10 +492,10 @@ def resort_tree_indices(tree, tree_order):
     return new_tree
 
 
-@numba.njit(cache=False, parallel=True, fastmath=True)
-def rerank(nn_inds, queries, data, dist, n_neighbors):
+@numba.njit(cache=False, fastmath=True)
+def rerank(nn_inds, queries, data, dist, n_neighbors, deheap_sort_function):
     heap = make_heap(queries.shape[0], n_neighbors)
-    for i in numba.prange(queries.shape[0]):
+    for i in range(queries.shape[0]):
         indices = heap[0][i]
         distances = heap[1][i]
         for j in range(nn_inds.shape[1]):
@@ -505,7 +505,7 @@ def rerank(nn_inds, queries, data, dist, n_neighbors):
             d = dist(queries[i], data[idx])
             simple_heap_push(distances, indices, d, idx)
 
-    result_nn_inds, result_nn_dists = deheap_sort(heap[0], heap[1])
+    result_nn_inds, result_nn_dists = deheap_sort_function(heap[0], heap[1])
     return result_nn_inds, result_nn_dists
 
 
@@ -1393,9 +1393,6 @@ class NNDescent:
             self._tree_search = tree_search_closure
             tree_indices = np.zeros(1, dtype=np.int64)
 
-        alternative_dot = pynnd_dist.alternative_dot
-        alternative_cosine = pynnd_dist.alternative_cosine
-
         if self.quantization is not None:
             data = self._quantized_data
             dist = self._quantized_distance_func
@@ -1411,13 +1408,26 @@ class NNDescent:
 
         if dist == pynnd_dist.bit_hamming or dist == pynnd_dist.bit_jaccard:
             data_type = numba.types.uint8[::1]
+            query_data_type = numba.types.uint8[::1]
+        elif self.quantization == "uint8" or self.quantization == "uint4":
+            data_type = numba.types.uint8[::1]
+            query_data_type = numba.types.float32[::1]
         else:
             data_type = numba.types.float32[::1]
+            query_data_type = numba.types.float32[::1]
+
+        if self.metric in (
+            "cosine",
+            "dot",
+        ):
+            normalize_query = True
+        else:
+            normalize_query = False
 
         @numba.njit(
             fastmath=True,
             locals={
-                "current_query": data_type,
+                "current_query": query_data_type,
                 "i": numba.types.uint32,
                 "j": numba.types.uint32,
                 "heap_priorities": numba.types.float32[::1],
@@ -1440,7 +1450,6 @@ class NNDescent:
         def search_closure(query_points, k, epsilon, visited, rng_state):
 
             result = make_heap(query_points.shape[0], k)
-            distance_scale = 1.0 + epsilon
             internal_rng_state = np.copy(rng_state)
 
             for i in numba.prange(query_points.shape[0]):
@@ -1451,7 +1460,7 @@ class NNDescent:
                     visited_nodes = visited
                     visited_nodes[:] = 0
 
-                if dist == alternative_dot or dist == alternative_cosine:
+                if normalize_query:
                     norm = np.sqrt((query_points[i] ** 2).sum())
                     if norm > 0.0:
                         current_query = query_points[i] / norm
@@ -1473,7 +1482,7 @@ class NNDescent:
 
                 for j in range(n_initial_points):
                     candidate = candidate_indices[j]
-                    d = np.float32(dist(data[candidate], current_query))
+                    d = np.float32(dist(current_query, data[candidate]))
                     # indices are guaranteed different
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
@@ -1488,7 +1497,7 @@ class NNDescent:
                             np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
-                            d = np.float32(dist(data[candidate], current_query))
+                            d = np.float32(dist(current_query, data[candidate]))
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
@@ -1510,7 +1519,7 @@ class NNDescent:
 
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
 
-                            d = np.float32(dist(data[candidate], current_query))
+                            d = np.float32(dist(current_query, data[candidate]))
 
                             if d < distance_bound:
                                 simple_heap_push(
@@ -1538,10 +1547,17 @@ class NNDescent:
         else:
             self._deheap_function = deheap_sort
 
+        if hasattr(rerank, "py_func"):
+            self._rerank_function = numba.njit(
+                parallel=self.parallel_batch_queries, fastmath=True
+            )(rerank.py_func)
+        else:
+            self._rerank_function = rerank
+
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = (
             self._raw_data[:1]
-            if self.quantization is None
+            if self.quantization != "binary"
             else self._quantized_data[:1]
         )
         inds, dists, _ = self._search_function(
@@ -1829,6 +1845,77 @@ class NNDescent:
                     raise ValueError(
                         f"Not binary quantization version of {self.metric}"
                     )
+            elif self.quantization == "uint8":
+                # Quantize data to uint8 and set uint8-based distance functions
+                current_random_state = check_random_state(self.random_state)
+                sample_data = self._raw_data[
+                    current_random_state.choice(
+                        self._raw_data.shape[0],
+                        min(10000, self._raw_data.shape[0]),
+                        replace=False,
+                    )
+                ].ravel()
+                if len(np.unique(sample_data)) <= 256:
+                    self._quantized_values = np.unique(sample_data).astype(np.float32)
+                else:
+                    self._quantized_values = np.quantile(
+                        sample_data, np.linspace(0, 1, 256)
+                    ).astype(np.float32)
+                self._quantized_data = np.searchsorted(
+                    self._quantized_values, self._raw_data
+                ).astype(np.uint8, order="C")
+                if self.metric in pynnd_dist.quantized_distances["uint8"]:
+                    self._quantized_distance_func_base = pynnd_dist.quantized_distances[
+                        "uint8"
+                    ][self.metric]
+                    quantized_vals = self._quantized_values
+                    quantized_dist = self._quantized_distance_func_base
+
+                    @numba.njit(fastmath=True)
+                    def quantized_distance_func_closure(a, b):
+                        return quantized_dist(a, b, quantized_vals)
+
+                    self._quantized_distance_func = quantized_distance_func_closure
+                    self._is_proxy_distance = True
+                    self._true_distance_func = self._distance_func
+                else:
+                    raise ValueError(f"Not uint8 quantization version of {self.metric}")
+            elif self.quantization == "uint4":
+                # Quantize data to uint4 and set uint4-based distance functions
+                current_random_state = check_random_state(self.random_state)
+                sample_data = self._raw_data[
+                    current_random_state.choice(
+                        self._raw_data.shape[0],
+                        min(10000, self._raw_data.shape[0]),
+                        replace=False,
+                    )
+                ].ravel()
+                self._quantized_values = np.quantile(
+                    sample_data, np.linspace(0, 1, 16)
+                ).astype(np.float32)
+                quantized_data_8bit = np.searchsorted(
+                    self._quantized_values, self._raw_data
+                ).astype(np.uint8, order="C")
+                # Pack two uint4 into one uint8
+                self._quantized_data = (
+                    (quantized_data_8bit[:, ::2] << 4) | (quantized_data_8bit[:, 1::2])
+                ).astype(np.uint8, order="C")
+                if self.metric in pynnd_dist.quantized_distances["uint4"]:
+                    self._quantized_distance_func_base = pynnd_dist.quantized_distances[
+                        "uint4"
+                    ][self.metric]
+                    quantized_vals = self._quantized_values
+                    quantized_dist = self._quantized_distance_func_base
+
+                    @numba.njit(fastmath=True)
+                    def quantized_distance_func_closure(a, b):
+                        return quantized_dist(a, b, quantized_vals)
+
+                    self._quantized_distance_func = quantized_distance_func_closure
+                    self._is_proxy_distance = True
+                    self._true_distance_func = self._distance_func
+                else:
+                    raise ValueError(f"Not uint4 quantization version of {self.metric}")
             else:
                 raise ValueError(f"Unrecognized quantization type {self.quantization}")
 
@@ -1889,10 +1976,13 @@ class NNDescent:
                 query_data = np.asarray(query_data).astype(np.float32, order="C")
 
             if self.quantization is not None:
+                epsilon += 1e-32  # ensure epsilon > 0 for quantized searches
                 if self.quantization == "binary":
                     proxy_query_data = np.packbits(
                         (query_data > 0).astype(np.uint8), axis=1
                     )
+                elif self.quantization == "uint8" or self.quantization == "uint4":
+                    proxy_query_data = query_data
                 else:
                     raise ValueError(
                         f"Unrecognized quantization type {self.quantization}"
@@ -1929,7 +2019,12 @@ class NNDescent:
 
         if self._is_proxy_distance:
             indices, dists = rerank(
-                indices, query_data, self._raw_data, self._true_distance_func, k
+                indices,
+                query_data,
+                self._raw_data,
+                self._true_distance_func,
+                k,
+                self._deheap_function,
             )
 
         # Sort to input graph_data order
