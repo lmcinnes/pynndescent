@@ -403,6 +403,149 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
     return indices, distances
 
 
+@numba.njit()
+def compute_degrees(indices):
+    n = indices.shape[0]
+    k = indices.shape[1]
+    degree = np.zeros(n, dtype=np.int32)
+
+    for i in range(n):
+        for j in range(k):
+            neighbor = indices[i, j]
+            if neighbor >= 0:
+                degree[i] += 1
+                degree[neighbor] += 1
+
+    return degree
+
+
+@numba.njit()
+def find_distance(indices, distances, source, target):
+    k = indices.shape[1]
+    for j in range(k):
+        if indices[source, j] == target:
+            return distances[source, j]
+        if indices[source, j] < 0:
+            break
+    return np.float32(np.inf)
+
+
+@numba.njit(parallel=True)
+def diversify_degree_aware(
+    indices, distances, data, dist, max_degree, aggressiveness=1.0, alpha=1.0
+):
+    """Diversify the k-NN graph with degree-aware pruning.
+
+    This function applies relative neighborhood pruning with degree awareness.
+    The aggressiveness parameter controls how much extra pruning is applied to
+    edges involving high-degree nodes (hubs).
+
+    Parameters
+    ----------
+    indices : ndarray of shape (n, k)
+        The neighbor indices array (modified in place).
+    distances : ndarray of shape (n, k)
+        The neighbor distances array (modified in place).
+    data : ndarray of shape (n, d)
+        The original data points.
+    dist : callable
+        Distance function.
+    max_degree : int
+        Target maximum degree - nodes above this are candidates for adjusted pruning.
+    aggressiveness : float (default=1.0)
+        Controls the degree-aware pruning strength. Higher values prune more
+        edges, particularly to/from high-degree hub nodes:
+        - aggressiveness = 0: Standard diversify behavior (threshold = 1.0 for all)
+        - aggressiveness = 1.0: Default, up to ~10% edge reduction vs standard
+        - aggressiveness = 2.0: More aggressive, up to ~20% edge reduction
+        - aggressiveness = 3.0: Very aggressive, up to ~25% edge reduction
+
+        The threshold_factor for high-degree nodes scales as:
+        1.0 + 0.04 * aggressiveness * min(degree_ratio - 1.0, 2.0)
+
+        This means for a node at 2x max_degree with aggressiveness=1.0,
+        we accept alternatives up to 4% longer than the direct edge.
+
+    Returns
+    -------
+    indices : ndarray of shape (n, k)
+        The pruned neighbor indices array.
+    distances : ndarray of shape (n, k)
+        The pruned neighbor distances array.
+    """
+    n = indices.shape[0]
+    k = indices.shape[1]
+
+    # Compute initial degrees (in undirected sense)
+    degree = compute_degrees(indices)
+
+    # Base rate of threshold adjustment per unit of excess degree ratio
+    # At aggressiveness=1.0, this gives 4% max adjustment
+    # Clamp to >= 0 since negative values have unintuitive behavior
+    clamped_aggressiveness = max(np.float32(0.0), np.float32(aggressiveness))
+    base_rate = np.float32(0.04) * clamped_aggressiveness
+
+    for i in numba.prange(n):
+        new_indices = [indices[i, 0]]
+        new_distances = [distances[i, 0]]
+
+        for j in range(1, k):
+            if indices[i, j] < 0:
+                break
+
+            u = indices[i, j]
+            d_iu = distances[i, j]
+
+            # Compute threshold factor based on target degree and aggressiveness
+            # Higher degree targets get adjusted pruning based on aggressiveness
+            tgt_degree_ratio = np.float32(degree[u]) / np.float32(max_degree)
+
+            if tgt_degree_ratio > 1.0:
+                # High degree node - adjust threshold based on aggressiveness
+                # Positive aggressiveness: threshold > 1.0 (prune more)
+                # Negative aggressiveness: threshold < 1.0 (prune less)
+                excess_ratio = min(tgt_degree_ratio - 1.0, np.float32(2.0))
+                threshold_factor = np.float32(1.0) + base_rate * excess_ratio
+                # Clamp to reasonable range [0.8, 1.2] to avoid extreme behavior
+                threshold_factor = max(
+                    np.float32(0.8), min(np.float32(1.2), threshold_factor)
+                )
+            else:
+                # Normal/low degree - standard threshold
+                threshold_factor = np.float32(1.0)
+
+            # Check if there's an alternative path through any retained neighbor
+            flag = True
+            for m in range(len(new_indices)):
+                c = new_indices[m]
+
+                # Compute distance from candidate neighbor c to u
+                d_cu = dist(data[u], data[c])
+
+                # Prune if alternative path is acceptable
+                if (
+                    new_distances[m] > FLOAT32_EPS
+                    and d_cu < d_iu * threshold_factor * alpha
+                ):
+                    flag = False
+                    break
+
+            if flag:
+                new_indices.append(u)
+                new_distances.append(d_iu)
+
+        # Write back the retained edges
+        for j in range(k):
+            if j < len(new_indices):
+                indices[i, j] = new_indices[j]
+                distances[i, j] = new_distances[j]
+            else:
+                indices[i, j] = -1
+                distances[i, j] = np.inf
+
+    return indices, distances
+
+
 @numba.njit(parallel=True)
 def diversify_csr(
     graph_indptr,
@@ -436,6 +579,143 @@ def diversify_csr(
                         if tau_rand(rng_state) < prune_probability:
                             retained[j] = 0
                             break
+
+        for idx in range(order.shape[0]):
+            j = order[idx]
+            if retained[j] == 0:
+                graph_data[graph_indptr[i] + j] = 0
+
+    return
+
+
+@numba.njit()
+def compute_degrees_csr(graph_indptr, graph_indices):
+    """Compute the undirected degree of each node in a CSR graph.
+
+    For the reverse graph (transpose of forward graph), this counts how many
+    nodes point TO each node (in-degree in original graph).
+
+    Parameters
+    ----------
+    graph_indptr: array of int
+        CSR row pointer array
+    graph_indices: array of int
+        CSR column indices array
+
+    Returns
+    -------
+    degrees: array of int
+        The degree of each node
+    """
+    n_nodes = graph_indptr.shape[0] - 1
+    degrees = np.zeros(n_nodes, dtype=np.int32)
+
+    # Count outgoing edges for each node
+    for i in range(n_nodes):
+        degrees[i] += graph_indptr[i + 1] - graph_indptr[i]
+
+    # Count incoming edges (edges where this node is a target)
+    for i in range(graph_indptr[-1]):
+        if graph_indices[i] < n_nodes:
+            degrees[graph_indices[i]] += 1
+
+    return degrees
+
+
+@numba.njit(parallel=True)
+def diversify_csr_degree_aware(
+    graph_indptr,
+    graph_indices,
+    graph_data,
+    source_data,
+    dist,
+    rng_state,
+    max_degree,
+    aggressiveness=1.0,
+    prune_probability=1.0,
+):
+    """Perform degree-aware diversification on a CSR format graph.
+
+    This is the reverse diversification step, operating on the transposed graph.
+    Higher degree nodes (hubs) get more aggressive pruning.
+
+    Parameters
+    ----------
+    graph_indptr: array of int
+        CSR row pointer array
+    graph_indices: array of int
+        CSR column indices array
+    graph_data: array of float
+        CSR data array (distances)
+    source_data: array
+        The original data points
+    dist: callable
+        Distance function
+    rng_state: array
+        Random state for probabilistic pruning
+    max_degree: int
+        The maximum degree considered for scaling
+    aggressiveness: float (default 1.0)
+        Controls how aggressively high-degree nodes are pruned.
+        0.0 = standard diversification (no degree awareness)
+        Higher values = more aggressive pruning of hub nodes
+    prune_probability: float (default 1.0)
+        Probability of pruning an eligible edge
+
+    Returns
+    -------
+    None (modifies graph_data in place)
+    """
+    # Pre-compute degrees for all nodes (cannot be done in parallel section)
+    degrees = compute_degrees_csr(graph_indptr, graph_indices)
+
+    n_nodes = graph_indptr.shape[0] - 1
+
+    for i in numba.prange(n_nodes):
+        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
+        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
+
+        order = np.argsort(current_data)
+        retained = np.ones(order.shape[0], dtype=np.int8)
+
+        for idx in range(order.shape[0]):
+
+            j = order[idx]
+            if current_data[j] == 0:  # Already pruned or zero distance
+                continue
+
+            for k in range(idx):
+                compare_idx = order[k]
+
+                if retained[compare_idx] == 0:
+                    continue
+
+                d = dist(
+                    source_data[current_indices[compare_idx]],
+                    source_data[current_indices[j]],
+                )
+
+                # Compute degree-based threshold factor for node j
+                # High-degree nodes get a relaxed threshold (accept longer paths)
+                target_degree = 0
+                if current_indices[j] < n_nodes:
+                    target_degree = degrees[current_indices[j]]
+
+                degree_ratio = target_degree / max(max_degree, 1)
+                # Threshold increases with degree ratio, capped at 2x the base
+                threshold_factor = 1.0 + 0.04 * aggressiveness * min(
+                    degree_ratio - 1.0, 2.0
+                )
+                threshold_factor = max(threshold_factor, 1.0)  # Never go below 1.0
+
+                # Prune if there's a shorter path through a retained neighbor
+                if d * threshold_factor < current_data[j]:
+                    if (
+                        prune_probability >= 1.0
+                        or tau_rand(rng_state) < prune_probability
+                    ):
+                        retained[j] = 0
+                        break
 
         for idx in range(order.shape[0]):
             j = order[idx]
@@ -492,10 +772,10 @@ def resort_tree_indices(tree, tree_order):
     return new_tree
 
 
-@numba.njit(cache=False, parallel=True, fastmath=True)
-def rerank(nn_inds, queries, data, dist, n_neighbors):
+@numba.njit(cache=False, fastmath=True)
+def rerank(nn_inds, queries, data, dist, n_neighbors, deheap_sort_function):
     heap = make_heap(queries.shape[0], n_neighbors)
-    for i in numba.prange(queries.shape[0]):
+    for i in range(queries.shape[0]):
         indices = heap[0][i]
         distances = heap[1][i]
         for j in range(nn_inds.shape[1]):
@@ -505,7 +785,7 @@ def rerank(nn_inds, queries, data, dist, n_neighbors):
             d = dist(queries[i], data[idx])
             simple_heap_push(distances, indices, d, idx)
 
-    result_nn_inds, result_nn_dists = deheap_sort(heap[0], heap[1])
+    result_nn_inds, result_nn_dists = deheap_sort_function(heap[0], heap[1])
     return result_nn_inds, result_nn_dists
 
 
@@ -693,9 +973,12 @@ class NNDescent:
         leaf_size=None,
         pruning_degree_multiplier=1.5,
         diversify_prob=1.0,
+        diversify_method="standard",
+        degree_prune_aggressiveness=1.0,
         n_search_trees=1,
         search_tree_leaf_size=None,
         max_search_tree_depth=None,
+        quantization=None,
         tree_init=True,
         init_graph=None,
         init_dist=None,
@@ -724,11 +1007,14 @@ class NNDescent:
         self.leaf_size = leaf_size
         self.prune_degree_multiplier = pruning_degree_multiplier
         self.diversify_prob = diversify_prob
+        self.diversify_method = diversify_method
+        self.degree_prune_aggressiveness = degree_prune_aggressiveness
         self.n_search_trees = n_search_trees
         self.search_tree_leaf_size = search_tree_leaf_size
         self.max_search_tree_depth = max_search_tree_depth
         self.max_rptree_depth = max_rptree_depth
         self.max_candidates = max_candidates
+        self.quantization = quantization
         self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
@@ -1105,6 +1391,24 @@ class NNDescent:
                             gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
                         )
                     ]
+                elif self.quantization == "binary" and hasattr(self, "_quantized_data"):
+                    # Quantized binary data - use simplified hub tree (faster, better quality)
+                    gi_tree = make_bit_hub_tree(
+                        self._quantized_data,
+                        self._neighbor_graph[0],
+                        self.rng_state,
+                        leaf_size=search_leaf_size,
+                        max_depth=search_tree_depth,
+                    )
+                    del self._rp_forest
+                    self._search_forest = [
+                        convert_tree_format(
+                            gi_tree,
+                            self._quantized_data.shape[0],
+                            self._quantized_data.shape[1],
+                        )
+                    ]
+                    self._bit_trees = True
                 else:
                     # Dense data - use simplified hub tree (faster, better quality)
                     gi_tree = make_hub_tree(
@@ -1147,24 +1451,49 @@ class NNDescent:
                     self.diversify_prob,
                 )
         else:
-            if self.compressed:
-                diversified_rows, diversified_data = diversify(
-                    self._neighbor_graph[0],
-                    self._neighbor_graph[1],
-                    self._raw_data,
-                    self._distance_func,
-                    self.rng_state,
-                    self.diversify_prob,
-                )
+            if self.diversify_method == "degree_aware":
+                # Use degree-aware diversification
+                max_degree = int(self.prune_degree_multiplier * self.n_neighbors)
+                if self.compressed:
+                    diversified_rows, diversified_data = diversify_degree_aware(
+                        self._neighbor_graph[0],
+                        self._neighbor_graph[1],
+                        self._raw_data,
+                        self._distance_func,
+                        max_degree,
+                        self.degree_prune_aggressiveness,
+                        self.diversify_prob,
+                    )
+                else:
+                    diversified_rows, diversified_data = diversify_degree_aware(
+                        self._neighbor_graph[0].copy(),
+                        self._neighbor_graph[1].copy(),
+                        self._raw_data,
+                        self._distance_func,
+                        max_degree,
+                        self.degree_prune_aggressiveness,
+                        self.diversify_prob,
+                    )
             else:
-                diversified_rows, diversified_data = diversify(
-                    self._neighbor_graph[0].copy(),
-                    self._neighbor_graph[1].copy(),
-                    self._raw_data,
-                    self._distance_func,
-                    self.rng_state,
-                    self.diversify_prob,
-                )
+                # Standard diversification
+                if self.compressed:
+                    diversified_rows, diversified_data = diversify(
+                        self._neighbor_graph[0],
+                        self._neighbor_graph[1],
+                        self._raw_data,
+                        self._distance_func,
+                        self.rng_state,
+                        self.diversify_prob,
+                    )
+                else:
+                    diversified_rows, diversified_data = diversify(
+                        self._neighbor_graph[0].copy(),
+                        self._neighbor_graph[1].copy(),
+                        self._raw_data,
+                        self._distance_func,
+                        self.rng_state,
+                        self.diversify_prob,
+                    )
 
         self._search_graph = coo_matrix(
             (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
@@ -1208,6 +1537,18 @@ class NNDescent:
                 self._raw_data.data,
                 self._distance_func,
                 self.rng_state,
+                self.diversify_prob,
+            )
+        elif self.diversify_method == "degree_aware":
+            diversify_csr_degree_aware(
+                reverse_graph.indptr,
+                reverse_graph.indices,
+                reverse_graph.data,
+                self._raw_data,
+                self._distance_func,
+                self.rng_state,
+                self.n_neighbors,  # max_degree
+                self.degree_prune_aggressiveness,
                 self.diversify_prob,
             )
         else:
@@ -1276,6 +1617,10 @@ class NNDescent:
                 self._raw_data = np.ascontiguousarray(
                     self._raw_data[self._vertex_order, :]
                 )
+                if hasattr(self, "_quantized_data"):
+                    self._quantized_data = np.ascontiguousarray(
+                        self._quantized_data[self._vertex_order, :]
+                    )
 
             tree_order = np.argsort(self._vertex_order)
             self._search_forest = tuple(
@@ -1369,26 +1714,41 @@ class NNDescent:
             self._tree_search = tree_search_closure
             tree_indices = np.zeros(1, dtype=np.int64)
 
-        alternative_dot = pynnd_dist.alternative_dot
-        alternative_cosine = pynnd_dist.alternative_cosine
+        if self.quantization is not None:
+            data = self._quantized_data
+            dist = self._quantized_distance_func
+        else:
+            data = self._raw_data
+            dist = self._distance_func
 
-        data = self._raw_data
         indptr = self._search_graph.indptr
         indices = self._search_graph.indices
-        dist = self._distance_func
         n_neighbors = self.n_neighbors
         parallel_search = self.parallel_batch_queries
         min_distance = self._min_distance
 
         if dist == pynnd_dist.bit_hamming or dist == pynnd_dist.bit_jaccard:
             data_type = numba.types.uint8[::1]
+            query_data_type = numba.types.uint8[::1]
+        elif self.quantization == "uint8" or self.quantization == "uint4":
+            data_type = numba.types.uint8[::1]
+            query_data_type = numba.types.float32[::1]
         else:
             data_type = numba.types.float32[::1]
+            query_data_type = numba.types.float32[::1]
+
+        if self.metric in (
+            "cosine",
+            "dot",
+        ):
+            normalize_query = True
+        else:
+            normalize_query = False
 
         @numba.njit(
             fastmath=True,
             locals={
-                "current_query": data_type,
+                "current_query": query_data_type,
                 "i": numba.types.uint32,
                 "j": numba.types.uint32,
                 "heap_priorities": numba.types.float32[::1],
@@ -1411,7 +1771,6 @@ class NNDescent:
         def search_closure(query_points, k, epsilon, visited, rng_state):
 
             result = make_heap(query_points.shape[0], k)
-            distance_scale = 1.0 + epsilon
             internal_rng_state = np.copy(rng_state)
 
             for i in numba.prange(query_points.shape[0]):
@@ -1422,7 +1781,7 @@ class NNDescent:
                     visited_nodes = visited
                     visited_nodes[:] = 0
 
-                if dist == alternative_dot or dist == alternative_cosine:
+                if normalize_query:
                     norm = np.sqrt((query_points[i] ** 2).sum())
                     if norm > 0.0:
                         current_query = query_points[i] / norm
@@ -1444,7 +1803,7 @@ class NNDescent:
 
                 for j in range(n_initial_points):
                     candidate = candidate_indices[j]
-                    d = np.float32(dist(data[candidate], current_query))
+                    d = np.float32(dist(current_query, data[candidate]))
                     # indices are guaranteed different
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
@@ -1459,7 +1818,7 @@ class NNDescent:
                             np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
-                            d = np.float32(dist(data[candidate], current_query))
+                            d = np.float32(dist(current_query, data[candidate]))
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
@@ -1481,7 +1840,7 @@ class NNDescent:
 
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
 
-                            d = np.float32(dist(data[candidate], current_query))
+                            d = np.float32(dist(current_query, data[candidate]))
 
                             if d < distance_bound:
                                 simple_heap_push(
@@ -1509,8 +1868,19 @@ class NNDescent:
         else:
             self._deheap_function = deheap_sort
 
+        if hasattr(rerank, "py_func"):
+            self._rerank_function = numba.njit(
+                parallel=self.parallel_batch_queries, fastmath=True
+            )(rerank.py_func)
+        else:
+            self._rerank_function = rerank
+
         # Force compilation of the search function (hardcoded k, epsilon)
-        query_data = self._raw_data[:1]
+        query_data = (
+            self._raw_data[:1]
+            if self.quantization != "binary"
+            else self._quantized_data[:1]
+        )
         inds, dists, _ = self._search_function(
             query_data, 5, 0.0, self._visited, self.search_rng_state
         )
@@ -1780,8 +2150,99 @@ class NNDescent:
         return
 
     def prepare(self):
+        if self.quantization is not None:
+            if self.quantization == "binary":
+                # Quantize data to binary and set bit-based distance functions
+                self._quantized_data = np.packbits(
+                    (self._raw_data > 0).astype(np.uint8), axis=1
+                )
+                if self.metric in pynnd_dist.quantized_distances["binary"]:
+                    self._quantized_distance_func = pynnd_dist.quantized_distances[
+                        "binary"
+                    ][self.metric]
+                    self._is_proxy_distance = True
+                    self._true_distance_func = self._distance_func
+                else:
+                    raise ValueError(
+                        f"Not binary quantization version of {self.metric}"
+                    )
+            elif self.quantization == "uint8":
+                # Quantize data to uint8 and set uint8-based distance functions
+                current_random_state = check_random_state(self.random_state)
+                sample_data = self._raw_data[
+                    current_random_state.choice(
+                        self._raw_data.shape[0],
+                        min(10000, self._raw_data.shape[0]),
+                        replace=False,
+                    )
+                ].ravel()
+                if len(np.unique(sample_data)) <= 256:
+                    self._quantized_values = np.unique(sample_data).astype(np.float32)
+                else:
+                    self._quantized_values = np.quantile(
+                        sample_data, np.linspace(0, 1, 256)
+                    ).astype(np.float32)
+                self._quantized_data = np.searchsorted(
+                    self._quantized_values, self._raw_data
+                ).astype(np.uint8, order="C")
+                if self.metric in pynnd_dist.quantized_distances["uint8"]:
+                    self._quantized_distance_func_base = pynnd_dist.quantized_distances[
+                        "uint8"
+                    ][self.metric]
+                    quantized_vals = self._quantized_values
+                    quantized_dist = self._quantized_distance_func_base
+
+                    @numba.njit(fastmath=True)
+                    def quantized_distance_func_closure(a, b):
+                        return quantized_dist(a, b, quantized_vals)
+
+                    self._quantized_distance_func = quantized_distance_func_closure
+                    self._is_proxy_distance = True
+                    self._true_distance_func = self._distance_func
+                else:
+                    raise ValueError(f"Not uint8 quantization version of {self.metric}")
+            elif self.quantization == "uint4":
+                # Quantize data to uint4 and set uint4-based distance functions
+                current_random_state = check_random_state(self.random_state)
+                sample_data = self._raw_data[
+                    current_random_state.choice(
+                        self._raw_data.shape[0],
+                        min(10000, self._raw_data.shape[0]),
+                        replace=False,
+                    )
+                ].ravel()
+                self._quantized_values = np.quantile(
+                    sample_data, np.linspace(0, 1, 16)
+                ).astype(np.float32)
+                quantized_data_8bit = np.searchsorted(
+                    self._quantized_values, self._raw_data
+                ).astype(np.uint8, order="C")
+                # Pack two uint4 into one uint8
+                self._quantized_data = (
+                    (quantized_data_8bit[:, ::2] << 4) | (quantized_data_8bit[:, 1::2])
+                ).astype(np.uint8, order="C")
+                if self.metric in pynnd_dist.quantized_distances["uint4"]:
+                    self._quantized_distance_func_base = pynnd_dist.quantized_distances[
+                        "uint4"
+                    ][self.metric]
+                    quantized_vals = self._quantized_values
+                    quantized_dist = self._quantized_distance_func_base
+
+                    @numba.njit(fastmath=True)
+                    def quantized_distance_func_closure(a, b):
+                        return quantized_dist(a, b, quantized_vals)
+
+                    self._quantized_distance_func = quantized_distance_func_closure
+                    self._is_proxy_distance = True
+                    self._true_distance_func = self._distance_func
+                else:
+                    raise ValueError(f"Not uint4 quantization version of {self.metric}")
+            else:
+                raise ValueError(f"Unrecognized quantization type {self.quantization}")
+
         if not hasattr(self, "_search_graph"):
             self._init_search_graph()
+
         if not hasattr(self, "_search_function"):
             if self._is_sparse:
                 self._init_sparse_search_function()
@@ -1820,8 +2281,8 @@ class NNDescent:
             from the ith query point to its jth nearest neighbor in the
             training graph_data.
         """
-        if not hasattr(self, "_search_graph"):
-            self._init_search_graph()
+        if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
+            self.prepare()
 
         if self._is_proxy_distance:
             search_k = proxy_beam_size * k
@@ -1830,22 +2291,35 @@ class NNDescent:
 
         if not self._is_sparse:
             # Standard case
-            if not hasattr(self, "_search_function"):
-                self._init_search_function()
-
             if self.metric in ("bit_hamming", "bit_jaccard"):
                 query_data = np.asarray(query_data).astype(np.uint8, order="C")
             else:
                 query_data = np.asarray(query_data).astype(np.float32, order="C")
 
+            if self.quantization is not None:
+                epsilon += 1e-32  # ensure epsilon > 0 for quantized searches
+                if self.quantization == "binary":
+                    proxy_query_data = np.packbits(
+                        (query_data > 0).astype(np.uint8), axis=1
+                    )
+                elif self.quantization == "uint8" or self.quantization == "uint4":
+                    proxy_query_data = query_data
+                else:
+                    raise ValueError(
+                        f"Unrecognized quantization type {self.quantization}"
+                    )
+            else:
+                proxy_query_data = query_data
+
             indices, dists, _ = self._search_function(
-                query_data, search_k, epsilon, self._visited, self.search_rng_state
+                proxy_query_data,
+                search_k,
+                epsilon,
+                self._visited,
+                self.search_rng_state,
             )
         else:
             # Sparse case
-            if not hasattr(self, "_search_function"):
-                self._init_sparse_search_function()
-
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
             if not isspmatrix_csr(query_data):
                 query_data = csr_matrix(query_data, dtype=np.float32)
@@ -1866,7 +2340,12 @@ class NNDescent:
 
         if self._is_proxy_distance:
             indices, dists = rerank(
-                indices, query_data, self._raw_data, self._true_distance_func, k
+                indices,
+                query_data,
+                self._raw_data,
+                self._true_distance_func,
+                k,
+                self._deheap_function,
             )
 
         # Sort to input graph_data order

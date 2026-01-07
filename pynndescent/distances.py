@@ -1768,6 +1768,8 @@ def symmetric_kl_divergence(x, y):
         ),
     ],
     fastmath=True,
+    nogil=True,
+    boundscheck=False,
     locals={
         "result": numba.types.int32,
         "intersection": numba.types.uint8,
@@ -1806,6 +1808,8 @@ def bit_hamming(x, y):
         ),
     ],
     fastmath=True,
+    nogil=True,
+    boundscheck=False,
     locals={
         "result": numba.types.int32,
         "denom": numba.types.int32,
@@ -1841,6 +1845,259 @@ def bit_jaccard(x, y):
         return 0.0
     else:
         return -np.log(np.float32(result) / np.float32(denom))
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],u1[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+        "y_i": numba.types.float32,
+    },
+)
+def quantized_uint8_sq_euclidean(x, y, quantized_values):
+    r"""Squared Euclidean distance between a float vector ``x`` and
+    a quantized uint8 vector ``y``. The uint8 values in ``y`` are mapped
+    back to floats using the provided ``quantized_values`` array.
+    """
+    result = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        y_i = quantized_values[y[i]]
+        diff = x[i] - y_i
+        result += diff * diff
+
+    return result
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],u1[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    locals={
+        "result": numba.types.float32,
+        "norm_x": numba.types.float32,
+        "norm_y": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def quantized_uint8_alternative_cosine(x, y, quantized_values):
+    r"""Alternative cosine distance between a float vector ``x`` and
+    a quantized uint8 vector ``y``. The uint8 values in ``y`` are mapped
+    back to floats using the provided ``quantized_values`` array.
+    """
+    result = 0.0
+    norm_x = 0.0
+    norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        qy = quantized_values[y[i]]
+        result += x[i] * qy
+        norm_x += x[i] * x[i]
+        norm_y += qy * qy
+
+    if norm_x == 0.0 and norm_y == 0.0:
+        return 0.0
+    elif norm_x == 0.0 or norm_y == 0.0:
+        return FLOAT32_MAX
+    elif result <= 0.0:
+        return FLOAT32_MAX
+    else:
+        result = result / np.sqrt(norm_x * norm_y)
+        return -np.log2((result + 1.0) / 2.0)
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],u1[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def quantized_uint8_alternative_dot(x, y, quantized_values):
+    r"""Alternative dot product distance between a float vector ``x`` and
+    a quantized uint8 vector ``y``. The uint8 values in ``y`` are mapped
+    back to floats using the provided ``quantized_values`` array. x and y
+    are assumed to be normalized.
+    """
+    result = 0.0
+    dim = x.shape[0]
+    norm_y = 0.0
+
+    for i in range(dim):
+        qy = quantized_values[y[i]]
+        result += x[i] * qy
+        norm_y += qy * qy
+
+    if result <= 0.0:
+        return FLOAT32_MAX
+    else:
+        return -np.log2(result / np.sqrt(norm_y))
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],u1[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "quantized_index": numba.types.uint8,
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def quantized_uint4_sq_euclidean(x, y, quantized_values):
+    r"""Squared Euclidean distance between a float vector ``x`` and
+    a quantized uint8 vector ``y``. The uint8 values in ``y`` are mapped
+    back to floats using upper and lower nibbles and via the provided
+    ``quantized_values`` array.
+    """
+    result = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        byte = y[i // 2]
+        if i % 2 == 0:
+            quantized_index = byte & 0x0F  # Lower 4 bits
+        else:
+            quantized_index = (byte >> 4) & 0x0F  # Upper 4 bits
+
+        diff = x[i] - quantized_values[quantized_index]
+        result += diff * diff
+
+    return result
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],u1[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "quantized_index": numba.types.uint8,
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def quantized_uint4_alternative_cosine(x, y, quantized_values):
+    r"""Alternative cosine distance between a float vector ``x`` and
+    a quantized uint8 vector ``y``. The uint8 values in ``y`` are mapped
+    back to floats using upper and lower nibbles and via the provided
+    ``quantized_values`` array.
+    """
+    result = 0.0
+    norm_x = 0.0
+    norm_y = 0.0
+    dim = x.shape[0]
+
+    for i in range(dim):
+        byte = y[i // 2]
+        if i % 2 == 0:
+            quantized_index = byte & 0x0F  # Lower 4 bits
+        else:
+            quantized_index = (byte >> 4) & 0x0F  # Upper 4 bits
+
+        qy = quantized_values[quantized_index]
+        result += x[i] * qy
+        norm_x += x[i] * x[i]
+        norm_y += qy * qy
+
+    if norm_x == 0.0 and norm_y == 0.0:
+        return 0.0
+    elif norm_x == 0.0 or norm_y == 0.0:
+        return FLOAT32_MAX
+    elif result <= 0.0:
+        return FLOAT32_MAX
+    else:
+        result = result / np.sqrt(norm_x * norm_y)
+        return -np.log2((result + 1.0) / 2.0)
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],u1[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "quantized_index": numba.types.uint8,
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+)
+def quantized_uint4_alternative_dot(x, y, quantized_values):
+    r"""Alternative dot product distance between a float vector ``x`` and
+    a quantized uint8 vector ``y``. The uint8 values in ``y`` are mapped
+    back to floats using upper and lower nibbles and via the provided
+    ``quantized_values`` array. x and y are assumed to be normalized.
+    """
+    result = 0.0
+    dim = x.shape[0]
+    norm_y = 0.0
+
+    for i in range(dim):
+        byte = y[i // 2]
+        if i % 2 == 0:
+            quantized_index = byte & 0x0F  # Lower 4 bits
+        else:
+            quantized_index = (byte >> 4) & 0x0F  # Upper 4 bits
+
+        qy = quantized_values[quantized_index]
+        result += x[i] * qy
+        norm_y += qy * qy
+
+    if result <= 0.0:
+        return FLOAT32_MAX
+    else:
+        return -np.log2(result / np.sqrt(norm_y))
 
 
 named_distances = {
@@ -1978,5 +2235,28 @@ proxy_distances = {
     "proxy_sinkhorn": {
         "proxy_dist": proxy_sinkhorn,
         "true_dist": sinkhorn,
+    },
+}
+
+quantized_distances = {
+    "binary": {
+        "euclidean": bit_hamming,
+        "l2": bit_hamming,
+        "cosine": bit_jaccard,
+        "dot": bit_jaccard,
+        "hamming": bit_hamming,
+        "jaccard": bit_jaccard,
+    },
+    "uint8": {
+        "euclidean": quantized_uint8_sq_euclidean,
+        "l2": quantized_uint8_sq_euclidean,
+        "cosine": quantized_uint8_alternative_cosine,
+        "dot": quantized_uint8_alternative_dot,
+    },
+    "uint4": {
+        "euclidean": quantized_uint4_sq_euclidean,
+        "l2": quantized_uint4_sq_euclidean,
+        "cosine": quantized_uint4_alternative_cosine,
+        "dot": quantized_uint4_alternative_dot,
     },
 }
