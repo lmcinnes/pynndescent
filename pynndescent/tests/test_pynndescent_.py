@@ -80,7 +80,13 @@ def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
 
 
 @pytest.mark.skipif(
-    list(map(int, re.findall(r"[0-9]+\.[0-9]+\.?[0-9]*", scipy.version.version)[0].split("."))) < [1, 3, 0],
+    list(
+        map(
+            int,
+            re.findall(r"[0-9]+\.[0-9]+\.?[0-9]*", scipy.version.version)[0].split("."),
+        )
+    )
+    < [1, 3, 0],
     reason="requires scipy >= 1.3.0",
 )
 def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
@@ -638,7 +644,7 @@ def test_update_with_changed_data(update_data, case, metric):
 
 @pytest.mark.parametrize("n_trees", [1, 2, 3, 10])
 def test_tree_numbers_after_multiple_updates(n_trees):
-    trees_after_update = max(1, int(np.round(n_trees / 3)))
+    trees_after_update = max(2, int(np.round(n_trees / 3)))
 
     nnd = NNDescent(np.array([[1.0]]), n_neighbors=1, n_trees=n_trees)
 
@@ -746,7 +752,5 @@ def test_tree_no_split(small_data, sparse_small_data, metric):
 )
 def test_bad_data():
     test_data_dir = pathlib.Path(__file__).parent / "test_data"
-    data = np.sqrt(
-        np.load(test_data_dir / "pynndescent_bug_np.npz")["arr_0"]
-    )
+    data = np.sqrt(np.load(test_data_dir / "pynndescent_bug_np.npz")["arr_0"])
     index = NNDescent(data, metric="cosine")
