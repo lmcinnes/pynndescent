@@ -1,0 +1,21 @@
+[package]
+name = "pynndescent-rs"
+description = "Python bindings for nndescent-rs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "pynndescent_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+nndescent-core = { path = "../nndescent-core", features = ["rayon"] }
+nndescent-simd = { path = "../nndescent-simd" }
+pyo3 = { workspace = true }
+numpy = { workspace = true }
+
+[dev-dependencies]

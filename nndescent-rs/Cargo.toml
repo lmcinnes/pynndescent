@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nndescent-core",
+    "crates/nndescent-simd",
+    "crates/pynndescent-rs",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Leland McInnes <leland.mcinnes@gmail.com>"]
+license = "BSD-2-Clause"
+repository = "https://github.com/lmcinnes/nndescent-rs"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Parallelism
+rayon = "1.10"
+
+# SIMD utilities
+wide = "0.7"
+
+# Numeric
+num-traits = "0.2"
+ordered-float = "4.2"
+
+# Random
+rand = "0.8"
+rand_chacha = "0.3"
+rand_xoshiro = "0.6"
+
+# Python bindings
+pyo3 = { version = "0.22", features = ["extension-module"] }
+numpy = "0.22"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Memory mapping
+memmap2 = "0.9"
+
+# Benchmarking
+criterion = "0.4"
+
+# Testing
+approx = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+opt-level = 3

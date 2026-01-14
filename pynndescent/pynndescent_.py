@@ -2,6 +2,7 @@
 #
 # License: BSD 2 clause
 
+import time
 from warnings import warn
 
 import numba
@@ -263,7 +264,7 @@ def process_candidates(
     return c
 
 
-@numba.njit()
+# @numba.njit()  # Commented out for timing instrumentation
 def nn_descent_internal(
     current_graph,
     data,
@@ -293,14 +294,23 @@ def nn_descent_internal(
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
 
+    # Timing instrumentation
+    t_candidates_total = 0.0
+    t_process_total = 0.0
+    actual_iters = 0
+
     for n in range(n_iters):
+        actual_iters = n + 1
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
+        t_cand_start = time.perf_counter()
         (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
             current_graph, max_candidates, rng_state, n_threads
         )
+        t_candidates_total += time.perf_counter() - t_cand_start
 
+        t_proc_start = time.perf_counter()
         c = process_candidates(
             data,
             dist,
@@ -313,14 +323,24 @@ def nn_descent_internal(
             update_array,
             n_updates_per_thread,
         )
+        t_process_total += time.perf_counter() - t_proc_start
 
         if c <= delta * n_neighbors * data.shape[0]:
             if verbose:
                 print("\tStopping threshold met -- exiting after", n + 1, "iterations")
-            return
+            break
+
+    if verbose:
+        print(f"\n  --- NN Descent Internal Timing ---")
+        print(
+            f"  Candidate building: {t_candidates_total*1000:>8.3f}ms ({actual_iters} iters, {t_candidates_total*1000/actual_iters:.3f}ms/iter)"
+        )
+        print(
+            f"  Process candidates: {t_process_total*1000:>8.3f}ms ({actual_iters} iters, {t_process_total*1000/actual_iters:.3f}ms/iter)"
+        )
 
 
-@numba.njit()
+# @numba.njit()  # Commented out for timing instrumentation
 def nn_descent(
     data,
     n_neighbors,
@@ -335,21 +355,37 @@ def nn_descent(
     low_memory=True,
     verbose=False,
 ):
+    # Timing for initialization
+    t_init_start = time.perf_counter()
 
     if init_graph[0].shape[0] == 1:  # EMPTY_GRAPH
         current_graph = make_heap(data.shape[0], n_neighbors)
 
+        t_rp_tree_start = time.perf_counter()
         if rp_tree_init:
             init_rp_tree(data, dist, current_graph, leaf_array)
+        t_rp_tree = time.perf_counter() - t_rp_tree_start
 
+        t_random_start = time.perf_counter()
         init_random(n_neighbors, data, current_graph, dist, rng_state)
+        t_random = time.perf_counter() - t_random_start
     elif (
         init_graph[0].shape[0] == data.shape[0]
         and init_graph[0].shape[1] == n_neighbors
     ):
         current_graph = init_graph
+        t_rp_tree = 0.0
+        t_random = 0.0
     else:
         raise ValueError("Invalid initial graph specified!")
+
+    t_init = time.perf_counter() - t_init_start
+
+    if verbose:
+        print(f"\n  --- Graph Initialization Timing ---")
+        print(f"  RP tree init:       {t_rp_tree*1000:>8.3f}ms")
+        print(f"  Random init:        {t_random*1000:>8.3f}ms")
+        print(f"  Total init:         {t_init*1000:>8.3f}ms")
 
     nn_descent_internal(
         current_graph,
@@ -1090,9 +1126,16 @@ class NNDescent:
         for i in range(10):
             _ = tau_rand_int(self.search_rng_state)
 
+        # Initialize timing for verbose mode
+        if verbose:
+            _t_start = time.perf_counter()
+            _t_forest = 0.0
+            _t_nn_descent = 0.0
+
         if self.tree_init:
             if verbose:
                 print(ts(), "Building RP forest with", str(n_trees), "trees")
+                _t_forest_start = time.perf_counter()
             self._rp_forest = make_forest(
                 data,
                 n_neighbors,
@@ -1106,6 +1149,8 @@ class NNDescent:
                 max_depth=self.max_rptree_depth,
             )
             leaf_array = rptree_leaf_array(self._rp_forest)
+            if verbose:
+                _t_forest = time.perf_counter() - _t_forest_start
         else:
             self._rp_forest = None
             leaf_array = np.array([[-1]])
@@ -1178,6 +1223,7 @@ class NNDescent:
 
             if verbose:
                 print(ts(), "metric NN descent for", str(n_iters), "iterations")
+                _t_nnd_start = time.perf_counter()
 
             self._neighbor_graph = sparse_nnd.nn_descent(
                 self._raw_data.indices,
@@ -1195,6 +1241,9 @@ class NNDescent:
                 low_memory=self.low_memory,
                 verbose=verbose,
             )
+
+            if verbose:
+                _t_nn_descent = time.perf_counter() - _t_nnd_start
 
         else:
 
@@ -1221,6 +1270,7 @@ class NNDescent:
 
             if verbose:
                 print(ts(), "NN descent for", str(n_iters), "iterations")
+                _t_nnd_start = time.perf_counter()
 
             self._neighbor_graph = nn_descent(
                 self._raw_data,
@@ -1237,6 +1287,9 @@ class NNDescent:
                 verbose=verbose,
             )
 
+            if verbose:
+                _t_nn_descent = time.perf_counter() - _t_nnd_start
+
         if np.any(self._neighbor_graph[0] < 0):
             warn(
                 "Failed to correctly find n_neighbors for some samples."
@@ -1245,6 +1298,14 @@ class NNDescent:
             )
 
         numba.set_num_threads(self._original_num_threads)
+
+        # Print timing breakdown in verbose mode
+        if verbose:
+            _t_total = time.perf_counter() - _t_start
+            print("\n=== Timing Breakdown ===")
+            print(f"Forest building:    {_t_forest*1000:>8.3f}ms")
+            print(f"NN descent:         {_t_nn_descent*1000:>8.3f}ms")
+            print(f"Total:              {_t_total*1000:>8.3f}ms")
 
     def _set_distance_func(self):
         self._is_proxy_distance = False

@@ -1,0 +1,27 @@
+[package]
+name = "nndescent-simd"
+description = "SIMD kernels for nndescent-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Feature flags for explicit SIMD targeting (auto-detection is default)
+avx2 = []
+avx512 = []
+
+[dependencies]
+bytemuck = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+approx = { workspace = true }
+rand = { workspace = true }
+
+[[bench]]
+name = "simd_distance"
+harness = false

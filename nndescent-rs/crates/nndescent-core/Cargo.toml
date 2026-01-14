@@ -1,0 +1,42 @@
+[package]
+name = "nndescent-core"
+description = "High-performance NN-Descent algorithm for approximate k-nearest neighbor search"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std", "rayon"]
+std = []
+rayon = ["dep:rayon"]
+simd = ["dep:nndescent-simd"]
+mmap = ["dep:memmap2"]
+serde = ["dep:serde", "dep:bincode"]
+
+[dependencies]
+rayon = { workspace = true, optional = true }
+nndescent-simd = { path = "../nndescent-simd", optional = true }
+num-traits = { workspace = true }
+ordered-float = { workspace = true }
+rand = { workspace = true }
+rand_xoshiro = { workspace = true }
+bytemuck = { workspace = true }
+serde = { workspace = true, optional = true }
+bincode = { workspace = true, optional = true }
+memmap2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+approx = { workspace = true }
+rand_chacha = { workspace = true }
+
+[[bench]]
+name = "distance"
+harness = false
+
+[[bench]]
+name = "heap"
+harness = false
