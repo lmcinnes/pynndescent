@@ -6,6 +6,59 @@ use crate::rng::FastRng;
 use super::flat_tree::FlatTree;
 use rayon::prelude::*;
 
+/// Compute dot product of two slices, using AVX2+FMA if available.
+#[inline]
+pub(super) fn dot_product(a: &[f32], b: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { dot_product_avx2(a, b) };
+        }
+    }
+    
+    // Scalar fallback
+    let mut sum = 0.0f32;
+    for i in 0..a.len() {
+        sum += a[i] * b[i];
+    }
+    sum
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn dot_product_avx2(a: &[f32], b: &[f32]) -> f32 {
+    use std::arch::x86_64::*;
+    
+    let n = a.len();
+    let chunks = n / 8;
+    let mut sum = _mm256_setzero_ps();
+    
+    for i in 0..chunks {
+        let idx = i * 8;
+        let aa = _mm256_loadu_ps(a.as_ptr().add(idx));
+        let bb = _mm256_loadu_ps(b.as_ptr().add(idx));
+        sum = _mm256_fmadd_ps(aa, bb, sum);
+    }
+    
+    // Horizontal sum
+    let hi = _mm256_extractf128_ps(sum, 1);
+    let lo = _mm256_castps256_ps128(sum);
+    let sum128 = _mm_add_ps(hi, lo);
+    let shuf = _mm_movehdup_ps(sum128);
+    let sums = _mm_add_ps(sum128, shuf);
+    let shuf2 = _mm_movehl_ps(sums, sums);
+    let result = _mm_add_ss(sums, shuf2);
+    let mut result = _mm_cvtss_f32(result);
+    
+    // Handle remainder
+    let start = chunks * 8;
+    for i in start..n {
+        result += a[i] * b[i];
+    }
+    
+    result
+}
+
 /// Build a random projection tree.
 ///
 /// # Arguments
@@ -111,10 +164,11 @@ impl<'a> TreeBuilder<'a> {
     }
 
     fn build(&mut self, indices: &[i32], rng: &mut FastRng) {
-        self.build_recursive(indices, 0, rng);
+        let mut indices = indices.to_vec();
+        self.build_recursive(&mut indices, 0, rng);
     }
 
-    fn build_recursive(&mut self, indices: &[i32], depth: usize, rng: &mut FastRng) -> i32 {
+    fn build_recursive(&mut self, indices: &mut [i32], depth: usize, rng: &mut FastRng) -> i32 {
         let node_id = self.children.len() as i32;
         
         // Check if we should make a leaf
@@ -125,7 +179,8 @@ impl<'a> TreeBuilder<'a> {
             let end = self.leaf_indices.len() as i32;
             
             // Store zeros for hyperplane (unused in leaves)
-            self.hyperplanes.extend(vec![0.0f32; self.dim]);
+            let hp_start = self.hyperplanes.len();
+            self.hyperplanes.resize(hp_start + self.dim, 0.0);
             self.offsets.push(0.0);
             self.children.push([-start, -end]);
             
@@ -135,17 +190,18 @@ impl<'a> TreeBuilder<'a> {
         // Select split hyperplane
         let (hyperplane, offset) = self.make_split(indices, rng);
         
-        // Partition points
-        let (left_indices, right_indices) = self.partition(indices, &hyperplane, offset, rng);
+        // In-place partition: rearrange indices so left elements come first
+        let split_pos = self.partition_inplace(indices, &hyperplane, offset, rng);
         
         // Handle degenerate splits
-        if left_indices.is_empty() || right_indices.is_empty() {
+        if split_pos == 0 || split_pos == indices.len() {
             // Fall back to leaf
             let start = self.leaf_indices.len() as i32;
             self.leaf_indices.extend_from_slice(indices);
             let end = self.leaf_indices.len() as i32;
             
-            self.hyperplanes.extend(vec![0.0f32; self.dim]);
+            let hp_start = self.hyperplanes.len();
+            self.hyperplanes.resize(hp_start + self.dim, 0.0);
             self.offsets.push(0.0);
             self.children.push([-start, -end]);
             
@@ -157,9 +213,10 @@ impl<'a> TreeBuilder<'a> {
         self.offsets.push(offset);
         self.children.push([0, 0]); // Will be filled in
 
-        // Recursively build children
-        let left_child = self.build_recursive(&left_indices, depth + 1, rng);
-        let right_child = self.build_recursive(&right_indices, depth + 1, rng);
+        // Split indices slice and recurse
+        let (left_indices, right_indices) = indices.split_at_mut(split_pos);
+        let left_child = self.build_recursive(left_indices, depth + 1, rng);
+        let right_child = self.build_recursive(right_indices, depth + 1, rng);
 
         // Update children pointers
         self.children[node_id as usize] = [left_child, right_child];
@@ -191,26 +248,31 @@ impl<'a> TreeBuilder<'a> {
     fn make_euclidean_split(&self, point1: &[f32], point2: &[f32]) -> (Vec<f32>, f32) {
         // Hyperplane is perpendicular bisector of the two points
         // Normal vector: point2 - point1
-        // Offset: -dot(normal, midpoint)
+        // Offset: -dot(normal, midpoint) computed inline to avoid midpoint Vec
         
-        let mut hyperplane = Vec::with_capacity(self.dim);
-        let mut midpoint = Vec::with_capacity(self.dim);
+        let dim = self.dim;
+        let mut hyperplane = vec![0.0f32; dim];
+        let mut norm_sq = 0.0f32;
+        let mut dot_nm = 0.0f32; // dot(normal, midpoint)
         
-        for i in 0..self.dim {
-            hyperplane.push(point2[i] - point1[i]);
-            midpoint.push((point1[i] + point2[i]) / 2.0);
+        for i in 0..dim {
+            let h = point2[i] - point1[i];
+            let m = (point1[i] + point2[i]) * 0.5;
+            hyperplane[i] = h;
+            norm_sq += h * h;
+            dot_nm += h * m;
         }
 
-        // Normalize hyperplane
-        let norm: f32 = hyperplane.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 1e-8 {
+        let norm = norm_sq.sqrt();
+        let offset = if norm > 1e-8 {
+            let inv_norm = 1.0 / norm;
             for x in &mut hyperplane {
-                *x /= norm;
+                *x *= inv_norm;
             }
-        }
-
-        // Compute offset: -dot(hyperplane, midpoint)
-        let offset: f32 = -hyperplane.iter().zip(midpoint.iter()).map(|(h, m)| h * m).sum::<f32>();
+            -dot_nm * inv_norm
+        } else {
+            0.0
+        };
 
         (hyperplane, offset)
     }
@@ -244,41 +306,44 @@ impl<'a> TreeBuilder<'a> {
         (hyperplane, 0.0) // offset is 0 for angular splits
     }
 
-    fn partition(
+    /// In-place partition of indices. Returns the split position (number of left elements).
+    /// After this call, indices[..split_pos] are left elements and indices[split_pos..] are right.
+    fn partition_inplace(
         &self,
-        indices: &[i32],
+        indices: &mut [i32],
         hyperplane: &[f32],
         offset: f32,
         rng: &mut FastRng,
-    ) -> (Vec<i32>, Vec<i32>) {
-        let mut left = Vec::new();
-        let mut right = Vec::new();
-
-        for &idx in indices {
-            let point = &self.data[idx as usize * self.dim..(idx as usize + 1) * self.dim];
+    ) -> usize {
+        let n = indices.len();
+        let dim = self.dim;
+        
+        // Two-pointer partition: left pointer moves right, right pointer moves left
+        let mut left = 0usize;
+        let mut right = n;
+        
+        while left < right {
+            let idx = indices[left] as usize;
+            let p_start = idx * dim;
+            let point = &self.data[p_start..p_start + dim];
             
-            // Compute margin
-            let mut margin = offset;
-            for i in 0..self.dim {
-                margin += point[i] * hyperplane[i];
-            }
-
-            // Assign to side
-            if margin.abs() < 1e-8 {
-                // Random assignment for points on the boundary
-                if rng.next_bool() {
-                    right.push(idx);
-                } else {
-                    left.push(idx);
-                }
-            } else if margin < 0.0 {
-                left.push(idx);
+            let margin = dot_product(point, hyperplane) + offset;
+            
+            let goes_left = if margin.abs() < 1e-8 {
+                !rng.next_bool()
             } else {
-                right.push(idx);
+                margin < 0.0
+            };
+            
+            if goes_left {
+                left += 1;
+            } else {
+                right -= 1;
+                indices.swap(left, right);
             }
         }
-
-        (left, right)
+        
+        left // split position
     }
 
     fn into_flat_tree(self) -> FlatTree {

@@ -7,7 +7,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use nndescent_core::index::NNDescentBuilder;
-use nndescent_core::distance::{Metric, SquaredEuclidean, Cosine, InnerProduct};
+use nndescent_core::distance::{Distance, Metric, SquaredEuclidean, Cosine, InnerProduct};
 
 /// NNDescent index for approximate nearest neighbor search.
 ///
@@ -73,12 +73,12 @@ enum IndexData {
 #[pymethods]
 impl PyNNDescent {
     #[new]
-    #[pyo3(signature = (data, metric="euclidean", n_neighbors=30, n_trees=8, leaf_size=None, max_candidates=None, n_iters=None, delta=0.001, random_state=None, verbose=false))]
+    #[pyo3(signature = (data, metric="euclidean", n_neighbors=30, n_trees=None, leaf_size=None, max_candidates=None, n_iters=None, delta=0.001, random_state=None, verbose=false))]
     fn new(
         data: PyReadonlyArray2<f32>,
         metric: &str,
         n_neighbors: usize,
-        n_trees: usize,
+        n_trees: Option<usize>,
         leaf_size: Option<usize>,
         max_candidates: Option<usize>,
         n_iters: Option<usize>,
@@ -90,8 +90,19 @@ impl PyNNDescent {
         let n_points = shape[0];
         let dim = shape[1];
 
-        // Copy data to owned vec
-        let data_vec: Vec<f32> = data.as_slice()?.to_vec();
+        // Copy data to owned vec in C-contiguous (row-major) order
+        let data_vec: Vec<f32> = if data.is_c_contiguous() {
+            data.as_slice().unwrap().to_vec()
+        } else {
+            // F-contiguous or strided: read element by element in row-major order
+            let mut vec = Vec::with_capacity(n_points * dim);
+            for i in 0..n_points {
+                for j in 0..dim {
+                    vec.push(*data.get([i, j]).unwrap());
+                }
+            }
+            vec
+        };
 
         // Parse metric
         let parsed_metric = Metric::from_str(metric)
@@ -160,7 +171,17 @@ impl PyNNDescent {
             )));
         }
 
-        let query_vec: Vec<f32> = query_data.as_slice()?.to_vec();
+        let query_vec: Vec<f32> = if query_data.is_c_contiguous() {
+            query_data.as_slice().unwrap().to_vec()
+        } else {
+            let mut vec = Vec::with_capacity(n_queries * query_dim);
+            for i in 0..n_queries {
+                for j in 0..query_dim {
+                    vec.push(*query_data.get([i, j]).unwrap());
+                }
+            }
+            vec
+        };
 
         let (indices, distances) = match &self.index_data {
             IndexData::Euclidean(idx) => idx.query(&query_vec, n_queries, k, epsilon),
@@ -215,7 +236,7 @@ impl PyNNDescent {
         dim: usize,
         metric: Metric,
         n_neighbors: usize,
-        n_trees: usize,
+        n_trees: Option<usize>,
         leaf_size: Option<usize>,
         max_candidates: Option<usize>,
         n_iters: Option<usize>,
@@ -223,10 +244,16 @@ impl PyNNDescent {
         random_seed: u64,
         verbose: bool,
     ) -> PyResult<IndexData> {
+        // Compute default n_trees matching PyNNDescent: max(3, min(12, round(2*log10(n))))
+        let effective_n_trees = n_trees.unwrap_or_else(|| {
+            let log_val = 2.0 * (n_points as f64).log10();
+            (log_val.round() as usize).clamp(3, 12)
+        });
+
         let mut builder = NNDescentBuilder::new(data, n_points, dim)
             .metric(metric)
             .n_neighbors(n_neighbors)
-            .n_trees(n_trees)
+            .n_trees(effective_n_trees)
             .delta(delta)
             .random_seed(random_seed)
             .verbose(verbose);
@@ -453,9 +480,9 @@ fn benchmark_candidate_building<'py>(
     let candidates = CandidateSets::build_from_graph(&mut heap, max_candidates, &mut rng);
     
     // Convert to numpy arrays
-    let new_indices = PyArray2::from_vec_bound(py, candidates.new_indices)
+    let new_indices = PyArray1::from_vec_bound(py, candidates.new_indices)
         .reshape([n_vertices, max_candidates])?;
-    let old_indices = PyArray2::from_vec_bound(py, candidates.old_indices)
+    let old_indices = PyArray1::from_vec_bound(py, candidates.old_indices)
         .reshape([n_vertices, max_candidates])?;
     
     Ok((new_indices, old_indices))
@@ -468,13 +495,13 @@ fn benchmark_candidate_building<'py>(
 fn benchmark_distances<'py>(
     py: Python<'py>,
     data: PyReadonlyArray2<f32>,
-    pairs_i: PyReadonlyArray1<i32>,
-    pairs_j: PyReadonlyArray1<i32>,
+    pairs_i: numpy::PyReadonlyArray1<i32>,
+    pairs_j: numpy::PyReadonlyArray1<i32>,
 ) -> PyResult<Bound<'py, PyArray1<f32>>> {
     use nndescent_core::distance::SquaredEuclidean;
     
     let data_view = data.as_array();
-    let n_points = data_view.shape()[0];
+    let _n_points = data_view.shape()[0];
     let dim = data_view.shape()[1];
     let data_slice = data.as_slice()?;
     

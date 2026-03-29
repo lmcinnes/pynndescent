@@ -41,9 +41,9 @@ def load_mnist():
 
         print("Loading MNIST dataset...")
         mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
-        data = mnist.data.astype(np.float32)
+        data = np.ascontiguousarray(mnist.data.astype(np.float32))
         # Normalize to [0, 1]
-        data = data / 255.0
+        data = np.ascontiguousarray(data / 255.0)
         print(f"  Loaded {data.shape[0]} samples, {data.shape[1]} dimensions")
         return data
     except Exception as e:
@@ -58,9 +58,9 @@ def load_fashion_mnist():
 
         print("Loading Fashion-MNIST dataset...")
         fmnist = fetch_openml("Fashion-MNIST", version=1, as_frame=False, parser="auto")
-        data = fmnist.data.astype(np.float32)
+        data = np.ascontiguousarray(fmnist.data.astype(np.float32))
         # Normalize to [0, 1]
-        data = data / 255.0
+        data = np.ascontiguousarray(data / 255.0)
         print(f"  Loaded {data.shape[0]} samples, {data.shape[1]} dimensions")
         return data
     except Exception as e:
@@ -115,7 +115,12 @@ def benchmark_pynndescent_rs(data, n_neighbors, n_runs=3):
 
 
 def compute_recall(indices_true, indices_test, k=None):
-    """Compute recall@k between two sets of neighbor indices."""
+    """Compute recall@k between two sets of neighbor indices.
+
+    Excludes self-loops (where index == row number) from both sets
+    to handle the difference between PyNNDescent (includes self) and
+    Rust (excludes self).
+    """
     if k is None:
         k = indices_true.shape[1]
 
@@ -123,9 +128,10 @@ def compute_recall(indices_true, indices_test, k=None):
     recall = 0.0
 
     for i in range(n):
-        true_set = set(indices_true[i, :k])
-        test_set = set(indices_test[i, :k])
-        recall += len(true_set & test_set) / k
+        true_set = set(indices_true[i, :k]) - {i}
+        test_set = set(indices_test[i, :k]) - {i}
+        if len(true_set) > 0:
+            recall += len(true_set & test_set) / len(true_set)
 
     return recall / n
 

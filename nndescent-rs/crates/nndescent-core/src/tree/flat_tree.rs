@@ -4,6 +4,7 @@
 //! all tree data in contiguous arrays.
 
 use crate::rng::FastRng;
+use super::builder::dot_product;
 
 /// A flattened random projection tree for efficient search.
 ///
@@ -53,10 +54,7 @@ impl FlatTree {
             let offset = self.offsets[node];
 
             // Compute margin (dot product with hyperplane + offset)
-            let mut margin = offset;
-            for i in 0..self.dim {
-                margin += point[i] * hyperplane[i];
-            }
+            let margin = dot_product(point, hyperplane) + offset;
 
             // Choose side (with random tie-breaking)
             let side = if margin.abs() < 1e-8 {

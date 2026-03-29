@@ -16,7 +16,6 @@ impl Distance<f32> for SquaredEuclidean {
     fn distance(&self, a: &[f32], b: &[f32]) -> f32 {
         debug_assert_eq!(a.len(), b.len());
 
-        // Use SIMD on x86_64 if AVX2+FMA available
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {

@@ -297,15 +297,25 @@ fn initialize_from_leaves<D: Distance<f32> + Sync>(
     }
 }
 
-/// A potential update to the neighbor graph.
+/// A potential update to the neighbor graph, stored as compact 12-byte struct.
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct PotentialUpdate {
-    point: usize,
+    point: i32,
     neighbor: i32,
     distance: f32,
 }
 
-/// Run one iteration of NN-descent updates (parallel version).
+/// Run one iteration of NN-descent updates using block-based processing.
+///
+/// Matches PyNNDescent's `process_candidates` / `generate_graph_update_array`:
+/// - Processes candidate rows in blocks of BLOCK_SIZE (16384)
+/// - Within each block, rows are split across threads
+/// - Each thread writes to pre-allocated update storage (no dynamic allocation)
+/// - Updates applied via block-based vertex ownership
+///
+/// This avoids the per-point Vec allocation of the previous approach, which
+/// created n_points separate allocations per iteration.
 fn update_iteration<D: Distance<f32> + Sync>(
     graph: &mut NeighborHeap,
     candidates: &CandidateSets,
@@ -314,133 +324,159 @@ fn update_iteration<D: Distance<f32> + Sync>(
     distance: &D,
 ) -> usize {
     let n_points = graph.n_points;
-
-    // Get distance thresholds for each point
-    let thresholds: Vec<f32> = (0..n_points)
-        .map(|i| graph.max_distance(i))
-        .collect();
-
+    let n_threads = rayon::current_num_threads().max(1);
     let max_candidates = candidates.max_candidates;
 
-    // Generate all updates in parallel
-    let updates: Vec<Vec<PotentialUpdate>> = (0..n_points)
-        .into_par_iter()
-        .map(|i| {
-            let mut local_updates = Vec::new();
-            let new_candidates = candidates.get_new(i);
-            let old_candidates = candidates.get_old(i);
+    const BLOCK_SIZE: usize = 16384;
 
-            // Compare (new, new) pairs
-            for j in 0..max_candidates {
-                let p = new_candidates[j];
-                if p < 0 {
-                    continue;
-                }
+    let rows_per_block = BLOCK_SIZE.min(n_points);
+    let max_updates_per_thread = 
+        ((max_candidates * max_candidates + max_candidates * (max_candidates - 1) / 2)
+            * rows_per_block / n_threads)
+        + 1024;
 
-                for k in (j + 1)..max_candidates {
-                    let q = new_candidates[k];
-                    if q < 0 {
-                        continue;
-                    }
-
-                    // Only compute if either could be improved
-                    let max_thresh = thresholds[p as usize].max(thresholds[q as usize]);
-                    if max_thresh == f32::INFINITY {
-                        continue;
-                    }
-
-                    let point_p = &data[p as usize * dim..(p as usize + 1) * dim];
-                    let point_q = &data[q as usize * dim..(q as usize + 1) * dim];
-                    let d = distance.distance(point_p, point_q);
-
-                    if d < max_thresh {
-                        local_updates.push(PotentialUpdate {
-                            point: p as usize,
-                            neighbor: q,
-                            distance: d,
-                        });
-                        local_updates.push(PotentialUpdate {
-                            point: q as usize,
-                            neighbor: p,
-                            distance: d,
-                        });
-                    }
-                }
-            }
-
-            // Compare (new, old) pairs
-            for j in 0..max_candidates {
-                let p = new_candidates[j];
-                if p < 0 {
-                    continue;
-                }
-
-                for k in 0..max_candidates {
-                    let q = old_candidates[k];
-                    if q < 0 || p == q {
-                        continue;
-                    }
-
-                    let max_thresh = thresholds[p as usize].max(thresholds[q as usize]);
-                    if max_thresh == f32::INFINITY {
-                        continue;
-                    }
-
-                    let point_p = &data[p as usize * dim..(p as usize + 1) * dim];
-                    let point_q = &data[q as usize * dim..(q as usize + 1) * dim];
-                    let d = distance.distance(point_p, point_q);
-
-                    if d < max_thresh {
-                        local_updates.push(PotentialUpdate {
-                            point: p as usize,
-                            neighbor: q,
-                            distance: d,
-                        });
-                        local_updates.push(PotentialUpdate {
-                            point: q as usize,
-                            neighbor: p,
-                            distance: d,
-                        });
-                    }
-                }
-            }
-
-            local_updates
+    // Per-thread, per-destination-block update buckets
+    // thread_buckets[gen_thread][dest_block] = Vec<PotentialUpdate>
+    let vertex_block_size = (n_points + n_threads - 1) / n_threads;
+    let n_vertex_blocks = n_threads; // One vertex block per thread for application elision
+    
+    let mut thread_buckets: Vec<Vec<Vec<PotentialUpdate>>> = (0..n_threads)
+        .map(|_| {
+            (0..n_vertex_blocks)
+                .map(|_| Vec::with_capacity(max_updates_per_thread / n_vertex_blocks + 64))
+                .collect()
         })
         .collect();
 
-    // Apply updates in parallel using block-based approach
-    let n_threads = rayon::current_num_threads().max(1);
-    let vertex_block_size = (n_points + n_threads - 1) / n_threads;
-    
-    // Count changes using atomic counter
     use std::sync::atomic::{AtomicUsize, Ordering};
     let total_changes = AtomicUsize::new(0);
+
+    let n_blocks = (n_points + BLOCK_SIZE - 1) / BLOCK_SIZE;
     
-    let updates_ref = &updates;
-    (0..n_threads).into_par_iter().for_each(|t| {
-        let v_block_start = t * vertex_block_size;
-        let v_block_end = (v_block_start + vertex_block_size).min(n_points);
+    for block_idx in 0..n_blocks {
+        let block_start = block_idx * BLOCK_SIZE;
+        let block_end = ((block_idx + 1) * BLOCK_SIZE).min(n_points);
+        let block_len = block_end - block_start;
+        let rows_per_thread = (block_len + n_threads - 1) / n_threads;
+
+        let thresholds: Vec<f32> = (0..n_points)
+            .map(|i| graph.max_distance(i))
+            .collect();
+
+        // Clear all buckets
+        for thread_buck in thread_buckets.iter_mut() {
+            for bucket in thread_buck.iter_mut() {
+                bucket.clear();
+            }
+        }
+
+        let thread_buckets_ref = &thread_buckets;
         
-        // SAFETY: Each thread writes to disjoint vertex blocks
-        let graph_ptr = graph as *const NeighborHeap as *mut NeighborHeap;
-        let graph_mut = unsafe { &mut *graph_ptr };
-        
-        let mut local_changes = 0usize;
-        
-        for thread_updates in updates_ref.iter() {
-            for update in thread_updates {
-                // Only apply if the target point is in our block
-                if update.point >= v_block_start && update.point < v_block_end {
-                    if graph_mut.checked_flagged_push(update.point, update.neighbor, update.distance, true) {
-                        local_changes += 1;
+        // Generate updates and bucket by destination vertex block
+        (0..n_threads).into_par_iter().for_each(|t| {
+            let row_start = block_start + t * rows_per_thread;
+            let row_end = (row_start + rows_per_thread).min(block_end);
+            
+            // SAFETY: Each thread writes to its own thread_buckets[t]
+            let buckets_ptr = thread_buckets_ref.as_ptr() as *mut Vec<Vec<PotentialUpdate>>;
+            let local_buckets = unsafe { &mut *buckets_ptr.add(t) };
+            
+            for i in row_start..row_end {
+                let new_cands = candidates.get_new(i);
+                let old_cands = candidates.get_old(i);
+
+                for j in 0..max_candidates {
+                    let p = new_cands[j];
+                    if p < 0 {
+                        continue;
+                    }
+                    let p_usize = p as usize;
+                    let data_p = &data[p_usize * dim..(p_usize + 1) * dim];
+                    let thresh_p = thresholds[p_usize];
+
+                    for k in (j + 1)..max_candidates {
+                        let q = new_cands[k];
+                        if q < 0 {
+                            continue;
+                        }
+                        let q_usize = q as usize;
+                        let max_thresh = thresh_p.max(thresholds[q_usize]);
+                        let d = distance.distance(data_p, &data[q_usize * dim..(q_usize + 1) * dim]);
+
+                        if d <= max_thresh {
+                            let update = PotentialUpdate { point: p, neighbor: q, distance: d };
+                            // Bucket by p's vertex block
+                            let p_block = p_usize / vertex_block_size;
+                            let q_block = q_usize / vertex_block_size;
+                            local_buckets[p_block.min(n_vertex_blocks - 1)].push(update);
+                            if p_block != q_block {
+                                local_buckets[q_block.min(n_vertex_blocks - 1)].push(update);
+                            }
+                        }
+                    }
+
+                    for k in 0..max_candidates {
+                        let q = old_cands[k];
+                        if q < 0 || p == q {
+                            continue;
+                        }
+                        let q_usize = q as usize;
+                        let max_thresh = thresh_p.max(thresholds[q_usize]);
+                        let d = distance.distance(data_p, &data[q_usize * dim..(q_usize + 1) * dim]);
+
+                        if d <= max_thresh {
+                            let update = PotentialUpdate { point: p, neighbor: q, distance: d };
+                            let p_block = p_usize / vertex_block_size;
+                            let q_block = q_usize / vertex_block_size;
+                            local_buckets[p_block.min(n_vertex_blocks - 1)].push(update);
+                            if p_block != q_block {
+                                local_buckets[q_block.min(n_vertex_blocks - 1)].push(update);
+                            }
+                        }
                     }
                 }
             }
-        }
-        
-        total_changes.fetch_add(local_changes, Ordering::Relaxed);
-    });
+        });
+
+        // Apply updates - each thread only reads buckets destined for its vertex block
+        let thread_buckets_apply = &thread_buckets;
+
+        (0..n_threads).into_par_iter().for_each(|t| {
+            let v_block_start = t * vertex_block_size;
+            let v_block_end = (v_block_start + vertex_block_size).min(n_points);
+            
+            let graph_ptr = graph as *const NeighborHeap as *mut NeighborHeap;
+            let graph_mut = unsafe { &mut *graph_ptr };
+            
+            let mut local_changes = 0usize;
+            
+            // Only scan updates destined for this vertex block
+            for src_thread in 0..n_threads {
+                let bucket = &thread_buckets_apply[src_thread][t];
+                
+                for update in bucket.iter() {
+                    let p = update.point as usize;
+                    let q = update.neighbor;
+                    let d = update.distance;
+                    
+                    // Apply symmetrically, but only for vertices in our block
+                    if p >= v_block_start && p < v_block_end {
+                        if graph_mut.checked_flagged_push(p, q, d, true) {
+                            local_changes += 1;
+                        }
+                    }
+                    let q_usize = q as usize;
+                    if q_usize >= v_block_start && q_usize < v_block_end {
+                        if graph_mut.checked_flagged_push(q_usize, update.point, d, true) {
+                            local_changes += 1;
+                        }
+                    }
+                }
+            }
+            
+            total_changes.fetch_add(local_changes, Ordering::Relaxed);
+        });
+    }
 
     total_changes.load(Ordering::Relaxed)
 }

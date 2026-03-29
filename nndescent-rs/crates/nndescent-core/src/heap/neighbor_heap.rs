@@ -199,10 +199,19 @@ impl NeighborHeap {
 
     /// Sift down operation for the heap at given offset.
     ///
-    /// Matches PyNNDescent's `siftdown` function.
+    /// Uses the "shift-down" technique matching PyNNDescent's `siftdown`:
+    /// instead of swapping parent↔child (3 ops per level × 3 arrays = 9 ops),
+    /// copies child→parent and places the new value once at final position
+    /// (2 ops per level × 3 arrays = 6 ops, plus 1 final write × 3 = 3 ops).
     #[inline]
-    fn sift_down(&mut self, offset: usize, mut pos: usize) {
+    fn sift_down(&mut self, offset: usize, start_pos: usize) {
         let end = self.k;
+        // Save the value being sifted
+        let val_dist = self.distances[offset + start_pos];
+        let val_idx = self.indices[offset + start_pos];
+        let val_flag = self.flags[offset + start_pos];
+        
+        let mut pos = start_pos;
         let mut child = 2 * pos + 1;
         
         while child < end {
@@ -213,19 +222,24 @@ impl NeighborHeap {
                 child = right;
             }
             
-            // If parent is larger than both children, we're done
-            if self.distances[offset + pos] >= self.distances[offset + child] {
+            // If the value is larger than or equal to the larger child, we're done
+            if val_dist >= self.distances[offset + child] {
                 break;
             }
             
-            // Swap parent with larger child
-            self.distances.swap(offset + pos, offset + child);
-            self.indices.swap(offset + pos, offset + child);
-            self.flags.swap(offset + pos, offset + child);
+            // Move child up to parent position
+            self.distances[offset + pos] = self.distances[offset + child];
+            self.indices[offset + pos] = self.indices[offset + child];
+            self.flags[offset + pos] = self.flags[offset + child];
             
             pos = child;
             child = 2 * pos + 1;
         }
+        
+        // Place value at final position
+        self.distances[offset + pos] = val_dist;
+        self.indices[offset + pos] = val_idx;
+        self.flags[offset + pos] = val_flag;
     }
 
     /// Mark all neighbors for a point as "old".

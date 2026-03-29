@@ -54,7 +54,6 @@ impl CandidateSets {
         rng: &mut FastRng,
     ) -> Self {
         let n_vertices = graph.n_points;
-        let k = graph.k;
         let n_threads = rayon::current_num_threads().max(1);
         
         // Use the parallel version if we have enough vertices
@@ -144,10 +143,13 @@ impl CandidateSets {
         }
     }
 
-    /// Parallel version of candidate building using block-based approach.
+    /// Parallel version of candidate building using two-phase approach.
     ///
-    /// Matches PyNNDescent's algorithm: each thread handles a block but iterates
-    /// all vertices, only writing to heaps within its block.
+    /// Phase 1: Each thread processes its own block's rows, pushing forward edges.
+    ///          Also collects reverse edges bucketed by destination block.
+    /// Phase 2: Each thread applies reverse edges destined for its block.
+    ///
+    /// This is O(n*k) total scan work instead of O(n_threads * n*k).
     fn build_from_graph_parallel(
         graph: &mut NeighborHeap,
         max_candidates: usize,
@@ -165,84 +167,129 @@ impl CandidateSets {
         let mut old_indices = vec![-1i32; size];
         let mut old_priority = vec![f32::INFINITY; size];
 
-        // Pre-generate random priorities for determinism
-        // We need 2 priorities per edge (forward + reverse) per vertex per neighbor
-        let n_random = n_vertices * k * 2;
-        let priorities: Vec<f32> = (0..n_random).map(|_| rng.next_float()).collect();
+        // Create per-thread RNG seeds
+        let thread_seeds: Vec<u64> = (0..n_threads).map(|_| rng.next_u64()).collect();
 
-        // Process blocks in parallel directly (without par_chunks_mut which has overhead)
+        // Read-only references
+        let graph_indices = &graph.indices;
+        let graph_flags = &graph.flags;
+
+        // Phase 1: Each thread processes its own rows (forward edges) and collects
+        // reverse edges bucketed by destination block.
+        // reverse_buckets[src_thread][dest_block] = Vec of (dest_vertex, candidate, priority, is_new)
+        let reverse_buckets: Vec<Vec<Vec<(usize, i32, f32, bool)>>> = (0..n_threads)
+            .into_par_iter()
+            .map(|thread_idx| {
+                let block_start = thread_idx * block_size;
+                let block_end = ((thread_idx + 1) * block_size).min(n_vertices);
+
+                if block_start >= n_vertices {
+                    return vec![Vec::new(); n_threads];
+                }
+
+                let mut local_rng = FastRng::new(thread_seeds[thread_idx]);
+
+                // Per-destination-block reverse edge buckets
+                let mut buckets: Vec<Vec<(usize, i32, f32, bool)>> = vec![Vec::new(); n_threads];
+
+                // SAFETY: Each thread writes to disjoint portions [block_start*mc .. block_end*mc)
+                let new_idx_ptr = new_indices.as_ptr() as *mut i32;
+                let new_pri_ptr = new_priority.as_ptr() as *mut f32;
+                let old_idx_ptr = old_indices.as_ptr() as *mut i32;
+                let old_pri_ptr = old_priority.as_ptr() as *mut f32;
+
+                for i in block_start..block_end {
+                    let row_start = i * k;
+
+                    for j in 0..k {
+                        let flat_idx = row_start + j;
+                        let neighbor = graph_indices[flat_idx];
+
+                        if neighbor < 0 {
+                            continue;
+                        }
+                        let neighbor_idx = neighbor as usize;
+                        let is_new = graph_flags[flat_idx] != 0;
+                        let priority = local_rng.next_float();
+
+                        // Forward edge: push (neighbor) as candidate for vertex i
+                        let offset = i * max_candidates;
+                        if is_new {
+                            unsafe {
+                                let pri = std::slice::from_raw_parts_mut(new_pri_ptr.add(offset), max_candidates);
+                                let idx = std::slice::from_raw_parts_mut(new_idx_ptr.add(offset), max_candidates);
+                                checked_heap_push_flat(pri, idx, priority, neighbor);
+                            }
+                        } else {
+                            unsafe {
+                                let pri = std::slice::from_raw_parts_mut(old_pri_ptr.add(offset), max_candidates);
+                                let idx = std::slice::from_raw_parts_mut(old_idx_ptr.add(offset), max_candidates);
+                                checked_heap_push_flat(pri, idx, priority, neighbor);
+                            }
+                        }
+
+                        // Reverse edge: push (i) as candidate for vertex neighbor
+                        // Bucket by which block the neighbor belongs to
+                        let dest_block = neighbor_idx / block_size;
+                        if dest_block < n_threads {
+                            if dest_block == thread_idx {
+                                // Neighbor is in our own block - handle directly
+                                let n_offset = neighbor_idx * max_candidates;
+                                if is_new {
+                                    unsafe {
+                                        let pri = std::slice::from_raw_parts_mut(new_pri_ptr.add(n_offset), max_candidates);
+                                        let idx = std::slice::from_raw_parts_mut(new_idx_ptr.add(n_offset), max_candidates);
+                                        checked_heap_push_flat(pri, idx, priority, i as i32);
+                                    }
+                                } else {
+                                    unsafe {
+                                        let pri = std::slice::from_raw_parts_mut(old_pri_ptr.add(n_offset), max_candidates);
+                                        let idx = std::slice::from_raw_parts_mut(old_idx_ptr.add(n_offset), max_candidates);
+                                        checked_heap_push_flat(pri, idx, priority, i as i32);
+                                    }
+                                }
+                            } else {
+                                buckets[dest_block].push((neighbor_idx, i as i32, priority, is_new));
+                            }
+                        }
+                    }
+                }
+
+                buckets
+            })
+            .collect();
+
+        // Phase 2: Each thread applies reverse edges destined for its block
         (0..n_threads).into_par_iter().for_each(|thread_idx| {
             let block_start = thread_idx * block_size;
-            let block_end = ((thread_idx + 1) * block_size).min(n_vertices);
-            
             if block_start >= n_vertices {
                 return;
             }
-            
-            // SAFETY: Each thread writes to disjoint portions of the arrays
-            // based on block_start..block_end
+
+            // SAFETY: Each thread writes to disjoint portions [block_start*mc .. block_end*mc)
             let new_idx_ptr = new_indices.as_ptr() as *mut i32;
             let new_pri_ptr = new_priority.as_ptr() as *mut f32;
             let old_idx_ptr = old_indices.as_ptr() as *mut i32;
             let old_pri_ptr = old_priority.as_ptr() as *mut f32;
-            
-            // Each thread iterates ALL vertices, but only writes to heaps in its block
-            for i in 0..n_vertices {
-                let row_start = i * k;
-                
-                for j in 0..k {
-                    let neighbor = graph.indices[row_start + j];
-                    if neighbor < 0 {
-                        continue;
-                    }
-                    let neighbor_idx = neighbor as usize;
-                    let is_new = graph.flags[row_start + j] != 0;
-                    
-                    // Get pre-generated random priority
-                    let priority = priorities[i * k * 2 + j * 2];
-                    let reverse_priority = priorities[i * k * 2 + j * 2 + 1];
 
-                    // Forward edge: i -> neighbor (neighbor is candidate for i)
-                    // Only write if i is in our block
-                    if i >= block_start && i < block_end {
-                        let offset = i * max_candidates;
+            // Read reverse edges from all source threads destined for this block
+            for src_thread in 0..n_threads {
+                if src_thread == thread_idx {
+                    continue; // Already handled in Phase 1
+                }
+                for &(dest_vertex, candidate, priority, is_new) in &reverse_buckets[src_thread][thread_idx] {
+                    let offset = dest_vertex * max_candidates;
+                    if is_new {
                         unsafe {
-                            let idx_slice = std::slice::from_raw_parts_mut(
-                                new_idx_ptr.add(offset), max_candidates);
-                            let pri_slice = std::slice::from_raw_parts_mut(
-                                new_pri_ptr.add(offset), max_candidates);
-                            let old_idx_slice = std::slice::from_raw_parts_mut(
-                                old_idx_ptr.add(offset), max_candidates);
-                            let old_pri_slice = std::slice::from_raw_parts_mut(
-                                old_pri_ptr.add(offset), max_candidates);
-                            
-                            if is_new {
-                                checked_heap_push_flat(pri_slice, idx_slice, priority, neighbor);
-                            } else {
-                                checked_heap_push_flat(old_pri_slice, old_idx_slice, priority, neighbor);
-                            }
+                            let pri = std::slice::from_raw_parts_mut(new_pri_ptr.add(offset), max_candidates);
+                            let idx = std::slice::from_raw_parts_mut(new_idx_ptr.add(offset), max_candidates);
+                            checked_heap_push_flat(pri, idx, priority, candidate);
                         }
-                    }
-
-                    // Reverse edge: neighbor -> i (i is candidate for neighbor)
-                    // Only write if neighbor is in our block
-                    if neighbor_idx >= block_start && neighbor_idx < block_end {
-                        let offset = neighbor_idx * max_candidates;
+                    } else {
                         unsafe {
-                            let idx_slice = std::slice::from_raw_parts_mut(
-                                new_idx_ptr.add(offset), max_candidates);
-                            let pri_slice = std::slice::from_raw_parts_mut(
-                                new_pri_ptr.add(offset), max_candidates);
-                            let old_idx_slice = std::slice::from_raw_parts_mut(
-                                old_idx_ptr.add(offset), max_candidates);
-                            let old_pri_slice = std::slice::from_raw_parts_mut(
-                                old_pri_ptr.add(offset), max_candidates);
-                            
-                            if is_new {
-                                checked_heap_push_flat(pri_slice, idx_slice, reverse_priority, i as i32);
-                            } else {
-                                checked_heap_push_flat(old_pri_slice, old_idx_slice, reverse_priority, i as i32);
-                            }
+                            let pri = std::slice::from_raw_parts_mut(old_pri_ptr.add(offset), max_candidates);
+                            let idx = std::slice::from_raw_parts_mut(old_idx_ptr.add(offset), max_candidates);
+                            checked_heap_push_flat(pri, idx, priority, candidate);
                         }
                     }
                 }
@@ -264,25 +311,63 @@ impl CandidateSets {
     fn mark_old_flags(graph: &mut NeighborHeap, new_indices: &[i32], max_candidates: usize) {
         let n_vertices = graph.n_points;
         let k = graph.k;
+        let n_threads = rayon::current_num_threads().max(1);
         
-        for i in 0..n_vertices {
-            let row_offset = i * k;
-            let new_offset = i * max_candidates;
-            
-            for j in 0..k {
-                let neighbor = graph.indices[row_offset + j];
-                if neighbor < 0 || graph.flags[row_offset + j] == 0 {
-                    continue;
-                }
+        if n_vertices < 256 || n_threads <= 1 {
+            // Sequential version
+            for i in 0..n_vertices {
+                let row_offset = i * k;
+                let new_offset = i * max_candidates;
                 
-                // Check if this neighbor appears in new_indices for vertex i
-                for nc_idx in 0..max_candidates {
-                    if new_indices[new_offset + nc_idx] == neighbor {
-                        graph.flags[row_offset + j] = 0;
-                        break;
+                for j in 0..k {
+                    let neighbor = graph.indices[row_offset + j];
+                    if neighbor < 0 || graph.flags[row_offset + j] == 0 {
+                        continue;
+                    }
+                    
+                    for nc_idx in 0..max_candidates {
+                        if new_indices[new_offset + nc_idx] == neighbor {
+                            graph.flags[row_offset + j] = 0;
+                            break;
+                        }
                     }
                 }
             }
+        } else {
+            // Parallel version - each thread handles a disjoint range of vertices
+            // SAFETY: Each thread writes to a disjoint range of flags (different rows).
+            // We use a usize wrapper to pass the pointer safely across threads.
+            let flags_base = graph.flags.as_mut_ptr() as usize;
+            let indices_ref = &graph.indices;
+            
+            (0..n_threads).into_par_iter().for_each(|t| {
+                let block_size = (n_vertices + n_threads - 1) / n_threads;
+                let start = t * block_size;
+                let end = ((t + 1) * block_size).min(n_vertices);
+                let flags_ptr = flags_base as *mut u8;
+                
+                for i in start..end {
+                    let row_offset = i * k;
+                    let new_offset = i * max_candidates;
+                    
+                    for j in 0..k {
+                        let neighbor = indices_ref[row_offset + j];
+                        if neighbor < 0 {
+                            continue;
+                        }
+                        if unsafe { *flags_ptr.add(row_offset + j) } == 0 {
+                            continue;
+                        }
+                        
+                        for nc_idx in 0..max_candidates {
+                            if new_indices[new_offset + nc_idx] == neighbor {
+                                unsafe { *flags_ptr.add(row_offset + j) = 0; }
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
         }
     }
 
@@ -298,7 +383,7 @@ impl CandidateSets {
 }
 
 /// Push to a bounded priority max-heap with duplicate checking (flat slice version).
-/// Uses unsafe for bounds-check elimination in hot paths.
+/// Uses the shift-down technique matching PyNNDescent's `checked_heap_push`.
 #[inline(always)]
 fn checked_heap_push_flat(
     priorities: &mut [f32],
@@ -315,27 +400,24 @@ fn checked_heap_push_flat(
     // Check for duplicate (linear scan - OK since max_size is small ~30-60)
     let n = priorities.len();
     for i in 0..n {
-        // SAFETY: i < n = priorities.len()
+        // SAFETY: i < n = indices.len()
         if unsafe { *indices.get_unchecked(i) } == index {
             return;
         }
     }
 
-    // Insert by replacing root
-    // SAFETY: indices 0..n are valid
+    // Insert at root and sift down using shift technique
     unsafe {
         *priorities.get_unchecked_mut(0) = priority;
         *indices.get_unchecked_mut(0) = index;
     }
     
-    // Sift down to maintain max-heap property
     let mut pos = 0usize;
     loop {
         let left = 2 * pos + 1;
         let right = 2 * pos + 2;
         let mut largest = pos;
 
-        // SAFETY: left/right/pos/largest are all < n when accessed
         unsafe {
             if left < n && *priorities.get_unchecked(left) > *priorities.get_unchecked(largest) {
                 largest = left;
@@ -346,8 +428,14 @@ fn checked_heap_push_flat(
         }
 
         if largest != pos {
-            priorities.swap(pos, largest);
-            indices.swap(pos, largest);
+            unsafe {
+                let child_pri = *priorities.get_unchecked(largest);
+                let child_idx = *indices.get_unchecked(largest);
+                *priorities.get_unchecked_mut(pos) = child_pri;
+                *indices.get_unchecked_mut(pos) = child_idx;
+                *priorities.get_unchecked_mut(largest) = priority;
+                *indices.get_unchecked_mut(largest) = index;
+            }
             pos = largest;
         } else {
             break;
