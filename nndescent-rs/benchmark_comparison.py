@@ -68,7 +68,42 @@ def load_fashion_mnist():
         return None
 
 
-def benchmark_pynndescent(data, n_neighbors, n_runs=3):
+def load_glove_100():
+    """Load GloVe-100-angular dataset from ann-benchmarks (1.2M vectors, 100d).
+
+    Downloads the HDF5 file on first use and caches it locally.
+    """
+    import hashlib
+
+    try:
+        import h5py
+    except ImportError:
+        print("h5py not installed. Install with: pip install h5py")
+        return None
+
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".data")
+    os.makedirs(cache_dir, exist_ok=True)
+    filepath = os.path.join(cache_dir, "glove-100-angular.hdf5")
+
+    if not os.path.exists(filepath):
+        url = "http://vectors.erikbern.com/glove-100-angular.hdf5"
+        print(f"Downloading GloVe-100-angular dataset from {url}...")
+        print("  (This is ~463MB, may take a few minutes)")
+        import urllib.request
+
+        urllib.request.urlretrieve(url, filepath)
+        print("  Download complete.")
+
+    print("Loading GloVe-100-angular dataset...")
+    with h5py.File(filepath, "r") as f:
+        # ann-benchmarks stores train data under 'train' key
+        data = np.array(f["train"], dtype=np.float32)
+    data = np.ascontiguousarray(data)
+    print(f"  Loaded {data.shape[0]} samples, {data.shape[1]} dimensions")
+    return data
+
+
+def benchmark_pynndescent(data, n_neighbors, n_runs=3, metric="euclidean"):
     """Benchmark the original PyNNDescent."""
     try:
         from pynndescent import NNDescent
@@ -78,13 +113,23 @@ def benchmark_pynndescent(data, n_neighbors, n_runs=3):
 
     # Warmup with same size data to trigger JIT compilation
     warmup_data = np.random.randn(*data.shape).astype(np.float32)
-    _ = NNDescent(warmup_data, n_neighbors=n_neighbors, verbose=False, low_memory=False)
+    _ = NNDescent(
+        warmup_data,
+        n_neighbors=n_neighbors,
+        metric=metric,
+        verbose=False,
+        low_memory=False,
+    )
 
     times = []
     for i in range(n_runs):
         start = time.perf_counter()
         index = NNDescent(
-            data, n_neighbors=n_neighbors, verbose=False, low_memory=False
+            data,
+            n_neighbors=n_neighbors,
+            metric=metric,
+            verbose=False,
+            low_memory=False,
         )
         # Force graph computation
         _ = index.neighbor_graph
@@ -94,7 +139,7 @@ def benchmark_pynndescent(data, n_neighbors, n_runs=3):
     return np.mean(times), np.std(times)
 
 
-def benchmark_pynndescent_rs(data, n_neighbors, n_runs=3):
+def benchmark_pynndescent_rs(data, n_neighbors, n_runs=3, metric="euclidean"):
     """Benchmark the Rust implementation."""
     try:
         from pynndescent_rs import NNDescent
@@ -105,7 +150,7 @@ def benchmark_pynndescent_rs(data, n_neighbors, n_runs=3):
     times = []
     for i in range(n_runs):
         start = time.perf_counter()
-        index = NNDescent(data, n_neighbors=n_neighbors, verbose=False)
+        index = NNDescent(data, n_neighbors=n_neighbors, metric=metric, verbose=False)
         # Force graph computation
         _ = index.neighbor_graph
         elapsed = time.perf_counter() - start
@@ -144,6 +189,13 @@ def warmup_jit():
         print("Warming up PyNNDescent JIT compilation...")
         warmup_data = np.random.randn(500, 50).astype(np.float32)
         _ = NNDescent(warmup_data, n_neighbors=10, verbose=False, low_memory=False)
+        _ = NNDescent(
+            warmup_data,
+            n_neighbors=10,
+            metric="cosine",
+            verbose=False,
+            low_memory=False,
+        )
         print("JIT warmup complete.")
     except ImportError:
         pass
@@ -238,35 +290,49 @@ def main():
 
     for ds in random_ds:
         data = generate_data(ds["n"], ds["dim"])
-        datasets.append({"name": ds["name"], "data": data})
+        datasets.append({"name": ds["name"], "data": data, "metric": "euclidean"})
 
     # Real-world datasets (only with --full)
     mnist_data = None
+    glove_data = None
     if args.full:
         mnist_data = load_mnist()
         if mnist_data is not None:
-            datasets.append({"name": "MNIST", "data": mnist_data})
+            datasets.append(
+                {"name": "MNIST", "data": mnist_data, "metric": "euclidean"}
+            )
 
         fmnist_data = load_fashion_mnist()
         if fmnist_data is not None:
-            datasets.append({"name": "Fashion-MNIST", "data": fmnist_data})
+            datasets.append(
+                {"name": "Fashion-MNIST", "data": fmnist_data, "metric": "euclidean"}
+            )
+
+        glove_data = load_glove_100()
+        if glove_data is not None:
+            datasets.append(
+                {"name": "GloVe-100", "data": glove_data, "metric": "cosine"}
+            )
 
     print()
-    print("-" * 70)
+    print("-" * 80)
     print(
-        f"{'Dataset':<15} {'N':>8} {'Dim':>6} {'PyNND (s)':>12} {'Rust (s)':>12} {'Speedup':>10}"
+        f"{'Dataset':<15} {'N':>8} {'Dim':>6} {'Metric':>8} {'PyNND (s)':>12} {'Rust (s)':>12} {'Speedup':>10}"
     )
-    print("-" * 70)
+    print("-" * 80)
 
     for dataset in datasets:
         name = dataset["name"]
         data = dataset["data"]
+        metric = dataset.get("metric", "euclidean")
         n = data.shape[0]
         dim = data.shape[1]
 
         # Benchmark PyNNDescent
         if py_available:
-            py_mean, py_std = benchmark_pynndescent(data, N_NEIGHBORS, n_runs)
+            py_mean, py_std = benchmark_pynndescent(
+                data, N_NEIGHBORS, n_runs, metric=metric
+            )
             py_str = f"{py_mean:.3f}±{py_std:.3f}" if py_mean else "N/A"
         else:
             py_mean, py_std = None, None
@@ -274,7 +340,9 @@ def main():
 
         # Benchmark Rust
         if rs_available:
-            rs_mean, rs_std = benchmark_pynndescent_rs(data, N_NEIGHBORS, n_runs)
+            rs_mean, rs_std = benchmark_pynndescent_rs(
+                data, N_NEIGHBORS, n_runs, metric=metric
+            )
             rs_str = f"{rs_mean:.3f}±{rs_std:.3f}" if rs_mean else "N/A"
         else:
             rs_mean, rs_std = None, None
@@ -287,9 +355,11 @@ def main():
         else:
             speedup_str = "N/A"
 
-        print(f"{name:<15} {n:>8} {dim:>6} {py_str:>12} {rs_str:>12} {speedup_str:>10}")
+        print(
+            f"{name:<15} {n:>8} {dim:>6} {metric:>8} {py_str:>12} {rs_str:>12} {speedup_str:>10}"
+        )
 
-    print("-" * 70)
+    print("-" * 80)
     print()
 
     # Quality comparison (recall)
@@ -324,6 +394,55 @@ def main():
 
             recall = compute_recall(py_indices, rs_indices)
             print(f"  Rust recall vs PyNNDescent: {recall:.4f}")
+
+        # Test on GloVe-100 if available
+        if glove_data is not None:
+            print()
+            print("GloVe-100 recall comparison (cosine):")
+            py_index = PyNND(
+                glove_data,
+                n_neighbors=N_NEIGHBORS,
+                metric="cosine",
+                verbose=False,
+                low_memory=False,
+            )
+            py_indices, _ = py_index.neighbor_graph
+
+            rs_index = RsNND(
+                glove_data, n_neighbors=N_NEIGHBORS, metric="cosine", verbose=False
+            )
+            rs_indices, _ = rs_index.neighbor_graph
+
+            recall = compute_recall(py_indices, rs_indices)
+            print(f"  Rust recall vs PyNNDescent: {recall:.4f}")
+
+            # Exact ground truth recall if available
+            gt_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                ".data",
+                "glove-100-exact-knn-k30.npz",
+            )
+            if os.path.exists(gt_path):
+                gt = np.load(gt_path)
+                gt_indices = gt["indices"]
+                print()
+                print("GloVe-100 exact recall (vs brute-force ground truth):")
+
+                def recall_vs_gt(test_indices, gt_indices, k):
+                    n = gt_indices.shape[0]
+                    correct = 0
+                    total = 0
+                    for i in range(n):
+                        gt_set = set(gt_indices[i, :k])
+                        test_set = set(test_indices[i, :k]) - {i}
+                        correct += len(gt_set & test_set)
+                        total += len(gt_set)
+                    return correct / total
+
+                rs_exact = recall_vs_gt(rs_indices, gt_indices, N_NEIGHBORS)
+                py_exact = recall_vs_gt(py_indices, gt_indices, N_NEIGHBORS)
+                print(f"  Rust exact recall@{N_NEIGHBORS}:  {rs_exact:.6f}")
+                print(f"  PyNND exact recall@{N_NEIGHBORS}: {py_exact:.6f}")
 
         print()
 

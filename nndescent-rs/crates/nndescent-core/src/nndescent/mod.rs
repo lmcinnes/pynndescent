@@ -205,11 +205,6 @@ fn initialize_from_leaves<D: Distance<f32> + Sync>(
     let n_points = graph.n_points;
     let n_leaves = leaves.len();
     
-    // Get current distance thresholds for filtering
-    let dist_thresholds: Vec<f32> = (0..n_points)
-        .map(|i| graph.max_distance(i))
-        .collect();
-    
     // Process in blocks - generate updates in parallel, apply in parallel by vertex block
     let n_threads = rayon::current_num_threads();
     let block_size = (n_threads * 64).max(128);
@@ -257,7 +252,7 @@ fn initialize_from_leaves<D: Distance<f32> + Sync>(
                             let d = distance.distance(point_p, point_q);
                             
                             // Filter by threshold (like PyNNDescent)
-                            let max_threshold = dist_thresholds[p_usize].max(dist_thresholds[q_usize]);
+                            let max_threshold = graph.max_distance(p_usize).max(graph.max_distance(q_usize));
                             if d < max_threshold {
                                 thread_updates.push((p, q, d));
                             }
@@ -359,10 +354,6 @@ fn update_iteration<D: Distance<f32> + Sync>(
         let block_len = block_end - block_start;
         let rows_per_thread = (block_len + n_threads - 1) / n_threads;
 
-        let thresholds: Vec<f32> = (0..n_points)
-            .map(|i| graph.max_distance(i))
-            .collect();
-
         // Clear all buckets
         for thread_buck in thread_buckets.iter_mut() {
             for bucket in thread_buck.iter_mut() {
@@ -392,7 +383,7 @@ fn update_iteration<D: Distance<f32> + Sync>(
                     }
                     let p_usize = p as usize;
                     let data_p = &data[p_usize * dim..(p_usize + 1) * dim];
-                    let thresh_p = thresholds[p_usize];
+                    let thresh_p = graph.max_distance(p_usize);
 
                     for k in (j + 1)..max_candidates {
                         let q = new_cands[k];
@@ -400,7 +391,7 @@ fn update_iteration<D: Distance<f32> + Sync>(
                             continue;
                         }
                         let q_usize = q as usize;
-                        let max_thresh = thresh_p.max(thresholds[q_usize]);
+                        let max_thresh = thresh_p.max(graph.max_distance(q_usize));
                         let d = distance.distance(data_p, &data[q_usize * dim..(q_usize + 1) * dim]);
 
                         if d <= max_thresh {
@@ -421,7 +412,7 @@ fn update_iteration<D: Distance<f32> + Sync>(
                             continue;
                         }
                         let q_usize = q as usize;
-                        let max_thresh = thresh_p.max(thresholds[q_usize]);
+                        let max_thresh = thresh_p.max(graph.max_distance(q_usize));
                         let d = distance.distance(data_p, &data[q_usize * dim..(q_usize + 1) * dim]);
 
                         if d <= max_thresh {
