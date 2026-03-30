@@ -156,6 +156,9 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % n_samples
+                if n_samples > 1:
+                    while idx == i:
+                        idx = np.abs(tau_rand_int(rng_state)) % n_samples
 
                 from_inds = inds[indptr[idx] : indptr[idx + 1]]
                 from_data = data[indptr[idx] : indptr[idx + 1]]

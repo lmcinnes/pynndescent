@@ -616,8 +616,8 @@ def generate_graph_update_array(
                 data_p = data[p]
                 dist_thresh_p = heap_distances[p, 0]
 
-                # Compare with other new candidates (start at j to match original behavior)
-                for k in range(j, max_new_candidates):
+                # Compare with other new candidates (start at j+1 to avoid self-loops)
+                for k in range(j + 1, max_new_candidates):
                     if idx >= max_updates:
                         break
 
@@ -642,7 +642,7 @@ def generate_graph_update_array(
                         break
 
                     q = old_candidate_block[i, k]
-                    if q < 0:
+                    if q < 0 or q == p:
                         continue
 
                     d = dist(data_p, data[q])
@@ -787,8 +787,8 @@ def sparse_generate_graph_update_array(
                 from_data = data[indptr[p] : indptr[p + 1]]
                 dist_thresh_p = heap_distances[p, 0]
 
-                # Compare with other new candidates (start at j to match original)
-                for k in range(j, max_new_candidates):
+                # Compare with other new candidates (start at j+1 to avoid self-loops)
+                for k in range(j + 1, max_new_candidates):
                     if idx >= max_updates:
                         break
 
@@ -815,7 +815,7 @@ def sparse_generate_graph_update_array(
                         break
 
                     q = old_candidate_block[i, k]
-                    if q < 0:
+                    if q < 0 or q == p:
                         continue
 
                     to_inds = inds[indptr[q] : indptr[q + 1]]

@@ -19,7 +19,7 @@ from pynndescent import NNDescent, PyNNDescentTransformer
 def test_nn_descent_neighbor_accuracy(nn_data, seed):
     knn_indices, _ = NNDescent(
         nn_data, "euclidean", {}, 10, random_state=np.random.RandomState(seed)
-    )._neighbor_graph
+    ).neighbor_graph
 
     tree = KDTree(nn_data)
     true_indices = tree.query(nn_data, 10, return_distance=False)
@@ -37,7 +37,7 @@ def test_nn_descent_neighbor_accuracy(nn_data, seed):
 def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
     knn_indices, _ = NNDescent(
         nn_data, "cosine", {}, 10, random_state=np.random.RandomState(seed)
-    )._neighbor_graph
+    ).neighbor_graph
 
     angular_data = normalize(nn_data, norm="l2")
     tree = KDTree(angular_data)
@@ -64,7 +64,7 @@ def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
 
     knn_indices, _ = NNDescent(
         bitpacked_data, "bit_jaccard", {}, 10, random_state=np.random.RandomState(seed)
-    )._neighbor_graph
+    ).neighbor_graph
 
     nn_finder = NearestNeighbors(n_neighbors=10, metric="jaccard").fit(unpacked_data)
     true_indices = nn_finder.kneighbors(unpacked_data, 10, return_distance=False)
@@ -92,7 +92,7 @@ def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
 def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "euclidean", n_neighbors=20, random_state=None
-    )._neighbor_graph
+    ).neighbor_graph
 
     tree = KDTree(sparse_nn_data.toarray())
     true_indices = tree.query(sparse_nn_data.toarray(), 10, return_distance=False)
@@ -114,7 +114,7 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
 def test_sparse_angular_nn_descent_neighbor_accuracy(sparse_nn_data):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "cosine", {}, 20, random_state=None
-    )._neighbor_graph
+    ).neighbor_graph
 
     angular_data = normalize(sparse_nn_data, norm="l2").toarray()
     tree = KDTree(angular_data)
@@ -261,7 +261,7 @@ def test_transformer_equivalence(nn_data):
 def test_random_state_none(nn_data, spatial_data):
     knn_indices, _ = NNDescent(
         nn_data, "euclidean", {}, 10, random_state=None
-    )._neighbor_graph
+    ).neighbor_graph
 
     tree = KDTree(nn_data)
     true_indices = tree.query(nn_data, 10, return_distance=False)
@@ -306,7 +306,7 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data(seed, cosine_han
         n_neighbors,
         random_state=np.random.RandomState(seed),
         n_trees=20,
-    )._neighbor_graph
+    ).neighbor_graph
 
     for i in range(cosine_hang_data.shape[0]):
         assert len(knn_indices[i]) == len(
@@ -328,7 +328,7 @@ def test_deduplicated_data_behaves_normally(seed, cosine_hang_data):
         n_neighbors,
         random_state=np.random.RandomState(seed),
         n_trees=20,
-    )._neighbor_graph
+    ).neighbor_graph
 
     for i in range(data.shape[0]):
         assert len(knn_indices[i]) == len(
@@ -361,7 +361,7 @@ def test_rp_trees_should_not_stack_overflow_with_near_duplicate_data(
         n_neighbors,
         random_state=np.random.RandomState(seed),
         n_trees=20,
-    )._neighbor_graph
+    ).neighbor_graph
 
     for i in range(cosine_near_duplicates_data.shape[0]):
         assert len(knn_indices[i]) == len(

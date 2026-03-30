@@ -196,6 +196,9 @@ def init_random(n_neighbors, data, heap, dist, rng_state):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+                if data.shape[0] > 1:
+                    while idx == i:
+                        idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], data[i])
                 checked_flagged_heap_push(
                     heap[1][i], heap[0][i], heap[2][i], d, idx, np.uint8(1)
@@ -2185,14 +2188,22 @@ class NNDescent:
             warn("Compressed indexes do not have neighbor graph information.")
             return None
         if self._distance_correction is not None:
-            result = (
-                self._neighbor_graph[0].copy(),
-                self._distance_correction(self._neighbor_graph[1]),
-            )
+            indices = self._neighbor_graph[0].copy()
+            distances = self._distance_correction(self._neighbor_graph[1])
         else:
-            result = (self._neighbor_graph[0].copy(), self._neighbor_graph[1].copy())
+            indices = self._neighbor_graph[0].copy()
+            distances = self._neighbor_graph[1].copy()
 
-        return result
+        # Re-insert self-loops at position 0 for backward compatibility.
+        # Internally, NN-descent now stores k real neighbors (no self-loops),
+        # but the public API has always returned self as the nearest neighbor.
+        # Shift all neighbors right by one (dropping the furthest) and insert self.
+        indices[:, 1:] = indices[:, :-1]
+        distances[:, 1:] = distances[:, :-1]
+        indices[:, 0] = np.arange(indices.shape[0], dtype=indices.dtype)
+        distances[:, 0] = 0.0
+
+        return (indices, distances)
 
     def compress_index(self):
         import gc
