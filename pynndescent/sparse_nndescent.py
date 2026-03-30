@@ -25,7 +25,7 @@ def generate_leaf_updates(
     updates,
     n_updates_per_thread,
     leaf_block,
-    dist_thresholds,
+    current_graph,
     inds,
     indptr,
     data,
@@ -33,6 +33,7 @@ def generate_leaf_updates(
     n_threads,
 ):
     """Generate leaf updates into pre-allocated arrays for parallel efficiency."""
+    heap_distances = current_graph[1]
     n_leaves = leaf_block.shape[0]
     leaves_per_thread = (n_leaves + n_threads - 1) // n_threads
 
@@ -64,7 +65,7 @@ def generate_leaf_updates(
                     to_data = data[indptr[q] : indptr[q + 1]]
                     d = dist(from_inds, from_data, to_inds, to_data)
 
-                    if d < dist_thresholds[p] or d < dist_thresholds[q]:
+                    if d < heap_distances[p, 0] or d < heap_distances[q, 0]:
                         if count < max_updates:
                             updates[t, count, 0] = np.float32(p)
                             updates[t, count, 1] = np.float32(q)
@@ -101,13 +102,12 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array, n_threads=
         block_end = min(n_leaves, (i + 1) * block_size)
 
         leaf_block = leaf_array[block_start:block_end]
-        dist_thresholds = current_graph[1][:, 0]
 
         generate_leaf_updates(
             updates,
             n_updates_per_thread,
             leaf_block,
-            dist_thresholds,
+            current_graph,
             inds,
             indptr,
             data,
@@ -196,14 +196,12 @@ def sparse_process_candidates(
         new_candidate_block = new_candidate_neighbors[block_start:block_end]
         old_candidate_block = old_candidate_neighbors[block_start:block_end]
 
-        dist_thresholds = current_graph[1][:, 0]
-
         sparse_generate_graph_update_array(
             update_array,
             n_updates_per_thread,
             new_candidate_block,
             old_candidate_block,
-            dist_thresholds,
+            current_graph,
             inds,
             indptr,
             data,

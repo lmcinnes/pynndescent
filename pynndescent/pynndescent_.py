@@ -73,11 +73,12 @@ def is_c_contiguous(array_like):
 
 @numba.njit(parallel=True, cache=False, fastmath=True)
 def generate_leaf_updates(
-    updates, n_updates_per_thread, leaf_block, dist_thresholds, data, dist, n_threads
+    updates, n_updates_per_thread, leaf_block, current_graph, data, dist, n_threads
 ):
     """Generate leaf updates into pre-allocated arrays for parallel efficiency."""
     n_leaves = leaf_block.shape[0]
     leaves_per_thread = (n_leaves // n_threads) + 1
+    heap_distances = current_graph[1]
 
     # Reset update counts
     for t in range(n_threads):
@@ -101,7 +102,7 @@ def generate_leaf_updates(
                         break
 
                     d = dist(data[p], data[q])
-                    max_threshold = max(dist_thresholds[p], dist_thresholds[q])
+                    max_threshold = max(heap_distances[p, 0], heap_distances[q, 0])
                     if d < max_threshold:
                         if count < max_updates:
                             updates[t, count, 0] = np.float32(p)
@@ -140,13 +141,12 @@ def init_rp_tree(data, dist, current_graph, leaf_array, n_threads=8):
         block_end = min(n_leaves, (i + 1) * block_size)
 
         leaf_block = leaf_array[block_start:block_end]
-        dist_thresholds = current_graph[1][:, 0]
 
         generate_leaf_updates(
             updates,
             n_updates_per_thread,
             leaf_block,
-            dist_thresholds,
+            current_graph,
             data,
             dist,
             n_threads,
@@ -244,14 +244,12 @@ def process_candidates(
         new_candidate_block = new_candidate_neighbors[block_start:block_end]
         old_candidate_block = old_candidate_neighbors[block_start:block_end]
 
-        dist_thresholds = current_graph[1][:, 0]
-
         generate_graph_update_array(
             update_array,
             n_updates_per_thread,
             new_candidate_block,
             old_candidate_block,
-            dist_thresholds,
+            current_graph,
             data,
             dist,
             n_threads,

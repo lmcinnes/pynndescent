@@ -338,7 +338,7 @@ def mark_visited(table, candidate):
 @numba.njit("b1(u1[::1],i4)", cache=True)
 def check_and_mark_visited(table, candidate):
     """Check if candidate was visited and mark it as visited in one operation.
-    
+
     Returns True if the candidate was already visited, False otherwise.
     More efficient than separate has_been_visited + mark_visited calls.
     """
@@ -552,7 +552,7 @@ def generate_graph_update_array(
     n_updates_per_thread,
     new_candidate_block,
     old_candidate_block,
-    dist_thresholds,
+    current_graph,
     data,
     dist,
     n_threads,
@@ -578,8 +578,8 @@ def generate_graph_update_array(
     old_candidate_block : ndarray of shape (block_size, max_candidates)
         Old candidate indices for this block.
 
-    dist_thresholds : ndarray of shape (n_vertices,)
-        Current distance thresholds (max heap distance) for each vertex.
+    current_graph : tuple of (indices, distances, flags)
+        The current graph heap. distances[:, 0] gives max heap distance per vertex.
 
     data : ndarray of shape (n_vertices, n_features)
         The data points.
@@ -590,6 +590,7 @@ def generate_graph_update_array(
     n_threads : int
         Number of threads to use.
     """
+    heap_distances = current_graph[1]
     block_size = new_candidate_block.shape[0]
     max_new_candidates = new_candidate_block.shape[1]
     max_old_candidates = old_candidate_block.shape[1]
@@ -613,7 +614,7 @@ def generate_graph_update_array(
                     continue
 
                 data_p = data[p]
-                dist_thresh_p = dist_thresholds[p]
+                dist_thresh_p = heap_distances[p, 0]
 
                 # Compare with other new candidates (start at j to match original behavior)
                 for k in range(j, max_new_candidates):
@@ -626,8 +627,7 @@ def generate_graph_update_array(
 
                     d = dist(data_p, data[q])
 
-                    # Use max for better branch prediction than OR condition
-                    dist_thresh_q = dist_thresholds[q]
+                    dist_thresh_q = heap_distances[q, 0]
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
 
                     if d <= max_threshold:
@@ -646,7 +646,7 @@ def generate_graph_update_array(
                         continue
 
                     d = dist(data_p, data[q])
-                    dist_thresh_q = dist_thresholds[q]
+                    dist_thresh_q = heap_distances[q, 0]
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
 
                     if d <= max_threshold:
@@ -752,7 +752,7 @@ def sparse_generate_graph_update_array(
     n_updates_per_thread,
     new_candidate_block,
     old_candidate_block,
-    dist_thresholds,
+    current_graph,
     inds,
     indptr,
     data,
@@ -760,6 +760,7 @@ def sparse_generate_graph_update_array(
     n_threads,
 ):
     """Generate graph updates for sparse data into a pre-allocated array."""
+    heap_distances = current_graph[1]
     block_size = new_candidate_block.shape[0]
     max_new_candidates = new_candidate_block.shape[1]
     max_old_candidates = old_candidate_block.shape[1]
@@ -784,7 +785,7 @@ def sparse_generate_graph_update_array(
 
                 from_inds = inds[indptr[p] : indptr[p + 1]]
                 from_data = data[indptr[p] : indptr[p + 1]]
-                dist_thresh_p = dist_thresholds[p]
+                dist_thresh_p = heap_distances[p, 0]
 
                 # Compare with other new candidates (start at j to match original)
                 for k in range(j, max_new_candidates):
@@ -799,7 +800,7 @@ def sparse_generate_graph_update_array(
                     to_data = data[indptr[q] : indptr[q + 1]]
                     d = dist(from_inds, from_data, to_inds, to_data)
 
-                    dist_thresh_q = dist_thresholds[q]
+                    dist_thresh_q = heap_distances[q, 0]
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
 
                     if d <= max_threshold:
@@ -821,7 +822,7 @@ def sparse_generate_graph_update_array(
                     to_data = data[indptr[q] : indptr[q + 1]]
                     d = dist(from_inds, from_data, to_inds, to_data)
 
-                    dist_thresh_q = dist_thresholds[q]
+                    dist_thresh_q = heap_distances[q, 0]
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
 
                     if d <= max_threshold:
