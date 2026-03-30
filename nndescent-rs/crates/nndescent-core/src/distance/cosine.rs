@@ -117,46 +117,6 @@ impl Distance<f32> for Cosine {
     }
 }
 
-/// Alternative cosine distance for pre-normalized vectors.
-///
-/// When vectors are known to be unit-length, we can skip the normalization
-/// step and just compute 1 - dot(a, b).
-///
-/// This is faster but only valid for normalized inputs!
-#[derive(Clone, Copy, Debug, Default)]
-pub struct AlternativeCosine;
-
-impl Distance<f32> for AlternativeCosine {
-    #[inline]
-    fn distance(&self, a: &[f32], b: &[f32]) -> f32 {
-        debug_assert_eq!(a.len(), b.len());
-
-        let mut dot = 0.0f32;
-
-        let chunks = a.len() / 4;
-        let remainder = a.len() % 4;
-
-        for i in 0..chunks {
-            let idx = i * 4;
-            dot += a[idx] * b[idx]
-                + a[idx + 1] * b[idx + 1]
-                + a[idx + 2] * b[idx + 2]
-                + a[idx + 3] * b[idx + 3];
-        }
-
-        let start = chunks * 4;
-        for i in 0..remainder {
-            dot += a[start + i] * b[start + i];
-        }
-
-        1.0 - dot
-    }
-
-    fn name(&self) -> &'static str {
-        "alternative_cosine"
-    }
-}
-
 /// Normalize a vector to unit length in-place.
 #[inline]
 pub fn normalize_inplace(v: &mut [f32]) {
@@ -214,17 +174,6 @@ mod tests {
         let b = vec![2.0, 4.0, 6.0];
         let d = Cosine.distance(&a, &b);
         assert!((d - 0.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_alternative_cosine_normalized() {
-        let a = normalize(&[1.0, 2.0, 3.0]);
-        let b = normalize(&[4.0, 5.0, 6.0]);
-
-        let d_cosine = Cosine.distance(&a, &b);
-        let d_alt = AlternativeCosine.distance(&a, &b);
-
-        assert!((d_cosine - d_alt).abs() < 1e-5);
     }
 
     #[test]
