@@ -7,6 +7,7 @@ use crate::nndescent::{nn_descent, NNDescentParams};
 use crate::rng::FastRng;
 use crate::search::greedy_search;
 use crate::tree::FlatTree;
+use rayon::prelude::*;
 
 /// The main NNDescent index for approximate nearest neighbor search.
 ///
@@ -64,48 +65,56 @@ impl<D: Distance<f32>> NNDescentIndex<D> {
         k: usize,
         epsilon: f32,
     ) -> (Vec<i32>, Vec<f32>) {
+        let results: Vec<(Vec<i32>, Vec<f32>)> = (0..n_queries)
+            .into_par_iter()
+            .map(|i| {
+                let query = &queries[i * self.dim..(i + 1) * self.dim];
+                let mut rng = FastRng::new(self.rng_seed.wrapping_add(i as u64));
+
+                let (mut indices, mut distances) = greedy_search(
+                    query,
+                    &self.data,
+                    self.dim,
+                    &self.search_graph,
+                    self.search_tree.as_ref(),
+                    &self.distance,
+                    k,
+                    epsilon,
+                    self.min_distance,
+                    &mut rng,
+                );
+
+                // Map back to original vertex order
+                for idx in &mut indices {
+                    if *idx >= 0 {
+                        *idx = self.vertex_order[*idx as usize] as i32;
+                    }
+                }
+
+                // Apply distance correction if needed
+                if let Some(correction) = self.distance_correction {
+                    for d in &mut distances {
+                        *d = correction(*d);
+                    }
+                }
+
+                // Pad to k if needed
+                while indices.len() < k {
+                    indices.push(-1);
+                    distances.push(f32::INFINITY);
+                }
+
+                indices.truncate(k);
+                distances.truncate(k);
+                (indices, distances)
+            })
+            .collect();
+
         let mut all_indices = Vec::with_capacity(n_queries * k);
         let mut all_distances = Vec::with_capacity(n_queries * k);
-
-        for i in 0..n_queries {
-            let query = &queries[i * self.dim..(i + 1) * self.dim];
-            let mut rng = FastRng::new(self.rng_seed.wrapping_add(i as u64));
-
-            let (mut indices, mut distances) = greedy_search(
-                query,
-                &self.data,
-                self.dim,
-                &self.search_graph,
-                self.search_tree.as_ref(),
-                &self.distance,
-                k,
-                epsilon,
-                self.min_distance,
-                &mut rng,
-            );
-
-            // Map back to original vertex order
-            for idx in &mut indices {
-                if *idx >= 0 {
-                    *idx = self.vertex_order[*idx as usize] as i32;
-                }
-            }
-
-            // Apply distance correction if needed
-            if let Some(correction) = self.distance_correction {
-                for d in &mut distances {
-                    *d = correction(*d);
-                }
-            }
-
-            // Pad to k if needed
-            while indices.len() < k {
-                indices.push(-1);
-                distances.push(f32::INFINITY);
-            }
-
-            all_indices.extend_from_slice(&indices[..k]);
-            all_distances.extend_from_slice(&distances[..k]);
+        for (indices, distances) in results {
+            all_indices.extend_from_slice(&indices);
+            all_distances.extend_from_slice(&distances);
         }
 
         (all_indices, all_distances)
@@ -132,6 +141,8 @@ pub struct NNDescentBuilder<'a> {
     delta: f32,
     random_seed: u64,
     verbose: bool,
+    diversify_prob: f32,
+    pruning_degree_multiplier: f32,
 }
 
 impl<'a> NNDescentBuilder<'a> {
@@ -155,6 +166,8 @@ impl<'a> NNDescentBuilder<'a> {
             delta: 0.001,
             random_seed: 42,
             verbose: false,
+            diversify_prob: 1.0,
+            pruning_degree_multiplier: 1.5,
         }
     }
 
@@ -220,6 +233,18 @@ impl<'a> NNDescentBuilder<'a> {
         self
     }
 
+    /// Set the diversify probability (0.0 = no diversification, 1.0 = full).
+    pub fn diversify_prob(mut self, prob: f32) -> Self {
+        self.diversify_prob = prob;
+        self
+    }
+
+    /// Set the pruning degree multiplier (max degree = multiplier * n_neighbors).
+    pub fn pruning_degree_multiplier(mut self, mult: f32) -> Self {
+        self.pruning_degree_multiplier = mult;
+        self
+    }
+
     /// Build the index with Euclidean distance.
     pub fn build_euclidean(self) -> NNDescentIndex<SquaredEuclidean> {
         self.build_with_distance(SquaredEuclidean, Some(|d: f32| d.sqrt()))
@@ -282,11 +307,17 @@ impl<'a> NNDescentBuilder<'a> {
         // (matches PyNNDescent's deheap_sort behavior)
         neighbor_heap.sort_all();
 
-        // Build search graph
-        let search_graph = SearchGraph::from_dense(
+        // Build search graph with diversification and pruning (matching PyNNDescent pipeline)
+        let search_graph = SearchGraph::from_dense_diversified(
             &neighbor_heap.indices,
+            &neighbor_heap.distances,
+            self.data,
             self.n_points,
             self.n_neighbors,
+            self.dim,
+            &distance,
+            self.diversify_prob,
+            self.pruning_degree_multiplier,
         );
 
         // Get min distance

@@ -1,5 +1,8 @@
 //! CSR (Compressed Sparse Row) search graph for efficient traversal.
 
+use crate::distance::Distance;
+use rand::Rng;
+
 /// Search graph in CSR format for efficient neighbor traversal.
 ///
 /// This format is memory-efficient and cache-friendly for graph search
@@ -43,6 +46,45 @@ impl SearchGraph {
                 }
             }
 
+            indptr.push(indices.len() as i32);
+        }
+
+        Self {
+            indptr,
+            indices,
+            n_vertices: n_points,
+        }
+    }
+
+    /// Build a bidirectional search graph from dense neighbor indices.
+    ///
+    /// For each edge (i -> j), also adds (j -> i). Duplicate edges are removed.
+    /// This matches PyNNDescent's approach of unioning forward + reverse graphs.
+    pub fn from_dense_bidirectional(neighbor_indices: &[i32], n_points: usize, k: usize) -> Self {
+        // First pass: count edges per vertex (forward + reverse)
+        let mut adj: Vec<Vec<i32>> = vec![Vec::new(); n_points];
+
+        for point in 0..n_points {
+            let start = point * k;
+            let end = start + k;
+            for &neighbor in &neighbor_indices[start..end] {
+                if neighbor >= 0 {
+                    let n = neighbor as usize;
+                    adj[point].push(neighbor);
+                    adj[n].push(point as i32);
+                }
+            }
+        }
+
+        // Sort and dedup each row, then build CSR
+        let mut indptr = Vec::with_capacity(n_points + 1);
+        let mut indices = Vec::new();
+        indptr.push(0);
+
+        for row in &mut adj {
+            row.sort_unstable();
+            row.dedup();
+            indices.extend_from_slice(row);
             indptr.push(indices.len() as i32);
         }
 
@@ -208,6 +250,255 @@ impl SearchGraph {
         self.indptr = new_indptr;
         self.indices = new_indices;
     }
+
+    /// Build a diversified + pruned search graph matching PyNNDescent's pipeline.
+    ///
+    /// Steps:
+    /// 1. Forward diversify: relative-neighborhood pruning on sorted k-NN
+    /// 2. Build forward CSR graph
+    /// 3. Reverse diversify: transpose, sort rows by distance, diversify
+    /// 4. Union: forward ∪ diversified_reverse
+    /// 5. Remove self-loops
+    /// 6. Degree prune: cap max vertex degree
+    pub fn from_dense_diversified<D: Distance<f32>>(
+        neighbor_indices: &[i32],
+        neighbor_distances: &[f32],
+        data: &[f32],
+        n_points: usize,
+        k: usize,
+        dim: usize,
+        dist: &D,
+        diversify_prob: f32,
+        pruning_degree_multiplier: f32,
+    ) -> Self {
+        use rayon::prelude::*;
+
+        let max_degree = (pruning_degree_multiplier * k as f32).round() as usize;
+
+        // Step 1: Forward diversify (parallel over points)
+        // Each point's neighbors are already sorted by ascending distance after sort_all().
+        let diversified: Vec<Vec<(i32, f32)>> = (0..n_points)
+            .into_par_iter()
+            .map(|i| {
+                let row_start = i * k;
+                let row_indices = &neighbor_indices[row_start..row_start + k];
+                let row_dists = &neighbor_distances[row_start..row_start + k];
+                diversify_row(row_indices, row_dists, data, dim, dist, diversify_prob)
+            })
+            .collect();
+
+        // Step 2: Build forward CSR graph (with distances for reverse diversification)
+        let mut fwd_indptr = Vec::with_capacity(n_points + 1);
+        let mut fwd_indices = Vec::new();
+        let mut fwd_data = Vec::new();
+        fwd_indptr.push(0i32);
+        for row in &diversified {
+            for &(idx, d) in row {
+                fwd_indices.push(idx);
+                fwd_data.push(d);
+            }
+            fwd_indptr.push(fwd_indices.len() as i32);
+        }
+
+        // Step 3: Transpose to get reverse graph, then diversify reverse edges
+        let (rev_indptr, rev_indices, rev_data) =
+            transpose_csr(&fwd_indptr, &fwd_indices, &fwd_data, n_points);
+
+        // Diversify reverse graph rows (parallel)
+        let rev_diversified: Vec<Vec<i32>> = (0..n_points)
+            .into_par_iter()
+            .map(|i| {
+                let start = rev_indptr[i] as usize;
+                let end = rev_indptr[i + 1] as usize;
+                if start == end {
+                    return Vec::new();
+                }
+                let row_indices = &rev_indices[start..end];
+                let row_data = &rev_data[start..end];
+
+                // Sort by distance for diversification
+                let mut order: Vec<usize> = (0..row_indices.len()).collect();
+                order.sort_unstable_by(|&a, &b| {
+                    row_data[a].partial_cmp(&row_data[b]).unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                diversify_sorted_csr(row_indices, row_data, &order, data, dim, dist, diversify_prob)
+            })
+            .collect();
+
+        // Step 4: Union forward + diversified reverse into final graph
+        // Build adjacency sets per vertex
+        let mut adj: Vec<Vec<i32>> = vec![Vec::new(); n_points];
+
+        // Add forward edges
+        for v in 0..n_points {
+            for &(idx, _) in &diversified[v] {
+                if idx >= 0 {
+                    adj[v].push(idx);
+                }
+            }
+        }
+
+        // Add diversified reverse edges
+        for v in 0..n_points {
+            adj[v].extend_from_slice(&rev_diversified[v]);
+        }
+
+        // Step 5 & 6: Sort, dedup, remove self-loops, degree prune, build CSR
+        let mut indptr = Vec::with_capacity(n_points + 1);
+        let mut indices = Vec::new();
+        indptr.push(0i32);
+
+        for (v, row) in adj.iter_mut().enumerate() {
+            row.sort_unstable();
+            row.dedup();
+            // Remove self-loop
+            row.retain(|&idx| idx != v as i32 && idx >= 0);
+            // Degree prune: keep only first max_degree
+            let keep = row.len().min(max_degree);
+            indices.extend_from_slice(&row[..keep]);
+            indptr.push(indices.len() as i32);
+        }
+
+        Self {
+            indptr,
+            indices,
+            n_vertices: n_points,
+        }
+    }
+}
+
+/// Diversify a single row of sorted neighbors (for forward diversification).
+///
+/// Implements relative-neighborhood graph pruning: a neighbor j is kept only
+/// if no previously-retained neighbor c is closer to j than the query is to j.
+fn diversify_row<D: Distance<f32>>(
+    row_indices: &[i32],
+    row_dists: &[f32],
+    data: &[f32],
+    dim: usize,
+    dist: &D,
+    prune_probability: f32,
+) -> Vec<(i32, f32)> {
+    let mut retained = Vec::new();
+
+    for pos in 0..row_indices.len() {
+        let j = row_indices[pos];
+        if j < 0 {
+            break;
+        }
+        let d_ij = row_dists[pos];
+
+        let mut keep = true;
+        for &(c, _d_ic) in &retained {
+            // Check if retained neighbor c is closer to j than i is to j
+            let c_start = (c as usize) * dim;
+            let j_start = (j as usize) * dim;
+            let d_cj = dist.distance(&data[c_start..c_start + dim], &data[j_start..j_start + dim]);
+            if _d_ic > f32::MIN_POSITIVE && d_cj < d_ij {
+                if prune_probability >= 1.0 || rand::thread_rng().gen::<f32>() < prune_probability {
+                    keep = false;
+                    break;
+                }
+            }
+        }
+
+        if keep {
+            retained.push((j, d_ij));
+        }
+    }
+
+    retained
+}
+
+/// Diversify a CSR row given a sorted order (for reverse graph diversification).
+///
+/// Returns the indices of retained neighbors.
+fn diversify_sorted_csr<D: Distance<f32>>(
+    row_indices: &[i32],
+    row_data: &[f32],
+    sorted_order: &[usize],
+    data: &[f32],
+    dim: usize,
+    dist: &D,
+    prune_probability: f32,
+) -> Vec<i32> {
+    let mut retained_indices = Vec::new();
+    let mut retained_data = Vec::new();
+
+    for &pos in sorted_order {
+        let j = row_indices[pos];
+        if j < 0 {
+            continue;
+        }
+        let d_ij = row_data[pos];
+
+        let mut keep = true;
+        for idx in 0..retained_indices.len() {
+            let c = retained_indices[idx];
+            let d_ic: f32 = retained_data[idx];
+            let c_start = (c as usize) * dim;
+            let j_start = (j as usize) * dim;
+            let d_cj = dist.distance(&data[c_start..c_start + dim], &data[j_start..j_start + dim]);
+            if d_ic > f32::MIN_POSITIVE && d_cj < d_ij {
+                if prune_probability >= 1.0 || rand::thread_rng().gen::<f32>() < prune_probability {
+                    keep = false;
+                    break;
+                }
+            }
+        }
+
+        if keep {
+            retained_indices.push(j);
+            retained_data.push(d_ij);
+        }
+    }
+
+    retained_indices
+}
+
+/// Transpose a CSR graph, producing a new CSR with distances.
+fn transpose_csr(
+    indptr: &[i32],
+    indices: &[i32],
+    data: &[f32],
+    n: usize,
+) -> (Vec<i32>, Vec<i32>, Vec<f32>) {
+    // Count incoming edges per vertex
+    let mut in_degree = vec![0i32; n];
+    for &neighbor in indices {
+        if neighbor >= 0 {
+            in_degree[neighbor as usize] += 1;
+        }
+    }
+
+    // Build transposed indptr
+    let mut t_indptr = Vec::with_capacity(n + 1);
+    t_indptr.push(0i32);
+    for &deg in &in_degree {
+        t_indptr.push(t_indptr.last().unwrap() + deg);
+    }
+
+    let total_edges = *t_indptr.last().unwrap() as usize;
+    let mut t_indices = vec![0i32; total_edges];
+    let mut t_data = vec![0.0f32; total_edges];
+    let mut current_pos: Vec<i32> = t_indptr[..n].to_vec();
+
+    for v in 0..(indptr.len() - 1) {
+        let start = indptr[v] as usize;
+        let end = indptr[v + 1] as usize;
+        for idx in start..end {
+            let neighbor = indices[idx];
+            if neighbor >= 0 {
+                let pos = current_pos[neighbor as usize] as usize;
+                t_indices[pos] = v as i32;
+                t_data[pos] = data[idx];
+                current_pos[neighbor as usize] += 1;
+            }
+        }
+    }
+
+    (t_indptr, t_indices, t_data)
 }
 
 #[cfg(test)]

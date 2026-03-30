@@ -73,7 +73,7 @@ enum IndexData {
 #[pymethods]
 impl PyNNDescent {
     #[new]
-    #[pyo3(signature = (data, metric="euclidean", n_neighbors=30, n_trees=None, leaf_size=None, max_candidates=None, n_iters=None, delta=0.001, random_state=None, verbose=false))]
+    #[pyo3(signature = (data, metric="euclidean", n_neighbors=30, n_trees=None, leaf_size=None, max_candidates=None, n_iters=None, delta=0.001, random_state=None, diversify_prob=1.0, pruning_degree_multiplier=1.5, verbose=false))]
     fn new(
         data: PyReadonlyArray2<f32>,
         metric: &str,
@@ -84,6 +84,8 @@ impl PyNNDescent {
         n_iters: Option<usize>,
         delta: f32,
         random_state: Option<u64>,
+        diversify_prob: f32,
+        pruning_degree_multiplier: f32,
         verbose: bool,
     ) -> PyResult<Self> {
         let shape = data.shape();
@@ -121,6 +123,8 @@ impl PyNNDescent {
             n_iters,
             delta,
             random_state.unwrap_or(42),
+            diversify_prob,
+            pruning_degree_multiplier,
             verbose,
         )?;
 
@@ -242,6 +246,8 @@ impl PyNNDescent {
         n_iters: Option<usize>,
         delta: f32,
         random_seed: u64,
+        diversify_prob: f32,
+        pruning_degree_multiplier: f32,
         verbose: bool,
     ) -> PyResult<IndexData> {
         // Compute default n_trees matching PyNNDescent: max(3, min(12, round(2*log10(n))))
@@ -256,6 +262,8 @@ impl PyNNDescent {
             .n_trees(effective_n_trees)
             .delta(delta)
             .random_seed(random_seed)
+            .diversify_prob(diversify_prob)
+            .pruning_degree_multiplier(pruning_degree_multiplier)
             .verbose(verbose);
 
         if let Some(ls) = leaf_size {
