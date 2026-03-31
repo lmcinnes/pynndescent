@@ -72,11 +72,12 @@ def is_c_contiguous(array_like):
 
 @numba.njit(parallel=True, cache=False, fastmath=True)
 def generate_leaf_updates(
-    updates, n_updates_per_thread, leaf_block, dist_thresholds, data, dist, n_threads
+    updates, n_updates_per_thread, leaf_block, current_graph, data, dist, n_threads
 ):
     """Generate leaf updates into pre-allocated arrays for parallel efficiency."""
     n_leaves = leaf_block.shape[0]
     leaves_per_thread = (n_leaves // n_threads) + 1
+    heap_distances = current_graph[1]
 
     # Reset update counts
     for t in range(n_threads):
@@ -100,7 +101,7 @@ def generate_leaf_updates(
                         break
 
                     d = dist(data[p], data[q])
-                    max_threshold = max(dist_thresholds[p], dist_thresholds[q])
+                    max_threshold = max(heap_distances[p, 0], heap_distances[q, 0])
                     if d < max_threshold:
                         if count < max_updates:
                             updates[t, count, 0] = np.float32(p)
@@ -139,13 +140,12 @@ def init_rp_tree(data, dist, current_graph, leaf_array, n_threads=8):
         block_end = min(n_leaves, (i + 1) * block_size)
 
         leaf_block = leaf_array[block_start:block_end]
-        dist_thresholds = current_graph[1][:, 0]
 
         generate_leaf_updates(
             updates,
             n_updates_per_thread,
             leaf_block,
-            dist_thresholds,
+            current_graph,
             data,
             dist,
             n_threads,
@@ -195,6 +195,9 @@ def init_random(n_neighbors, data, heap, dist, rng_state):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+                if data.shape[0] > 1:
+                    while idx == i:
+                        idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], data[i])
                 checked_flagged_heap_push(
                     heap[1][i], heap[0][i], heap[2][i], d, idx, np.uint8(1)
@@ -243,14 +246,12 @@ def process_candidates(
         new_candidate_block = new_candidate_neighbors[block_start:block_end]
         old_candidate_block = old_candidate_neighbors[block_start:block_end]
 
-        dist_thresholds = current_graph[1][:, 0]
-
         generate_graph_update_array(
             update_array,
             n_updates_per_thread,
             new_candidate_block,
             old_candidate_block,
-            dist_thresholds,
+            current_graph,
             data,
             dist,
             n_threads,
@@ -2126,14 +2127,22 @@ class NNDescent:
             warn("Compressed indexes do not have neighbor graph information.")
             return None
         if self._distance_correction is not None:
-            result = (
-                self._neighbor_graph[0].copy(),
-                self._distance_correction(self._neighbor_graph[1]),
-            )
+            indices = self._neighbor_graph[0].copy()
+            distances = self._distance_correction(self._neighbor_graph[1])
         else:
-            result = (self._neighbor_graph[0].copy(), self._neighbor_graph[1].copy())
+            indices = self._neighbor_graph[0].copy()
+            distances = self._neighbor_graph[1].copy()
 
-        return result
+        # Re-insert self-loops at position 0 for backward compatibility.
+        # Internally, NN-descent now stores k real neighbors (no self-loops),
+        # but the public API has always returned self as the nearest neighbor.
+        # Shift all neighbors right by one (dropping the furthest) and insert self.
+        indices[:, 1:] = indices[:, :-1]
+        distances[:, 1:] = distances[:, :-1]
+        indices[:, 0] = np.arange(indices.shape[0], dtype=indices.dtype)
+        distances[:, 0] = 0.0
+
+        return (indices, distances)
 
     def compress_index(self):
         import gc
