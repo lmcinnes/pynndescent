@@ -35,6 +35,14 @@ offset_type = numba.float64
 children_type = numba.typeof((np.int32(-1), np.int32(-1)))
 point_indices_type = numba.int32[::1]
 
+# List types for tree builder signatures
+dense_hyperplanes_list_type = numba.types.ListType(dense_hyperplane_type)
+sparse_hyperplanes_list_type = numba.types.ListType(sparse_hyperplane_type)
+bit_hyperplanes_list_type = numba.types.ListType(bit_hyperplane_type)
+offsets_list_type = numba.types.ListType(offset_type)
+children_list_type = numba.types.ListType(children_type)
+point_indices_list_type = numba.types.ListType(point_indices_type)
+
 popcnt = np.array([bin(i).count("1") for i in range(256)], dtype=np.float32)
 
 
@@ -687,9 +695,10 @@ FAST_SPLIT_THRESHOLD = 5000
 
 
 @numba.njit(
+    numba.types.int32(numba.types.Array(numba.types.int32, 1, "C"), numba.types.int32),
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def binary_search(sorted_arr, value):
     """Binary search returning index if found, -1 otherwise."""
@@ -707,9 +716,12 @@ def binary_search(sorted_arr, value):
 
 
 @numba.njit(
+    numba.types.Array(numba.types.int32, 1, "C")(
+        numba.types.Array(numba.types.int32, 2, "C")
+    ),
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def compute_global_degrees(neighbor_indices):
     """Compute global in-degree for all points in the graph.
@@ -740,9 +752,14 @@ def compute_global_degrees(neighbor_indices):
 
 
 @numba.njit(
+    numba.types.Array(numba.types.int32, 1, "C")(
+        numba.types.Array(numba.types.int32, 1, "C"),
+        numba.types.Array(numba.types.int32, 1, "C"),
+        numba.types.int64,
+    ),
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def get_top_k_hub_indices(indices, global_degrees, k=5):
     """Get the indices of the top k highest-degree points from a subset.
@@ -799,9 +816,24 @@ MIN_SPLIT_BALANCE = 0.1
 
 
 @numba.njit(
+    numba.types.Tuple(
+        (
+            numba.int32[::1],
+            numba.int32[::1],
+            numba.float32[::1],
+            numba.float32,
+            numba.float32,
+        )
+    )(
+        numba.float32[:, ::1],
+        numba.int32[::1],
+        numba.int32[:, ::1],
+        numba.int32[::1],
+        numba.int64[::1],
+    ),
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def euclidean_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
     """Hub-based graph-informed split using balance-based selection.
@@ -928,9 +960,24 @@ def euclidean_hub_split(data, indices, neighbor_indices, global_degrees, rng_sta
 
 
 @numba.njit(
+    numba.types.Tuple(
+        (
+            numba.int32[::1],
+            numba.int32[::1],
+            numba.float32[::1],
+            numba.float32,
+            numba.float32,
+        )
+    )(
+        numba.float32[:, ::1],
+        numba.int32[::1],
+        numba.int32[:, ::1],
+        numba.int32[::1],
+        numba.int64[::1],
+    ),
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def angular_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
     """Angular hub-based split using balance-based selection.
@@ -1052,8 +1099,21 @@ def angular_hub_split(data, indices, neighbor_indices, global_degrees, rng_state
 
 
 @numba.njit(
+    numba.types.void(
+        numba.float32[:, ::1],
+        numba.int32[::1],
+        numba.int32[:, ::1],
+        numba.int32[::1],
+        dense_hyperplanes_list_type,
+        offsets_list_type,
+        children_list_type,
+        point_indices_list_type,
+        numba.int64[::1],
+        numba.int64,
+        numba.int64,
+    ),
     nogil=True,
-    cache=False,
+    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_hub_euclidean_tree(
@@ -1141,8 +1201,21 @@ def make_hub_euclidean_tree(
 
 
 @numba.njit(
+    numba.types.void(
+        numba.float32[:, ::1],
+        numba.int32[::1],
+        numba.int32[:, ::1],
+        numba.int32[::1],
+        dense_hyperplanes_list_type,
+        offsets_list_type,
+        children_list_type,
+        point_indices_list_type,
+        numba.int64[::1],
+        numba.int64,
+        numba.int64,
+    ),
     nogil=True,
-    cache=False,
+    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_hub_angular_tree(
@@ -1229,7 +1302,7 @@ def make_hub_angular_tree(
     return
 
 
-@numba.njit(nogil=True, cache=False)
+@numba.njit(nogil=True, cache=True)
 def make_hub_tree(
     data,
     neighbor_indices,
@@ -1320,7 +1393,7 @@ def make_hub_tree(
 @numba.njit(
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def sparse_euclidean_hub_split(
     inds, indptr, spdata, indices, neighbor_indices, global_degrees, rng_state
@@ -1468,7 +1541,7 @@ def sparse_euclidean_hub_split(
 @numba.njit(
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def sparse_angular_hub_split(
     inds, indptr, spdata, indices, neighbor_indices, global_degrees, rng_state
@@ -1617,7 +1690,7 @@ def sparse_angular_hub_split(
 
 @numba.njit(
     nogil=True,
-    cache=False,
+    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_sparse_hub_euclidean_tree(
@@ -1697,7 +1770,7 @@ def make_sparse_hub_euclidean_tree(
 
 @numba.njit(
     nogil=True,
-    cache=False,
+    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_sparse_hub_angular_tree(
@@ -1775,7 +1848,7 @@ def make_sparse_hub_angular_tree(
     return
 
 
-@numba.njit(nogil=True, cache=False)
+@numba.njit(nogil=True, cache=True)
 def make_sparse_hub_tree(
     inds,
     indptr,
@@ -1872,9 +1945,15 @@ def make_sparse_hub_tree(
 
 
 @numba.njit(
+    numba.types.Array(numba.types.int32, 1, "C")(
+        numba.types.Array(numba.types.int32, 1, "C"),
+        numba.types.Array(numba.types.uint8, 2, "C"),
+        numba.types.Array(numba.types.int32, 1, "C"),
+        numba.types.int64,
+    ),
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def get_top_k_hub_indices_bit(indices, data, global_degrees, k=3):
     """Get the indices of the top k highest-degree points for bit data.
@@ -1907,9 +1986,23 @@ def get_top_k_hub_indices_bit(indices, data, global_degrees, k=3):
 
 
 @numba.njit(
+    numba.types.Tuple(
+        (
+            numba.int32[::1],
+            numba.int32[::1],
+            numba.uint8[::1],
+            numba.float32,
+        )
+    )(
+        numba.uint8[:, ::1],
+        numba.int32[::1],
+        numba.int32[:, ::1],
+        numba.int32[::1],
+        numba.int64[::1],
+    ),
     fastmath=True,
     nogil=True,
-    cache=False,
+    cache=True,
 )
 def bit_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
     """Simplified hub-based split for bit-packed data.
@@ -2036,8 +2129,21 @@ def bit_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
 
 
 @numba.njit(
+    numba.types.void(
+        numba.uint8[:, ::1],
+        numba.int32[::1],
+        numba.int32[:, ::1],
+        numba.int32[::1],
+        bit_hyperplanes_list_type,
+        offsets_list_type,
+        children_list_type,
+        point_indices_list_type,
+        numba.int64[::1],
+        numba.int64,
+        numba.int64,
+    ),
     nogil=True,
-    cache=False,
+    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_bit_hub_tree_recursive(
@@ -2107,7 +2213,7 @@ def make_bit_hub_tree_recursive(
     return
 
 
-@numba.njit(nogil=True, cache=False)
+@numba.njit(nogil=True, cache=True)
 def make_bit_hub_tree(
     data,
     neighbor_indices,
@@ -2171,7 +2277,19 @@ def make_bit_hub_tree(
 
 
 @numba.njit(
+    numba.types.void(
+        numba.float32[:, ::1],
+        numba.int32[::1],
+        dense_hyperplanes_list_type,
+        offsets_list_type,
+        children_list_type,
+        point_indices_list_type,
+        numba.int64[::1],
+        numba.int64,
+        numba.int64,
+    ),
     nogil=True,
+    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_euclidean_tree(
@@ -2235,12 +2353,20 @@ def make_euclidean_tree(
 
 
 @numba.njit(
+    numba.types.void(
+        numba.float32[:, ::1],
+        numba.int32[::1],
+        dense_hyperplanes_list_type,
+        offsets_list_type,
+        children_list_type,
+        point_indices_list_type,
+        numba.int64[::1],
+        numba.int64,
+        numba.int64,
+    ),
     nogil=True,
-    locals={
-        "children": numba.types.ListType(children_type),
-        "left_node_num": numba.types.int32,
-        "right_node_num": numba.types.int32,
-    },
+    cache=True,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_angular_tree(
     data,
@@ -2303,12 +2429,20 @@ def make_angular_tree(
 
 
 @numba.njit(
+    numba.types.void(
+        numba.uint8[:, ::1],
+        numba.int32[::1],
+        bit_hyperplanes_list_type,
+        offsets_list_type,
+        children_list_type,
+        point_indices_list_type,
+        numba.int64[::1],
+        numba.int64,
+        numba.int64,
+    ),
     nogil=True,
-    locals={
-        "children": numba.types.ListType(children_type),
-        "left_node_num": numba.types.int32,
-        "right_node_num": numba.types.int32,
-    },
+    cache=True,
+    locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_bit_tree(
     data,
@@ -2372,6 +2506,7 @@ def make_bit_tree(
 
 @numba.njit(
     nogil=True,
+    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_sparse_euclidean_tree(
@@ -2444,6 +2579,7 @@ def make_sparse_euclidean_tree(
 
 @numba.njit(
     nogil=True,
+    cache=True,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_sparse_angular_tree(
@@ -2512,7 +2648,7 @@ def make_sparse_angular_tree(
         point_indices.append(indices)
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_dense_tree(data, rng_state, leaf_size=30, angular=False, max_depth=200):
     indices = np.arange(data.shape[0]).astype(np.int32)
     hyperplanes = numba.typed.List.empty_list(dense_hyperplane_type)
@@ -2554,7 +2690,7 @@ def make_dense_tree(data, rng_state, leaf_size=30, angular=False, max_depth=200)
     return result
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_sparse_tree(
     inds,
     indptr,
@@ -2608,7 +2744,7 @@ def make_sparse_tree(
     return FlatTree(hyperplanes, offsets, children, point_indices, max_leaf_size)
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def make_dense_bit_tree(data, rng_state, leaf_size=30, angular=False, max_depth=200):
     indices = np.arange(data.shape[0]).astype(np.int32)
 
@@ -2888,7 +3024,7 @@ def make_forest(
     return tuple(result)
 
 
-@numba.njit(nogil=True)
+@numba.njit(nogil=True, cache=True)
 def get_leaves_from_tree(tree, max_leaf_size):
     n_leaves = 0
     for i in range(len(tree.children)):
@@ -3088,7 +3224,7 @@ def renumbaify_tree(tree):
         "result": numba.float32,
         "i": numba.uint32,
     },
-    cache=False,
+    cache=True,
 )
 def score_tree(tree, neighbor_indices, data, rng_state):
     result = 0.0
@@ -3109,7 +3245,7 @@ def score_tree(tree, neighbor_indices, data, rng_state):
 @numba.njit(
     nogil=True,
     locals={"node": numba.int32, "count": numba.int32},
-    cache=False,
+    cache=True,
 )
 def score_linked_tree(tree, neighbor_indices):
     """Score a tree by measuring how well leaves contain nearest neighbors.

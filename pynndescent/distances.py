@@ -75,6 +75,7 @@ def euclidean(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def squared_euclidean(x, y):
     r"""Squared euclidean distance.
@@ -299,6 +300,7 @@ def jaccard(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_jaccard(x, y):
     r"""Alternative Jaccard distance using log transform.
@@ -596,6 +598,7 @@ def cosine(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_cosine(x, y):
     r"""Alternative cosine distance using log transform.
@@ -631,13 +634,20 @@ def alternative_cosine(x, y):
 
 
 @numba.njit(
-    "f4(f4[::1],f4[::1])",
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def dot(x, y):
     r"""Dot product distance for normalized vectors.
@@ -676,6 +686,7 @@ def dot(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_dot(x, y):
     r"""Alternative dot product distance using log transform.
@@ -712,13 +723,20 @@ def correct_alternative_cosine(d):
 
 
 @numba.njit(
-    "f4(f4[::1],f4[::1])",
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def inner_product(x, y):
     r"""Inner product distance (negative inner product).
@@ -755,6 +773,7 @@ def inner_product(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_inner_product(x, y):
     r"""Alternative inner product distance using reciprocal transform.
@@ -806,6 +825,7 @@ def alternative_inner_product(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_inner_product(x, y):
     r"""A proxy for inner product distance (negative inner product).
@@ -871,6 +891,7 @@ def correct_alternative_inner_product(d):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_wasserstein_1d(x, y):
     r"""A proxy for 1D Wasserstein distance.
@@ -933,6 +954,7 @@ def proxy_wasserstein_1d(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_kantorovich(x, y):
     r"""A proxy for Kantorovich (Earth Mover's) distance.
@@ -992,6 +1014,7 @@ def proxy_kantorovich(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_circular_kantorovich(x, y):
     r"""A proxy for circular Kantorovich distance.
@@ -1055,6 +1078,7 @@ def proxy_circular_kantorovich(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_jensen_shannon(x, y):
     r"""A proxy for Jensen-Shannon divergence.
@@ -1113,6 +1137,7 @@ def proxy_jensen_shannon(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_symmetric_kl(x, y):
     r"""A proxy for symmetric KL divergence.
@@ -1170,6 +1195,7 @@ def proxy_symmetric_kl(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_sinkhorn(x, y):
     r"""A proxy for Sinkhorn (entropy-regularized optimal transport) distance.
@@ -1336,6 +1362,7 @@ def correlation(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def hellinger(x, y):
     r"""Hellinger distance.
@@ -1383,6 +1410,7 @@ def hellinger(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_hellinger(x, y):
     r"""Alternative Hellinger distance using log transform.
@@ -1724,7 +1752,7 @@ def circular_kantorovich(x, y, p=1):
         raise ValueError("Invalid p supplied to Kantorvich distance")
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def symmetric_kl_divergence(x, y):
     r"""Symmetric Kullback-Leibler divergence.
 
@@ -1776,6 +1804,7 @@ def symmetric_kl_divergence(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def bit_hamming(x, y):
     r"""Hamming distance for bit-packed binary vectors.
@@ -1818,6 +1847,7 @@ def bit_hamming(x, y):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def bit_jaccard(x, y):
     r"""Jaccard distance for bit-packed binary vectors.
@@ -1865,6 +1895,7 @@ def bit_jaccard(x, y):
         "i": numba.types.uint16,
         "y_i": numba.types.float32,
     },
+    cache=True,
 )
 def quantized_uint8_sq_euclidean(x, y, quantized_values):
     r"""Squared Euclidean distance between a float vector ``x`` and
@@ -1901,6 +1932,7 @@ def quantized_uint8_sq_euclidean(x, y, quantized_values):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint8_alternative_cosine(x, y, quantized_values):
     r"""Alternative cosine distance between a float vector ``x`` and
@@ -1944,6 +1976,7 @@ def quantized_uint8_alternative_cosine(x, y, quantized_values):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint8_alternative_dot(x, y, quantized_values):
     r"""Alternative dot product distance between a float vector ``x`` and
@@ -1982,6 +2015,7 @@ def quantized_uint8_alternative_dot(x, y, quantized_values):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint4_sq_euclidean(x, y, quantized_values):
     r"""Squared Euclidean distance between a float vector ``x`` and
@@ -2021,6 +2055,7 @@ def quantized_uint4_sq_euclidean(x, y, quantized_values):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint4_alternative_cosine(x, y, quantized_values):
     r"""Alternative cosine distance between a float vector ``x`` and
@@ -2072,6 +2107,7 @@ def quantized_uint4_alternative_cosine(x, y, quantized_values):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint4_alternative_dot(x, y, quantized_values):
     r"""Alternative dot product distance between a float vector ``x`` and
