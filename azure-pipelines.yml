@@ -84,23 +84,18 @@ stages:
           displayName: 'Upgrade pip'
 
         - script: |
-            pip install -r requirements.txt
-          displayName: 'Install dependencies'
+            python -m pip install -U uv
+            uv sync --group cicd
+          displayName: 'Install package and dependencies'
           condition: ${{ eq(parameters.includeReleaseCandidates, false) }}
 
-        - script: |
-            pip install --pre -r requirements.txt
-          displayName: 'Install dependencies (allow pre-releases)'
-          condition: ${{ eq(parameters.includeReleaseCandidates, true) }}
+        # - script: |
+        #     pip install --pre -r requirements.txt
+        #   displayName: 'Install dependencies (allow pre-releases)'
+        #   condition: ${{ eq(parameters.includeReleaseCandidates, true) }}
 
         - script: |
-            pip install -e .
-            pip install pytest  pytest-azurepipelines
-            pip install pytest-cov
-          displayName: 'Install package'
-
-        - script: |
-            pytest pynndescent/tests --show-capture=no -v --disable-warnings --junitxml=junit/test-results.xml --cov=pynndescent/ --cov-report=xml --cov-report=html
+            uv run pytest pynndescent/tests --show-capture=no -v --disable-warnings --junitxml=junit/test-results.xml --cov=pynndescent/ --cov-report=xml --cov-report=html
           displayName: 'Run tests'
 
         - task: PublishTestResults@2
@@ -125,21 +120,17 @@ stages:
 
         - script: |
             python -m pip install --upgrade pip
-            pip install wheel
-            pip install -r requirements.txt
+            python -m pip install -U uv
+            uv sync
           displayName: 'Install dependencies'
 
-        - script: |
-            pip install -e .
-          displayName: 'Install package locally'
         
         - script: |
-            pip install build
-            python -m build --wheel --sdist --outdir dist/ .
+            uv build --no-sources --sdist --wheel
           displayName: 'Build package'
 
         - bash: |
-            export PACKAGE_VERSION="$(python setup.py --version)"
+            export PACKAGE_VERSION="$(uv version --short)"
             echo "Package Version: ${PACKAGE_VERSION}"
             echo "##vso[task.setvariable variable=packageVersionFormatted;]release-${PACKAGE_VERSION}"
           displayName: 'Get package version'
@@ -157,8 +148,8 @@ stages:
             secureFile: 'pypirc'  
 
         - script: |
-            pip install twine
-            twine upload --repository pypi --config-file $(PYPIRC_CONFIG.secureFilePath) dist/* 
+            uvx twine check dist/*
+            uvx twine upload --repository pypi --config-file $(PYPIRC_CONFIG.secureFilePath) dist/*
           displayName: 'Upload to PyPI'
           condition: and(succeeded(), eq(variables['Build.SourceBranchName'], variables['packageVersionFormatted']))
 
