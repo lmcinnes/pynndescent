@@ -66,7 +66,12 @@ def test_spatial_check(spatial_data, metric):
     ],
 )
 def test_binary_check(binary_data, metric):
-    dist_matrix = pairwise_distances(binary_data, metric=metric)
+    # In never versions of scipy sokalmichener was deprecated for rogerstanimoto
+    # They should be the same in scipy's implementation
+    if metric == 'sokalmichener':
+        dist_matrix = pairwise_distances(binary_data, metric='rogerstanimoto')
+    else:
+        dist_matrix = pairwise_distances(binary_data, metric=metric)
     if metric in ("jaccard", "dice", "sokalsneath", "yule"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
     if metric == "russellrao":
@@ -172,9 +177,14 @@ def test_sparse_spatial_check(sparse_spatial_data, metric, decimal=6):
 )
 def test_sparse_binary_check(sparse_binary_data, metric):
     if metric in spdist.sparse_named_distances:
-        dist_matrix = pairwise_distances(
-            np.asarray(sparse_binary_data.todense()), metric=metric
-        )
+        if metric == "sokalmichener":
+            dist_matrix = pairwise_distances(
+                np.asarray(sparse_binary_data.todense()), metric="rogerstanimoto"
+            )        
+        else:
+            dist_matrix = pairwise_distances(
+                np.asarray(sparse_binary_data.todense()), metric=metric
+            )
     if metric in ("jaccard", "dice", "sokalsneath"):
         dist_matrix[np.where(~np.isfinite(dist_matrix))] = 0.0
     if metric == "russellrao":
@@ -182,6 +192,7 @@ def test_sparse_binary_check(sparse_binary_data, metric):
         # And because distance between all zero vectors should be zero
         dist_matrix[10, 11] = 0.0
         dist_matrix[11, 10] = 0.0
+    
 
     dist_function = spdist.sparse_named_distances[metric]
     if metric in spdist.sparse_need_n_features:
