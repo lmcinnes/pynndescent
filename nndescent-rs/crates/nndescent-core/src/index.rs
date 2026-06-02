@@ -266,7 +266,15 @@ impl<'a> NNDescentBuilder<'a> {
         distance: D,
         correction: Option<fn(f32) -> f32>,
     ) -> NNDescentIndex<D> {
-        let angular = matches!(self.metric, Metric::Cosine | Metric::InnerProduct);
+        let angular = matches!(
+            self.metric,
+            Metric::Cosine
+                | Metric::InnerProduct
+                | Metric::Dot
+                | Metric::Correlation
+                | Metric::TrueAngular
+                | Metric::TSSS
+        );
 
         // Compute default parameters based on data size
         let leaf_size = self.leaf_size.unwrap_or_else(|| {

@@ -6,8 +6,8 @@ use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2, PyUntypedArray
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use nndescent_core::index::NNDescentBuilder;
-use nndescent_core::distance::{Distance, Metric, SquaredEuclidean, Cosine, InnerProduct};
+use nndescent_core::index::{NNDescentBuilder, NNDescentIndex};
+use nndescent_core::distance::*;
 
 /// NNDescent index for approximate nearest neighbor search.
 ///
@@ -60,14 +60,26 @@ pub struct PyNNDescent {
     /// Index parameters
     n_neighbors: usize,
     /// The internal index (type-erased)
-    index_data: IndexData,
+    index_data: Box<dyn AnyIndex>,
 }
 
-/// Type-erased index storage
-enum IndexData {
-    Euclidean(nndescent_core::index::NNDescentIndex<SquaredEuclidean>),
-    Cosine(nndescent_core::index::NNDescentIndex<Cosine>),
-    InnerProduct(nndescent_core::index::NNDescentIndex<InnerProduct>),
+/// Trait for type-erased index operations.
+trait AnyIndex: Send + Sync {
+    fn query(&self, queries: &[f32], n_queries: usize, k: usize, epsilon: f32) -> (Vec<i32>, Vec<f32>);
+    fn neighbor_indices(&self) -> &[i32];
+    fn neighbor_distances(&self) -> &[f32];
+}
+
+impl<D: Distance<f32> + Send + Sync> AnyIndex for NNDescentIndex<D> {
+    fn query(&self, queries: &[f32], n_queries: usize, k: usize, epsilon: f32) -> (Vec<i32>, Vec<f32>) {
+        NNDescentIndex::query(self, queries, n_queries, k, epsilon)
+    }
+    fn neighbor_indices(&self) -> &[i32] {
+        &self.neighbor_indices
+    }
+    fn neighbor_distances(&self) -> &[f32] {
+        &self.neighbor_distances
+    }
 }
 
 #[pymethods]
@@ -187,11 +199,7 @@ impl PyNNDescent {
             vec
         };
 
-        let (indices, distances) = match &self.index_data {
-            IndexData::Euclidean(idx) => idx.query(&query_vec, n_queries, k, epsilon),
-            IndexData::Cosine(idx) => idx.query(&query_vec, n_queries, k, epsilon),
-            IndexData::InnerProduct(idx) => idx.query(&query_vec, n_queries, k, epsilon),
-        };
+        let (indices, distances) = self.index_data.query(&query_vec, n_queries, k, epsilon);
 
         // Create 2D arrays directly
         let indices_arr = PyArray1::from_vec_bound(py, indices);
@@ -217,11 +225,8 @@ impl PyNNDescent {
         py: Python<'py>,
     ) -> PyResult<(Bound<'py, PyArray2<i32>>, Bound<'py, PyArray2<f32>>)> {
         // Return the stored neighbor graph (no re-query needed)
-        let (indices, distances) = match &self.index_data {
-            IndexData::Euclidean(idx) => (idx.neighbor_indices.clone(), idx.neighbor_distances.clone()),
-            IndexData::Cosine(idx) => (idx.neighbor_indices.clone(), idx.neighbor_distances.clone()),
-            IndexData::InnerProduct(idx) => (idx.neighbor_indices.clone(), idx.neighbor_distances.clone()),
-        };
+        let indices = self.index_data.neighbor_indices().to_vec();
+        let distances = self.index_data.neighbor_distances().to_vec();
 
         let indices_arr = PyArray1::from_vec_bound(py, indices);
         let distances_arr = PyArray1::from_vec_bound(py, distances);
@@ -249,7 +254,7 @@ impl PyNNDescent {
         diversify_prob: f32,
         pruning_degree_multiplier: f32,
         verbose: bool,
-    ) -> PyResult<IndexData> {
+    ) -> PyResult<Box<dyn AnyIndex>> {
         // Compute default n_trees matching PyNNDescent: max(3, min(12, round(2*log10(n))))
         let effective_n_trees = n_trees.unwrap_or_else(|| {
             let log_val = 2.0 * (n_points as f64).log10();
@@ -276,16 +281,45 @@ impl PyNNDescent {
             builder = builder.n_iters(ni);
         }
 
-        let index_data = match metric {
-            Metric::Euclidean | Metric::SquaredEuclidean | Metric::L2 => {
-                IndexData::Euclidean(builder.build_euclidean())
-            }
-            Metric::Cosine => {
-                IndexData::Cosine(builder.build_cosine())
-            }
-            Metric::InnerProduct | Metric::Dot => {
-                IndexData::InnerProduct(builder.build_inner_product())
-            }
+        // Dispatch to the correct concrete distance type for each metric.
+        // Metrics with fast alternatives use proxy distances + correction.
+        // Others use the direct distance function.
+        macro_rules! build {
+            ($dist:expr, $corr:expr) => {
+                Box::new(builder.build_with_distance($dist, $corr)) as Box<dyn AnyIndex>
+            };
+        }
+
+        let index_data: Box<dyn AnyIndex> = match metric {
+            // Minkowski family
+            Metric::Euclidean | Metric::L2 => build!(SquaredEuclidean, Some(|d: f32| d.sqrt())),
+            Metric::SquaredEuclidean => build!(SquaredEuclidean, None),
+            Metric::Manhattan => build!(Manhattan, None),
+            Metric::Chebyshev => build!(Chebyshev, None),
+            Metric::Canberra => build!(Canberra, None),
+            Metric::BrayCurtis => build!(BrayCurtis, None),
+            // Angular / similarity
+            Metric::Cosine => build!(Cosine, None),
+            Metric::Dot => build!(InnerProduct, None),
+            Metric::InnerProduct => build!(InnerProduct, None),
+            Metric::Correlation => build!(Correlation, None),
+            Metric::TrueAngular => build!(TrueAngular, None),
+            Metric::TSSS => build!(TSSS, None),
+            // Binary / set
+            Metric::Hamming => build!(Hamming, None),
+            Metric::Jaccard => build!(Jaccard, None),
+            Metric::Dice => build!(Dice, None),
+            Metric::Matching => build!(Matching, None),
+            Metric::Kulsinski => build!(Kulsinski, None),
+            Metric::RogersTanimoto => build!(RogersTanimoto, None),
+            Metric::RussellRao => build!(RussellRao, None),
+            Metric::SokalMichener => build!(SokalMichener, None),
+            Metric::SokalSneath => build!(SokalSneath, None),
+            Metric::Yule => build!(Yule, None),
+            // Distribution
+            Metric::Hellinger => build!(Hellinger, None),
+            Metric::JensenShannon => build!(JensenShannon, None),
+            Metric::SymmetricKL => build!(SymmetricKL, None),
         };
 
         Ok(index_data)
