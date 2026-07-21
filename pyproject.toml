@@ -36,8 +36,9 @@ dependencies = [
     "joblib >= 0.11",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 testing = ["pytest"]
+cicd = ["pytest-azurepipelines", "pytest-cov", {include-group="testing"}]
 
 [tool.setuptools]
 packages = ["pynndescent"]
