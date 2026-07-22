@@ -688,6 +688,40 @@ def dot(x, y):
     },
     cache=True,
 )
+def direct_cosine(x, y):
+    r"""Cosine distance for vectors normalized before index construction.
+
+    This avoids the logarithmic alternative-distance transform used by the
+    default ``cosine`` metric. Inputs must be unit-normalized; ``NNDescent``
+    normalizes dense index vectors and queries for this named metric.
+    """
+    result = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        result += x[i] * y[i]
+
+    if result <= 0.0:
+        return 1.0
+    else:
+        return 1.0 - min(np.float32(1.0), result)
+
+
+@numba.njit(
+    [
+        "f4(f4[::1],f4[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+    cache=True,
+)
 def alternative_dot(x, y):
     r"""Alternative dot product distance using log transform.
 
@@ -2136,6 +2170,237 @@ def quantized_uint4_alternative_dot(x, y, quantized_values):
         return -np.log2(result / np.sqrt(norm_y))
 
 
+@numba.njit(
+    [
+        "f4(i1[::1],i1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    locals={
+        "dot": numba.types.int32,
+        "norm_x": numba.types.int32,
+        "norm_y": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+    cache=True,
+)
+def quantized_int8_alternative_cosine(x, y):
+    r"""Alternative cosine distance between symmetric signed-int8 codes.
+
+    Each vector is independently quantized using its maximum absolute value.
+    The per-vector scale cancels when computing cosine similarity, so the
+    integer-domain vector norms provide the necessary correction without
+    retaining a floating-point scale for every vector.
+    """
+    dot = np.int32(0)
+    norm_x = np.int32(0)
+    norm_y = np.int32(0)
+    dim = x.shape[0]
+
+    for i in range(dim):
+        x_i = np.int32(x[i])
+        y_i = np.int32(y[i])
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+        norm_x += x_i * x_i
+        norm_y += y_i * y_i
+
+    if norm_x == 0 and norm_y == 0:
+        return 0.0
+    elif norm_x == 0 or norm_y == 0 or dot <= 0:
+        return FLOAT32_MAX
+    else:
+        similarity = np.float32(dot) / np.sqrt(np.float32(norm_x) * norm_y)
+        similarity = min(np.float32(1.0), similarity)
+        return -np.log2((similarity + 1.0) / 2.0)
+
+
+@numba.njit(
+    [
+        "f4(i1[::1],i1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    locals={
+        "dot": numba.types.int32,
+        "norm_x": numba.types.int32,
+        "norm_y": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+    cache=True,
+)
+def quantized_int8_alternative_dot(x, y):
+    r"""Alternative dot distance between symmetric signed-int8 codes.
+
+    Inputs are treated as cosine-normalized after correction by their integer
+    norms. Products are explicitly widened to ``int32`` before accumulation.
+    """
+    dot = np.int32(0)
+    norm_x = np.int32(0)
+    norm_y = np.int32(0)
+    dim = x.shape[0]
+
+    for i in range(dim):
+        x_i = np.int32(x[i])
+        y_i = np.int32(y[i])
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+        norm_x += x_i * x_i
+        norm_y += y_i * y_i
+
+    if norm_x == 0 or norm_y == 0 or dot <= 0:
+        return FLOAT32_MAX
+    else:
+        similarity = np.float32(dot) / np.sqrt(np.float32(norm_x) * norm_y)
+        return -np.log2(min(np.float32(1.0), similarity))
+
+
+@numba.njit(
+    "f4(i1[::1],i1[::1],f4,f4)",
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    inline="always",
+    locals={
+        "dot": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+    cache=True,
+)
+def quantized_int8_alternative_cosine_with_norms(x, y, inv_norm_x, inv_norm_y):
+    """Alternative cosine distance using precomputed code-space inverse norms."""
+    dot = np.int32(0)
+    dim = x.shape[0]
+    for i in range(dim):
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+
+    similarity = np.float32(dot) * inv_norm_x * inv_norm_y
+    if similarity <= 0.0:
+        return FLOAT32_MAX
+    similarity = min(np.float32(1.0), similarity)
+    return -np.log2((similarity + 1.0) / 2.0)
+
+
+@numba.njit(
+    [
+        "f4(i1[::1],i1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    locals={
+        "dot": numba.types.int32,
+        "norm_x": numba.types.int32,
+        "norm_y": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+    cache=True,
+)
+def quantized_int8_direct_cosine(x, y):
+    """Direct cosine distance between symmetric signed-int8 codes."""
+    dot = np.int32(0)
+    norm_x = np.int32(0)
+    norm_y = np.int32(0)
+    dim = x.shape[0]
+
+    for i in range(dim):
+        x_i = np.int32(x[i])
+        y_i = np.int32(y[i])
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+        norm_x += x_i * x_i
+        norm_y += y_i * y_i
+
+    if norm_x == 0 or norm_y == 0 or dot <= 0:
+        return 1.0
+    similarity = np.float32(dot) / np.sqrt(np.float32(norm_x) * norm_y)
+    return 1.0 - min(np.float32(1.0), similarity)
+
+
+@numba.njit(
+    "f4(i1[::1],i1[::1],f4,f4)",
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    inline="always",
+    locals={
+        "dot": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+    cache=True,
+)
+def quantized_int8_direct_cosine_with_norms(x, y, inv_norm_x, inv_norm_y):
+    """Direct cosine distance using precomputed signed-int8 code norms.
+
+    Unlike ``quantized_int8_alternative_cosine_with_norms``, this leaves the
+    cosine distance in its native domain and consequently avoids the scalar
+    logarithm in the graph traversal hot path.
+    """
+    dot = np.int32(0)
+    dim = x.shape[0]
+    for i in range(dim):
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+
+    similarity = np.float32(dot) * inv_norm_x * inv_norm_y
+    if similarity <= 0.0:
+        return 1.0
+    return 1.0 - min(np.float32(1.0), similarity)
+
+
+@numba.njit(
+    "f4(i1[::1],i1[::1],f4,f4)",
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    inline="always",
+    locals={
+        "dot": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+        "i": numba.types.uint16,
+    },
+    cache=True,
+)
+def quantized_int8_alternative_dot_with_norms(x, y, inv_norm_x, inv_norm_y):
+    """Alternative dot distance using precomputed code-space inverse norms."""
+    dot = np.int32(0)
+    dim = x.shape[0]
+    for i in range(dim):
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+
+    similarity = np.float32(dot) * inv_norm_x * inv_norm_y
+    if similarity <= 0.0:
+        return FLOAT32_MAX
+    return -np.log2(min(np.float32(1.0), similarity))
+
+
 named_distances = {
     # general minkowski distances
     "euclidean": euclidean,
@@ -2158,6 +2423,7 @@ named_distances = {
     # Other distances
     "canberra": canberra,
     "cosine": cosine,
+    "direct_cosine": direct_cosine,
     "dot": dot,
     "inner_product": inner_product,
     "correlation": correlation,
@@ -2294,5 +2560,10 @@ quantized_distances = {
         "l2": quantized_uint4_sq_euclidean,
         "cosine": quantized_uint4_alternative_cosine,
         "dot": quantized_uint4_alternative_dot,
+    },
+    "int8": {
+        "cosine": quantized_int8_alternative_cosine,
+        "direct_cosine": quantized_int8_direct_cosine,
+        "dot": quantized_int8_alternative_dot,
     },
 }

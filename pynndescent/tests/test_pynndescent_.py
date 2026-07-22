@@ -14,6 +14,15 @@ import joblib
 import scipy
 
 from pynndescent import NNDescent, PyNNDescentTransformer
+from pynndescent.distances import (
+    quantized_int8_alternative_cosine,
+    quantized_int8_alternative_dot,
+    quantized_int8_alternative_cosine_with_norms,
+    quantized_int8_alternative_dot_with_norms,
+    quantized_int8_direct_cosine,
+    quantized_int8_direct_cosine_with_norms,
+)
+from pynndescent.pynndescent_ import _int8_code_inv_norms, _quantize_int8_rows
 
 
 def test_nn_descent_neighbor_accuracy(nn_data, seed):
@@ -162,6 +171,172 @@ def test_nn_descent_query_accuracy_angular(nn_data):
     assert (
         percent_correct >= 0.95
     ), "NN-descent query did not get 95% accuracy on nearest neighbors"
+
+
+def test_dense_query_workspace_reuses_buffers_without_mutating_results(nn_data):
+    index = NNDescent(nn_data[200:], "euclidean", n_neighbors=20, random_state=42)
+    first_indices, first_distances = index.query(nn_data[:10], k=10, epsilon=0.2)
+    expected_indices = first_indices.copy()
+    expected_distances = first_distances.copy()
+    workspace = index._query_workspace
+
+    index.query(nn_data[10:20], k=10, epsilon=0.2)
+
+    assert workspace is index._query_workspace
+    np.testing.assert_array_equal(first_indices, expected_indices)
+    np.testing.assert_allclose(first_distances, expected_distances)
+
+
+def test_spill_tree_leaf_budget_dense_query(nn_data):
+    index = NNDescent(
+        nn_data[200:],
+        "cosine",
+        n_neighbors=20,
+        search_tree_leaf_budget=2,
+        random_state=42,
+    )
+    indices, distances = index.query(nn_data[:20], k=10, epsilon=0.2)
+
+    assert indices.shape == (20, 10)
+    assert distances.shape == (20, 10)
+    assert np.all(indices >= 0)
+
+
+def test_direct_cosine_and_indices_only_query(nn_data):
+    index = NNDescent(nn_data[200:], "direct_cosine", n_neighbors=20, random_state=42)
+    indices, distances = index.query(nn_data[:20], k=10, epsilon=0.2)
+    indices_only = index.query_indices(nn_data[:20], k=10, epsilon=0.2)
+
+    np.testing.assert_array_equal(indices_only, indices)
+    assert np.all((distances >= 0.0) & (distances <= 1.0))
+
+    normalized_queries = normalize(nn_data[:20], norm="l2")
+    fast_indices, fast_distances = index.query(
+        normalized_queries, k=10, epsilon=0.2, pre_normalized=True
+    )
+    np.testing.assert_array_equal(fast_indices, indices)
+    np.testing.assert_allclose(fast_distances, distances, atol=3.0e-7)
+
+    with pytest.raises(ValueError, match="pre_normalized"):
+        NNDescent(nn_data[200:], "cosine", n_neighbors=20, random_state=42).query(
+            normalized_queries, k=10, pre_normalized=True
+        )
+
+
+def test_int8_quantized_distance_self_similarity():
+    codes = _quantize_int8_rows(
+        np.array([[1.0, -2.0, 3.0], [0.0, 0.0, 0.0]], dtype=np.float32)
+    )
+
+    assert codes.dtype == np.int8
+    assert quantized_int8_alternative_cosine(codes[0], codes[0]) == 0.0
+    assert quantized_int8_alternative_dot(codes[0], codes[0]) == 0.0
+    assert np.all(codes[1] == 0)
+
+
+def test_int8_quantized_distances_use_precomputed_norms():
+    codes = _quantize_int8_rows(
+        np.array([[1.0, -2.0, 3.0], [4.0, 1.5, -2.0]], dtype=np.float32)
+    )
+    inv_norms = _int8_code_inv_norms(codes)
+
+    np.testing.assert_allclose(
+        quantized_int8_alternative_cosine(codes[0], codes[1]),
+        quantized_int8_alternative_cosine_with_norms(
+            codes[0], codes[1], inv_norms[0], inv_norms[1]
+        ),
+    )
+    np.testing.assert_allclose(
+        quantized_int8_alternative_dot(codes[0], codes[1]),
+        quantized_int8_alternative_dot_with_norms(
+            codes[0], codes[1], inv_norms[0], inv_norms[1]
+        ),
+    )
+    similarity = np.dot(codes[0].astype(np.float32), codes[1].astype(np.float32))
+    similarity *= inv_norms[0] * inv_norms[1]
+    expected_direct_cosine = 1.0 if similarity <= 0.0 else 1.0 - similarity
+    np.testing.assert_allclose(
+        quantized_int8_direct_cosine_with_norms(
+            codes[0], codes[1], inv_norms[0], inv_norms[1]
+        ),
+        expected_direct_cosine,
+    )
+    np.testing.assert_allclose(
+        quantized_int8_direct_cosine(codes[0], codes[1]),
+        expected_direct_cosine,
+    )
+
+    max_codes = np.full(784, 127, dtype=np.int8)
+    max_inv_norm = np.float32(1.0 / np.sqrt(784 * 127 * 127))
+    assert (
+        abs(
+            quantized_int8_alternative_dot_with_norms(
+                max_codes, max_codes, max_inv_norm, max_inv_norm
+            )
+        )
+        < 1.0e-5
+    )
+
+
+def test_int8_quantized_query_and_width_controls(nn_data):
+    train = nn_data[200:]
+    queries = nn_data[:50]
+    index = NNDescent(
+        train,
+        "cosine",
+        n_neighbors=30,
+        random_state=42,
+        quantization="int8",
+    )
+
+    indices, distances = index.query(
+        queries, k=10, epsilon=0.2, candidate_width=40, rerank_width=20
+    )
+    proxy_indices, proxy_distances = index.query(
+        queries, k=10, epsilon=0.2, candidate_width=40, rerank_width=0
+    )
+
+    assert indices.shape == (queries.shape[0], 10)
+    assert distances.shape == (queries.shape[0], 10)
+    assert proxy_indices.shape == (queries.shape[0], 10)
+    assert proxy_distances.shape == (queries.shape[0], 10)
+    assert np.all(indices >= 0)
+    assert np.all(proxy_indices >= 0)
+
+    with pytest.raises(ValueError, match="candidate_width"):
+        index.query(queries, k=10, candidate_width=9)
+    with pytest.raises(ValueError, match="rerank_width"):
+        index.query(queries, k=10, candidate_width=20, rerank_width=5)
+
+
+def test_direct_cosine_int8_quantized_query(nn_data):
+    train = nn_data[200:]
+    queries = nn_data[:50]
+    normalized_train = normalize(train.copy(), norm="l2")
+    index = NNDescent(
+        train,
+        "direct_cosine",
+        n_neighbors=30,
+        random_state=42,
+        quantization="int8",
+    )
+
+    indices, distances = index.query(
+        queries, k=10, epsilon=0.2, candidate_width=40, rerank_width=20
+    )
+    proxy_indices, proxy_distances = index.query(
+        queries, k=10, epsilon=0.2, candidate_width=40, rerank_width=0
+    )
+
+    assert indices.shape == (queries.shape[0], 10)
+    assert proxy_indices.shape == (queries.shape[0], 10)
+    assert np.all((distances >= 0.0) & (distances <= 1.0))
+    assert np.all((proxy_distances >= 0.0) & (proxy_distances <= 1.0))
+    normalized_queries = normalize(queries, norm="l2")
+    expected_distances = 1.0 - np.einsum(
+        "ij,ikj->ik", normalized_queries, normalized_train[indices]
+    )
+    np.testing.assert_allclose(distances, expected_distances, rtol=1.0e-5, atol=3.0e-7)
 
 
 def test_sparse_nn_descent_query_accuracy(sparse_nn_data):

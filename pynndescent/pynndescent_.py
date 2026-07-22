@@ -790,6 +790,33 @@ def rerank(nn_inds, queries, data, dist, n_neighbors, deheap_sort_function):
     return result_nn_inds, result_nn_dists
 
 
+def _quantize_int8_rows(data):
+    """Encode dense rows with independent symmetric signed-int8 scales."""
+    max_abs = np.max(np.abs(data), axis=1, keepdims=True)
+    multipliers = np.divide(
+        np.float32(127.0),
+        max_abs,
+        out=np.zeros_like(max_abs, dtype=np.float32),
+        where=max_abs > 0.0,
+    )
+    return np.ascontiguousarray(
+        np.clip(np.rint(data * multipliers), -127.0, 127.0).astype(np.int8)
+    )
+
+
+def _int8_code_inv_norms(codes):
+    """Return reciprocal L2 norms for rows of signed-int8 codes."""
+    squared_norms = np.einsum(
+        "ij,ij->i", codes.astype(np.float32), codes.astype(np.float32)
+    )
+    return np.divide(
+        np.float32(1.0),
+        np.sqrt(squared_norms),
+        out=np.zeros(codes.shape[0], dtype=np.float32),
+        where=squared_norms > 0.0,
+    )
+
+
 class NNDescent:
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
     very flexible and supports a wide variety of distances, including
@@ -816,6 +843,7 @@ class NNDescent:
             * wminkowski
             * seuclidean
             * cosine
+            * direct_cosine
             * correlation
             * haversine
             * hamming
@@ -882,6 +910,11 @@ class NNDescent:
         This is independent of leaf_size which controls the init RP trees.
         The default of None means a value will be chosen automatically (currently 30).
         Smaller values may improve search accuracy at the cost of more tree traversals.
+
+    search_tree_leaf_budget: int (optional, default=1)
+        Number of dense search-tree leaves used to initialize each query. A value
+        of 1 preserves hard routing. Larger values enable best-first spill routing
+        through alternate branches ranked by their hyperplane margin.
 
     max_search_tree_depth: int (optional, default=None)
         Maximum depth of the search tree. If None, uses max_rptree_depth.
@@ -978,6 +1011,7 @@ class NNDescent:
         degree_prune_aggressiveness=1.0,
         n_search_trees=1,
         search_tree_leaf_size=None,
+        search_tree_leaf_budget=1,
         max_search_tree_depth=None,
         quantization=None,
         tree_init=True,
@@ -1012,6 +1046,9 @@ class NNDescent:
         self.degree_prune_aggressiveness = degree_prune_aggressiveness
         self.n_search_trees = n_search_trees
         self.search_tree_leaf_size = search_tree_leaf_size
+        if search_tree_leaf_budget < 1:
+            raise ValueError("search_tree_leaf_budget must be at least 1")
+        self.search_tree_leaf_budget = search_tree_leaf_budget
         self.max_search_tree_depth = max_search_tree_depth
         self.max_rptree_depth = max_rptree_depth
         self.max_candidates = max_candidates
@@ -1059,6 +1096,7 @@ class NNDescent:
 
         if metric in (
             "cosine",
+            "direct_cosine",
             "dot",
             "correlation",
             "dice",
@@ -1077,7 +1115,7 @@ class NNDescent:
             self._angular_trees = False
             self._bit_trees = False
 
-        if metric == "dot":
+        if metric in ("dot", "direct_cosine"):
             data = normalize(data, norm="l2", copy=copy_on_normalize)
             self._raw_data = data
 
@@ -1293,6 +1331,8 @@ class NNDescent:
         result = self.__dict__.copy()
         if hasattr(self, "_rp_forest"):
             del result["_rp_forest"]
+        if "_query_workspace" in result:
+            del result["_query_workspace"]
         result["_search_forest"] = tuple(
             [denumbaify_tree(tree) for tree in self._search_forest]
         )
@@ -1622,6 +1662,10 @@ class NNDescent:
                     self._quantized_data = np.ascontiguousarray(
                         self._quantized_data[self._vertex_order, :]
                     )
+                if hasattr(self, "_quantized_inv_norms"):
+                    self._quantized_inv_norms = np.ascontiguousarray(
+                        self._quantized_inv_norms[self._vertex_order]
+                    )
 
             tree_order = np.argsort(self._vertex_order)
             self._search_forest = tuple(
@@ -1646,10 +1690,30 @@ class NNDescent:
             print(ts(), "Building and compiling search function")
 
         if self.tree_init:
-            tree_hyperplanes = self._search_forest[0].hyperplanes
-            tree_offsets = self._search_forest[0].offsets
-            tree_indices = self._search_forest[0].indices
-            tree_children = self._search_forest[0].children
+            n_search_trees = len(self._search_forest)
+            max_tree_nodes = max(tree.children.shape[0] for tree in self._search_forest)
+            tree_dimension = self._search_forest[0].hyperplanes.shape[1]
+            tree_hyperplanes = np.zeros(
+                (n_search_trees, max_tree_nodes, tree_dimension),
+                dtype=self._search_forest[0].hyperplanes.dtype,
+            )
+            tree_offsets = np.zeros(
+                (n_search_trees, max_tree_nodes),
+                dtype=self._search_forest[0].offsets.dtype,
+            )
+            tree_children = np.full(
+                (n_search_trees, max_tree_nodes, 2), -1, dtype=np.int32
+            )
+            tree_indices = np.empty(
+                (n_search_trees, self._raw_data.shape[0]), dtype=np.int32
+            )
+
+            for tree_num, tree in enumerate(self._search_forest):
+                n_nodes = tree.children.shape[0]
+                tree_hyperplanes[tree_num, :n_nodes] = tree.hyperplanes
+                tree_offsets[tree_num, :n_nodes] = tree.offsets
+                tree_children[tree_num, :n_nodes] = tree.children
+                tree_indices[tree_num] = tree.indices
 
             if self._bit_trees:
 
@@ -1657,6 +1721,7 @@ class NNDescent:
                     [
                         numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
                             numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+                            numba.types.int32,
                             numba.types.Array(
                                 numba.types.int64, 1, "C", readonly=False
                             ),
@@ -1664,18 +1729,21 @@ class NNDescent:
                     ],
                     locals={"node": numba.types.uint32, "side": numba.types.boolean},
                 )
-                def tree_search_closure(point, rng_state):
+                def tree_search_closure(point, tree_num, rng_state):
                     node = 0
-                    while tree_children[node, 0] > 0:
+                    while tree_children[tree_num, node, 0] > 0:
                         side = select_side_bit(
-                            tree_hyperplanes[node], tree_offsets[node], point, rng_state
+                            tree_hyperplanes[tree_num, node],
+                            tree_offsets[tree_num, node],
+                            point,
+                            rng_state,
                         )
                         if side == 0:
-                            node = tree_children[node, 0]
+                            node = tree_children[tree_num, node, 0]
                         else:
-                            node = tree_children[node, 1]
+                            node = tree_children[tree_num, node, 1]
 
-                    return -tree_children[node]
+                    return -tree_children[tree_num, node]
 
             else:
 
@@ -1685,6 +1753,7 @@ class NNDescent:
                             numba.types.Array(
                                 numba.types.float32, 1, "C", readonly=True
                             ),
+                            numba.types.int32,
                             numba.types.Array(
                                 numba.types.int64, 1, "C", readonly=False
                             ),
@@ -1692,28 +1761,103 @@ class NNDescent:
                     ],
                     locals={"node": numba.types.uint32, "side": numba.types.boolean},
                 )
-                def tree_search_closure(point, rng_state):
+                def tree_search_closure(point, tree_num, rng_state):
                     node = 0
-                    while tree_children[node, 0] > 0:
+                    while tree_children[tree_num, node, 0] > 0:
                         side = select_side(
-                            tree_hyperplanes[node], tree_offsets[node], point, rng_state
+                            tree_hyperplanes[tree_num, node],
+                            tree_offsets[tree_num, node],
+                            point,
+                            rng_state,
                         )
                         if side == 0:
-                            node = tree_children[node, 0]
+                            node = tree_children[tree_num, node, 0]
                         else:
-                            node = tree_children[node, 1]
+                            node = tree_children[tree_num, node, 1]
 
-                    return -tree_children[node]
+                    return -tree_children[tree_num, node]
 
             self._tree_search = tree_search_closure
+
+            if self.search_tree_leaf_budget > 1 and self._bit_trees:
+                raise ValueError(
+                    "search_tree_leaf_budget > 1 is currently supported for dense "
+                    "floating-point search trees only"
+                )
+
+            tree_leaf_budget = self.search_tree_leaf_budget
+            max_tree_nodes = tree_children.shape[1]
+
+            @numba.njit(fastmath=True)
+            def tree_spill_search_closure(point, rng_state, leaves):
+                """Return up to ``tree_leaf_budget`` leaves by margin-ranked spill."""
+                frontier_priorities = np.empty(max_tree_nodes, dtype=np.float32)
+                frontier_nodes = np.empty(max_tree_nodes, dtype=np.int32)
+                frontier_size = 1
+                frontier_priorities[0] = 0.0
+                frontier_nodes[0] = 0
+                leaf_count = 0
+
+                while leaf_count < tree_leaf_budget and frontier_size > 0:
+                    best = 0
+                    for frontier_index in range(1, frontier_size):
+                        if (
+                            frontier_priorities[frontier_index]
+                            < frontier_priorities[best]
+                        ):
+                            best = frontier_index
+
+                    priority = frontier_priorities[best]
+                    node = frontier_nodes[best]
+                    frontier_size -= 1
+                    frontier_priorities[best] = frontier_priorities[frontier_size]
+                    frontier_nodes[best] = frontier_nodes[frontier_size]
+
+                    if tree_children[0, node, 0] <= 0:
+                        leaves[leaf_count, 0] = -tree_children[0, node, 0]
+                        leaves[leaf_count, 1] = -tree_children[0, node, 1]
+                        leaf_count += 1
+                        continue
+
+                    margin = tree_offsets[0, node]
+                    for dimension in range(point.shape[0]):
+                        margin += (
+                            tree_hyperplanes[0, node, dimension] * point[dimension]
+                        )
+
+                    if abs(margin) < 1.0e-8:
+                        primary_side = np.abs(tau_rand_int(rng_state)) % 2
+                    elif margin > 0.0:
+                        primary_side = 0
+                    else:
+                        primary_side = 1
+
+                    alternate_side = 1 - primary_side
+                    frontier_priorities[frontier_size] = priority
+                    frontier_nodes[frontier_size] = tree_children[0, node, primary_side]
+                    frontier_size += 1
+                    frontier_priorities[frontier_size] = max(priority, abs(margin))
+                    frontier_nodes[frontier_size] = tree_children[
+                        0, node, alternate_side
+                    ]
+                    frontier_size += 1
+
+                return leaf_count
+
         else:
 
             @numba.njit()
-            def tree_search_closure(point, rng_state):
+            def tree_search_closure(point, tree_num, rng_state):
                 return (0, 0)
 
             self._tree_search = tree_search_closure
-            tree_indices = np.zeros(1, dtype=np.int64)
+            tree_indices = np.zeros((1, 1), dtype=np.int32)
+            n_search_trees = 0
+            tree_leaf_budget = 1
+
+            @numba.njit
+            def tree_spill_search_closure(point, rng_state, leaves):
+                return 0
 
         if self.quantization is not None:
             data = self._quantized_data
@@ -1721,6 +1865,26 @@ class NNDescent:
         else:
             data = self._raw_data
             dist = self._distance_func
+
+        if self.quantization == "int8":
+            data_inv_norms = self._quantized_inv_norms
+            if self.metric == "cosine":
+                int8_dist = pynnd_dist.quantized_int8_alternative_cosine_with_norms
+            elif self.metric == "direct_cosine":
+                int8_dist = pynnd_dist.quantized_int8_direct_cosine_with_norms
+            else:
+                int8_dist = pynnd_dist.quantized_int8_alternative_dot_with_norms
+
+            @numba.njit(inline="always", fastmath=True)
+            def distance_func(a, b, inv_norm_a, inv_norm_b):
+                return int8_dist(a, b, inv_norm_a, inv_norm_b)
+
+        else:
+            data_inv_norms = np.ones(data.shape[0], dtype=np.float32)
+
+            @numba.njit(inline="always", fastmath=True)
+            def distance_func(a, b, inv_norm_a, inv_norm_b):
+                return dist(a, b)
 
         indptr = self._search_graph.indptr
         indices = self._search_graph.indices
@@ -1734,17 +1898,28 @@ class NNDescent:
         elif self.quantization == "uint8" or self.quantization == "uint4":
             data_type = numba.types.uint8[::1]
             query_data_type = numba.types.float32[::1]
+        elif self.quantization == "int8":
+            data_type = numba.types.int8[::1]
+            query_data_type = numba.types.int8[::1]
         else:
             data_type = numba.types.float32[::1]
             query_data_type = numba.types.float32[::1]
 
-        if self.metric in (
+        if self.quantization == "int8":
+            # The signed codes are scale-invariant under cosine correction.
+            # Normalizing them here would both be redundant and overflow int8.
+            normalize_query = False
+        elif self.metric in (
             "cosine",
+            "direct_cosine",
             "dot",
         ):
             normalize_query = True
         else:
             normalize_query = False
+
+        tree_normalize_query = self.metric in ("cosine", "direct_cosine", "dot")
+        bit_trees = self._bit_trees
 
         @numba.njit(
             fastmath=True,
@@ -1769,9 +1944,18 @@ class NNDescent:
             },
             parallel=self.parallel_batch_queries,
         )
-        def search_closure(query_points, k, epsilon, visited, rng_state):
+        def search_closure(
+            query_points,
+            tree_query_points,
+            query_inv_norms,
+            result,
+            k,
+            epsilon,
+            visited,
+            query_is_normalized,
+            rng_state,
+        ):
 
-            result = make_heap(query_points.shape[0], k)
             internal_rng_state = np.copy(rng_state)
 
             for i in numba.prange(query_points.shape[0]):
@@ -1782,7 +1966,7 @@ class NNDescent:
                     visited_nodes = visited
                     visited_nodes[:] = 0
 
-                if normalize_query:
+                if normalize_query and not query_is_normalized:
                     norm = np.sqrt((query_points[i] ** 2).sum())
                     if norm > 0.0:
                         current_query = query_points[i] / norm
@@ -1791,24 +1975,79 @@ class NNDescent:
                 else:
                     current_query = query_points[i]
 
+                query_inv_norm = query_inv_norms[i]
+
+                if bit_trees:
+                    tree_current_query = current_query
+                else:
+                    if tree_normalize_query and not query_is_normalized:
+                        tree_norm = np.sqrt((tree_query_points[i] ** 2).sum())
+                        if tree_norm > 0.0:
+                            tree_current_query = tree_query_points[i] / tree_norm
+                        else:
+                            continue
+                    else:
+                        tree_current_query = tree_query_points[i]
+
                 heap_priorities = result[1][i]
                 heap_indices = result[0][i]
+                heap_priorities[:] = np.inf
+                heap_indices[:] = -1
                 seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
                 # heapq.heapify(seed_set)
 
-                ############ Init from Tree ################
-                index_bounds = tree_search_closure(current_query, internal_rng_state)
-                candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
+                ############ Init from all retained trees ################
+                n_initial_points = 0
+                if tree_leaf_budget == 1:
+                    for tree_num in range(n_search_trees):
+                        index_bounds = tree_search_closure(
+                            tree_current_query, tree_num, internal_rng_state
+                        )
+                        candidate_indices = tree_indices[
+                            tree_num, index_bounds[0] : index_bounds[1]
+                        ]
 
-                n_initial_points = candidate_indices.shape[0]
-
-                for j in range(n_initial_points):
-                    candidate = candidate_indices[j]
-                    d = np.float32(dist(current_query, data[candidate]))
-                    # indices are guaranteed different
-                    simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
-                    mark_visited(visited_nodes, candidate)
+                        for j in range(candidate_indices.shape[0]):
+                            candidate = candidate_indices[j]
+                            if check_and_mark_visited(visited_nodes, candidate) == 0:
+                                d = np.float32(
+                                    distance_func(
+                                        current_query,
+                                        data[candidate],
+                                        query_inv_norm,
+                                        data_inv_norms[candidate],
+                                    )
+                                )
+                                simple_heap_push(
+                                    heap_priorities, heap_indices, d, candidate
+                                )
+                                heapq.heappush(seed_set, (d, candidate))
+                                n_initial_points += 1
+                else:
+                    leaf_bounds = np.empty((tree_leaf_budget, 2), dtype=np.int32)
+                    leaf_count = tree_spill_search_closure(
+                        tree_current_query, internal_rng_state, leaf_bounds
+                    )
+                    for leaf_num in range(leaf_count):
+                        candidate_indices = tree_indices[
+                            0, leaf_bounds[leaf_num, 0] : leaf_bounds[leaf_num, 1]
+                        ]
+                        for j in range(candidate_indices.shape[0]):
+                            candidate = candidate_indices[j]
+                            if check_and_mark_visited(visited_nodes, candidate) == 0:
+                                d = np.float32(
+                                    distance_func(
+                                        current_query,
+                                        data[candidate],
+                                        query_inv_norm,
+                                        data_inv_norms[candidate],
+                                    )
+                                )
+                                simple_heap_push(
+                                    heap_priorities, heap_indices, d, candidate
+                                )
+                                heapq.heappush(seed_set, (d, candidate))
+                                n_initial_points += 1
 
                 ############ Random samples if needed ################
                 n_random_samples = min(k, n_neighbors) - n_initial_points
@@ -1819,7 +2058,14 @@ class NNDescent:
                             np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
-                            d = np.float32(dist(current_query, data[candidate]))
+                            d = np.float32(
+                                distance_func(
+                                    current_query,
+                                    data[candidate],
+                                    query_inv_norm,
+                                    data_inv_norms[candidate],
+                                )
+                            )
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
@@ -1841,7 +2087,14 @@ class NNDescent:
 
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
 
-                            d = np.float32(dist(current_query, data[candidate]))
+                            d = np.float32(
+                                distance_func(
+                                    current_query,
+                                    data[candidate],
+                                    query_inv_norm,
+                                    data_inv_norms[candidate],
+                                )
+                            )
 
                             if d < distance_bound:
                                 simple_heap_push(
@@ -1879,11 +2132,23 @@ class NNDescent:
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = (
             self._raw_data[:1]
-            if self.quantization != "binary"
+            if self.quantization not in ("binary", "int8")
             else self._quantized_data[:1]
         )
         inds, dists, _ = self._search_function(
-            query_data, 5, 0.0, self._visited, self.search_rng_state
+            query_data,
+            self._raw_data[:1],
+            (
+                self._quantized_inv_norms[:1]
+                if self.quantization == "int8"
+                else np.ones(1, dtype=np.float32)
+            ),
+            make_heap(1, 5),
+            5,
+            0.0,
+            self._visited,
+            False,
+            self.search_rng_state,
         )
         _ = self._deheap_function(inds, dists)
 
@@ -2246,6 +2511,21 @@ class NNDescent:
                     self._true_distance_func = self._distance_func
                 else:
                     raise ValueError(f"Not uint4 quantization version of {self.metric}")
+            elif self.quantization == "int8":
+                if self._is_sparse:
+                    raise ValueError("int8 quantization requires dense input data")
+                if self.metric not in pynnd_dist.quantized_distances["int8"]:
+                    raise ValueError(
+                        "int8 quantization only supports cosine, direct_cosine, and dot metrics"
+                    )
+
+                self._quantized_data = _quantize_int8_rows(self._raw_data)
+                self._quantized_inv_norms = _int8_code_inv_norms(self._quantized_data)
+                self._quantized_distance_func = pynnd_dist.quantized_distances["int8"][
+                    self.metric
+                ]
+                self._is_proxy_distance = True
+                self._true_distance_func = self._distance_func
             else:
                 raise ValueError(f"Unrecognized quantization type {self.quantization}")
 
@@ -2259,7 +2539,17 @@ class NNDescent:
                 self._init_search_function()
         return
 
-    def query(self, query_data, k=10, epsilon=0.1, proxy_beam_size=4):
+    def query(
+        self,
+        query_data,
+        k=10,
+        epsilon=0.1,
+        proxy_beam_size=4,
+        candidate_width=None,
+        rerank_width=None,
+        return_distances=True,
+        pre_normalized=False,
+    ):
         """Query the training graph_data for the k nearest neighbors
 
         Parameters
@@ -2277,6 +2567,30 @@ class NNDescent:
             cost for the search. Values should be in the range 0.0 to 0.5, but
             should probably not exceed 0.3 without good reason.
 
+        proxy_beam_size: int (optional, default=4)
+            Backward-compatible multiplier for the proxy candidate width.
+            Ignored when ``candidate_width`` is supplied.
+
+        candidate_width: int or None (optional, default=None)
+            Absolute number of proxy candidates retained before exact reranking.
+            Only applies to proxy and quantized searches and must be at least
+            ``k``. Defaults to ``proxy_beam_size * k``.
+
+        rerank_width: int or None (optional, default=None)
+            Number of proxy finalists to score with the exact distance. Defaults
+            to all proxy candidates. Set to zero to return proxy-ranked results
+            without retaining the cost of exact reranking.
+
+        return_distances: bool (optional, default=True)
+            When False, return only neighbor IDs and skip final distance
+            correction and copying. This is useful for ID-only consumers.
+
+        pre_normalized: bool (optional, default=False)
+            For ``direct_cosine`` and ``dot``, state that each dense query row
+            is already unit-normalized. This skips query and RP-tree routing
+            normalization. Callers are responsible for preserving the unit-norm
+            invariant; other metrics reject this option.
+
         Returns
         -------
         indices, distances: array (n_query_points, k), array (n_query_points, k)
@@ -2293,8 +2607,29 @@ class NNDescent:
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
 
+        if pre_normalized and self.metric not in ("direct_cosine", "dot"):
+            raise ValueError(
+                "pre_normalized is only supported for direct_cosine and dot"
+            )
+
         if self._is_proxy_distance:
-            search_k = proxy_beam_size * k
+            if candidate_width is None:
+                search_k = proxy_beam_size * k
+            else:
+                search_k = candidate_width
+                if search_k < k:
+                    raise ValueError("candidate_width must be at least k")
+
+            if rerank_width is None:
+                effective_rerank_width = search_k
+            else:
+                effective_rerank_width = rerank_width
+                if effective_rerank_width < 0 or effective_rerank_width > search_k:
+                    raise ValueError(
+                        "rerank_width must be between zero and candidate_width"
+                    )
+                if 0 < effective_rerank_width < k:
+                    raise ValueError("rerank_width must be zero or at least k")
         else:
             search_k = k
 
@@ -2305,6 +2640,9 @@ class NNDescent:
             else:
                 query_data = np.asarray(query_data).astype(np.float32, order="C")
 
+            if self.metric in ("dot", "direct_cosine") and not pre_normalized:
+                query_data = normalize(query_data, norm="l2", copy=False)
+
             if self.quantization is not None:
                 epsilon += 1e-32  # ensure epsilon > 0 for quantized searches
                 if self.quantization == "binary":
@@ -2313,6 +2651,9 @@ class NNDescent:
                     )
                 elif self.quantization == "uint8" or self.quantization == "uint4":
                     proxy_query_data = query_data
+                elif self.quantization == "int8":
+                    proxy_query_data = _quantize_int8_rows(query_data)
+                    query_inv_norms = _int8_code_inv_norms(proxy_query_data)
                 else:
                     raise ValueError(
                         f"Unrecognized quantization type {self.quantization}"
@@ -2320,11 +2661,25 @@ class NNDescent:
             else:
                 proxy_query_data = query_data
 
+            if self.quantization != "int8":
+                query_inv_norms = np.ones(query_data.shape[0], dtype=np.float32)
+
+            workspace_shape = (query_data.shape[0], search_k)
+            if (
+                not hasattr(self, "_query_workspace")
+                or self._query_workspace[0].shape != workspace_shape
+            ):
+                self._query_workspace = make_heap(*workspace_shape)
+
             indices, dists, _ = self._search_function(
                 proxy_query_data,
+                query_data,
+                query_inv_norms,
+                self._query_workspace,
                 search_k,
                 epsilon,
                 self._visited,
+                pre_normalized,
                 self.search_rng_state,
             )
         else:
@@ -2348,22 +2703,56 @@ class NNDescent:
         indices, dists = self._deheap_function(indices, dists)
 
         if self._is_proxy_distance:
-            indices, dists = rerank(
-                indices,
-                query_data,
-                self._raw_data,
-                self._true_distance_func,
-                k,
-                self._deheap_function,
-            )
+            if effective_rerank_width > 0:
+                indices, dists = rerank(
+                    indices[:, :effective_rerank_width],
+                    query_data,
+                    self._raw_data,
+                    self._true_distance_func,
+                    k,
+                    self._deheap_function,
+                )
+            else:
+                indices = indices[:, :k]
+                dists = dists[:, :k]
 
         # Sort to input graph_data order
         indices = self._vertex_order[indices]
+
+        if not return_distances:
+            return indices
+
+        # Dense non-proxy searches reuse their internal distance heap. Preserve
+        # the public query result when that workspace is reset by a later call.
+        if not self._is_sparse and not self._is_proxy_distance:
+            dists = dists.copy()
 
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)
 
         return indices, dists
+
+    def query_indices(
+        self,
+        query_data,
+        k=10,
+        epsilon=0.1,
+        proxy_beam_size=4,
+        candidate_width=None,
+        rerank_width=None,
+        pre_normalized=False,
+    ):
+        """Return nearest-neighbor IDs without materializing public distances."""
+        return self.query(
+            query_data,
+            k=k,
+            epsilon=epsilon,
+            proxy_beam_size=proxy_beam_size,
+            candidate_width=candidate_width,
+            rerank_width=rerank_width,
+            return_distances=False,
+            pre_normalized=pre_normalized,
+        )
 
     def update(self, xs_fresh=None, xs_updated=None, updated_indices=None):
         """
