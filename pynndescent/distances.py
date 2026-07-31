@@ -2185,6 +2185,7 @@ fast_distance_alternatives = {
         "correction": correct_alternative_hellinger,
     },
     "jaccard": {"dist": alternative_jaccard, "correction": correct_alternative_jaccard},
+    "bit_jaccard": {"dist": bit_jaccard, "correction": correct_alternative_jaccard},
 }
 
 proxy_distances = {
