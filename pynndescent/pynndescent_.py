@@ -838,9 +838,9 @@ class NNDescent:
         Minkowski distance.
 
     bit_metric: bool (optional, default=False)
-        Whether ``metric`` assumes packed data. Only to be used if ``metric`` is a
-        callable: if ``metric`` is a string referring to one of the available already
-        implemented metrics, the argument is ignored.
+        Whether ``metric`` assumes bit-packed data. Only to be used if ``metric`` is
+        a callable; if ``metric`` is a string referring to one of the available already
+        implemented metrics, this argument is ignored.
 
     n_neighbors: int (optional, default=30)
         The number of neighbors to use in k-neighbor graph graph_data structure
@@ -857,9 +857,9 @@ class NNDescent:
         usually sufficient for best recall.
 
     angular_trees: bool (optional, default=False)
-        Whether angular trees should be used in initialization.  Only to be used if
-        ``metric`` is a callable: if ``metric`` is a string referring to one of the
-        available already implemented metrics, the argument is ignored.
+        Whether angular trees should be used in initialization. Only to be used if
+        ``metric`` is a callable; if ``metric`` is a string referring to one of the
+        available already implemented metrics, this argument is ignored.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
