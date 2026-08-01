@@ -297,7 +297,7 @@ def nn_descent_internal(
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        (new_candidate_neighbors, old_candidate_neighbors) = new_build_candidates(
+        new_candidate_neighbors, old_candidate_neighbors = new_build_candidates(
             current_graph, max_candidates, rng_state, n_threads
         )
 
@@ -837,6 +837,11 @@ class NNDescent:
         Arguments to pass on to the metric, such as the ``p`` value for
         Minkowski distance.
 
+    bit_metric: bool (optional, default=False)
+        Whether ``metric`` assumes bit-packed data. Only to be used if ``metric`` is
+        a callable; if ``metric`` is a string referring to one of the available already
+        implemented metrics, this argument is ignored.
+
     n_neighbors: int (optional, default=30)
         The number of neighbors to use in k-neighbor graph graph_data structure
         used for fast approximate nearest neighbor search. Larger values
@@ -850,6 +855,11 @@ class NNDescent:
         of performance. The default of None means a value will be chosen based on the
         size of the data (typically 3-12 trees). Benchmarks show that 2-4 trees are
         usually sufficient for best recall.
+
+    angular_trees: bool (optional, default=False)
+        Whether angular trees should be used in initialization. Only to be used if
+        ``metric`` is a callable; if ``metric`` is a string referring to one of the
+        available already implemented metrics, this argument is ignored.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
@@ -968,8 +978,10 @@ class NNDescent:
         data,
         metric="euclidean",
         metric_kwds=None,
+        bit_metric=False,
         n_neighbors=30,
         n_trees=None,
+        angular_trees=False,
         leaf_size=None,
         pruning_degree_multiplier=1.5,
         diversify_prob=1.0,
@@ -1000,10 +1012,12 @@ class NNDescent:
             n_iters = max(5, int(round(np.log2(data.shape[0]))))
 
         self.n_trees = n_trees
+        self.angular_trees = angular_trees
         self.n_trees_after_update = max(2, int(np.round(self.n_trees / 3)))
         self.n_neighbors = n_neighbors
         self.metric = metric
         self.metric_kwds = metric_kwds
+        self.bit_metric = bit_metric
         self.leaf_size = leaf_size
         self.prune_degree_multiplier = pruning_degree_multiplier
         self.diversify_prob = diversify_prob
@@ -1031,7 +1045,9 @@ class NNDescent:
         else:
             copy_on_normalize = False
 
-        if metric in ("bit_hamming", "bit_jaccard"):
+        if metric in ("bit_hamming", "bit_jaccard") or (
+            callable(self.metric) and self.bit_metric
+        ):
             data = check_array(data, dtype=np.uint8, order="C")
             self._input_dtype = np.uint8
         else:
@@ -1073,8 +1089,14 @@ class NNDescent:
             else:
                 self._bit_trees = False
         else:
-            self._angular_trees = False
-            self._bit_trees = False
+            if callable(self.metric) and self.angular_trees:
+                self._angular_trees = True
+            else:
+                self._angular_trees = False
+            if callable(self.metric) and self.bit_metric:
+                self._bit_trees = True
+            else:
+                self._bit_trees = False
 
         if metric == "dot":
             data = normalize(data, norm="l2", copy=copy_on_normalize)
