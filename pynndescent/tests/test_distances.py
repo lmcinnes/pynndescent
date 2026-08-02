@@ -327,20 +327,41 @@ def test_alternative_distances():
 
     for distname in dist.fast_distance_alternatives:
 
-        true_dist = dist.named_distances[distname]
         alt_dist = dist.fast_distance_alternatives[distname]["dist"]
         correction = dist.fast_distance_alternatives[distname]["correction"]
 
-        for i in range(100):
-            x = np.random.random(30).astype(np.float32)
-            y = np.random.random(30).astype(np.float32)
-            x[x < 0.25] = 0.0
-            y[y < 0.25] = 0.0
+        if distname == "bit_jaccard":
+            true_dist = dist.named_distances["jaccard"]
 
-            true_distance = true_dist(x, y)
-            corrected_alt_distance = correction(alt_dist(x, y))
+            for i in range(100):
+                x = np.random.random(30).astype(np.float32)
+                y = np.random.random(30).astype(np.float32)
+                x[x < 0.25] = 0.0
+                y[y < 0.25] = 0.0
 
-            assert np.isclose(true_distance, corrected_alt_distance)
+                mask_x = (x != 0.0)
+                mask_y = (y != 0.0)
+
+                packed_mask_x = np.packbits(mask_x)
+                packed_mask_y = np.packbits(mask_y)
+
+                true_distance = true_dist(x, y)
+                corrected_alt_distance = correction(alt_dist(packed_mask_x, packed_mask_y))
+
+                assert np.isclose(true_distance, corrected_alt_distance)
+        else:
+            true_dist = dist.named_distances[distname]
+
+            for i in range(100):
+                x = np.random.random(30).astype(np.float32)
+                y = np.random.random(30).astype(np.float32)
+                x[x < 0.25] = 0.0
+                y[y < 0.25] = 0.0
+
+                true_distance = true_dist(x, y)
+                corrected_alt_distance = correction(alt_dist(x, y))
+
+                assert np.isclose(true_distance, corrected_alt_distance)
 
 
 def test_jensen_shannon():
@@ -438,6 +459,6 @@ def test_bit_jaccard():
     all_pairs = pairwise_distances(unpacked_data, metric="jaccard")
     for i in range(test_data.shape[0]):
         for j in range(i + 1, test_data.shape[0]):
-            d1 = 1.0 - np.exp(-dist.bit_jaccard(test_data[i], test_data[j]))
+            d1 = 1.0 - pow(2.0, -dist.bit_jaccard(test_data[i], test_data[j]))
             d2 = all_pairs[i, j]
             assert np.isclose(d1, d2)

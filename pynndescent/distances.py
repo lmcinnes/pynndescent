@@ -1827,7 +1827,7 @@ def bit_jaccard(x, y):
     with the bounded-radius search algorithm.
 
     .. math::
-        D(x, y) = -\log\left(\frac{\text{popcount}(x \land y)}{\text{popcount}(x \lor y)}\right)
+        D(x, y) = -\log_2\left(\frac{\text{popcount}(x \land y)}{\text{popcount}(x \lor y)}\right)
 
     More efficient than standard Jaccard for binary data.
     """
@@ -1844,7 +1844,7 @@ def bit_jaccard(x, y):
     if denom == 0:
         return 0.0
     else:
-        return -np.log(np.float32(result) / np.float32(denom))
+        return -np.log2(np.float32(result) / np.float32(denom))
 
 
 @numba.njit(
@@ -2185,6 +2185,7 @@ fast_distance_alternatives = {
         "correction": correct_alternative_hellinger,
     },
     "jaccard": {"dist": alternative_jaccard, "correction": correct_alternative_jaccard},
+    "bit_jaccard": {"dist": bit_jaccard, "correction": correct_alternative_jaccard},
 }
 
 proxy_distances = {
