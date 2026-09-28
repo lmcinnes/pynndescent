@@ -1,3 +1,4 @@
+import numba
 import pytest
 import numpy as np
 from numpy.testing import assert_array_equal, assert_array_almost_equal
@@ -441,3 +442,58 @@ def test_bit_jaccard():
             d1 = 1.0 - np.exp(-dist.bit_jaccard(test_data[i], test_data[j]))
             d2 = all_pairs[i, j]
             assert np.isclose(d1, d2)
+
+
+F4 = numba.float32[::1]
+U1 = numba.uint8[::1]
+I4 = numba.int32[::1]
+DENSE_F4 = [
+    "alternative_cosine",
+    "alternative_dot",
+    "alternative_hellinger",
+    "alternative_inner_product",
+    "alternative_jaccard",
+    "dot",
+    "hellinger",
+    "inner_product",
+    "proxy_circular_kantorovich",
+    "proxy_inner_product",
+    "proxy_jensen_shannon",
+    "proxy_kantorovich",
+    "proxy_sinkhorn",
+    "proxy_symmetric_kl",
+    "proxy_wasserstein_1d",
+    "squared_euclidean",
+]
+QUANTIZED_F4 = [
+    "quantized_uint4_alternative_cosine",
+    "quantized_uint4_alternative_dot",
+    "quantized_uint4_sq_euclidean",
+    "quantized_uint8_alternative_cosine",
+    "quantized_uint8_alternative_dot",
+    "quantized_uint8_sq_euclidean",
+]
+SPARSE_F4 = [
+    "sparse_alternative_jaccard",
+    "sparse_bray_curtis",
+    "sparse_dot_product",
+    "sparse_squared_euclidean",
+]
+
+
+@pytest.mark.parametrize(
+    "kernel,args,return_type",
+    [(getattr(dist, name), (F4, F4), numba.float32) for name in DENSE_F4]
+    + [(getattr(dist, name), (F4, U1, F4), numba.float32) for name in QUANTIZED_F4]
+    + [
+        (getattr(dist, name), (U1, U1), numba.float32)
+        for name in ("bit_hamming", "bit_jaccard")
+    ]
+    + [(getattr(spdist, name), (I4, F4, I4, F4), numba.float32) for name in SPARSE_F4]
+    + [(spdist.fast_intersection_size, (I4, I4), numba.int32)],
+)
+def test_lazy_kernel_return_types(kernel, args, return_type):
+    # Kernels compile on first use, so their return dtype comes from inference
+    # rather than an explicit signature; callers compare against float32 heaps.
+    kernel.compile(args)
+    assert kernel.overloads[args].signature.return_type == return_type

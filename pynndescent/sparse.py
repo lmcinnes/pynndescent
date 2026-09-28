@@ -54,13 +54,6 @@ def arr_intersect(ar1, ar2):
 
 # Some things require size of intersection; do this quickly; assume sorted arrays for speed
 @numba.njit(
-    [
-        "i4(i4[:],i4[:])",
-        numba.types.int32(
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-        ),
-    ],
     locals={
         "i1": numba.uint16,
         "i2": numba.uint16,
@@ -68,7 +61,7 @@ def arr_intersect(ar1, ar2):
 )
 def fast_intersection_size(ar1, ar2):
     if ar1.shape[0] == 0 or ar2.shape[0] == 0:
-        return 0
+        return np.int32(0)
 
     # NOTE: We assume arrays are sorted; if they are not this will break
     i1 = 0
@@ -104,23 +97,10 @@ def fast_intersection_size(ar1, ar2):
         else:
             break
 
-    return result
+    return np.int32(result)
 
 
 @numba.njit(
-    [
-        numba.types.Tuple(
-            (
-                numba.types.Array(numba.types.int32, 1, "C"),
-                numba.types.Array(numba.types.float32, 1, "C"),
-            )
-        )(
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        )
-    ],
     fastmath=True,
     locals={
         "result_ind": numba.types.int32[::1],
@@ -202,20 +182,6 @@ def sparse_diff(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    [
-        # "Tuple((i4[::1],f4[::1]))(i4[::1],f4[::1],i4[::1],f4[::1])",
-        numba.types.Tuple(
-            (
-                numba.types.ListType(numba.types.int32),
-                numba.types.ListType(numba.types.float32),
-            )
-        )(
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        )
-    ],
     fastmath=True,
     locals={
         "val": numba.types.float32,
@@ -254,15 +220,6 @@ def sparse_mul(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    [
-        # "Tuple((i4[::1],f4[::1]))(i4[::1],f4[::1],i4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        )
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -381,15 +338,6 @@ def sparse_euclidean(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    [
-        "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "aux_data": numba.types.float32[::1],
@@ -459,15 +407,6 @@ def sparse_canberra(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    [
-        "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
 )
 def sparse_bray_curtis(ind1, data1, ind2, data2):  # pragma: no cover
@@ -475,19 +414,19 @@ def sparse_bray_curtis(ind1, data1, ind2, data2):  # pragma: no cover
     denom_data = np.abs(denom_data)
 
     if denom_data.shape[0] == 0:
-        return 0.0
+        return np.float32(0.0)
 
     denominator = np.sum(denom_data)
 
     if denominator == 0.0:
-        return 0.0
+        return np.float32(0.0)
 
     _, numer_data = sparse_diff(ind1, data1, ind2, data2)
     numer_data = np.abs(numer_data)
 
     numerator = np.sum(numer_data)
 
-    return float(numerator) / denominator
+    return np.float32(float(numerator) / denominator)
 
 
 @numba.njit()
@@ -502,15 +441,6 @@ def sparse_jaccard(ind1, data1, ind2, data2):
 
 
 @numba.njit(
-    [
-        "f4(i4[::1],f4[::1],i4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={"num_non_zero": numba.types.intp, "num_equal": numba.types.intp},
 )
@@ -519,11 +449,11 @@ def sparse_alternative_jaccard(ind1, data1, ind2, data2):
     num_non_zero = ind1.shape[0] + ind2.shape[0] - num_equal
 
     if num_non_zero == 0:
-        return 0.0
+        return np.float32(0.0)
     elif num_equal == 0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
-        return -np.log2(num_equal / num_non_zero)
+        return np.float32(-np.log2(num_equal / num_non_zero))
         # return (num_non_zero - num_equal) / num_equal
 
 
