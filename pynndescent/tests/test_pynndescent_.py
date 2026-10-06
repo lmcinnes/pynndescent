@@ -762,4 +762,3 @@ def test_update_compressed_index_raises(nn_data):
     index.prepare()
     with pytest.raises(ValueError, match="compressed"):
         index.update(nn_data[200:300])
-
