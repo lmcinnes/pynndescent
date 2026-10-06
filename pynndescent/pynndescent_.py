@@ -573,7 +573,7 @@ def diversify_csr(
                 if retained[l] == 1:
 
                     d = dist(
-                        source_data[current_indices[j]], source_data[current_indices[k]]
+                        source_data[current_indices[j]], source_data[current_indices[l]]
                     )
                     if current_data[l] > FLOAT32_EPS and d < current_data[j]:
                         if tau_rand(rng_state) < prune_probability:
@@ -1548,7 +1548,8 @@ class NNDescent:
 
         # Reverse graph
         pre_reverse_diversify_nnz = self._search_graph.nnz
-        reverse_graph = self._search_graph.transpose()
+        # transpose() gives a CSC matrix; the diversify functions expect CSR
+        reverse_graph = self._search_graph.transpose().tocsr()
         if self._is_sparse:
             sparse.diversify_csr(
                 reverse_graph.indptr,
