@@ -2405,6 +2405,12 @@ class NNDescent:
         -------
             None
         """
+        if self.compressed and not hasattr(self, "_neighbor_graph"):
+            raise ValueError(
+                "Compressed indexes cannot be updated, since the data needed for "
+                "updates is removed when the index is compressed. Build the index "
+                "with compressed=False to be able to update it."
+            )
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
