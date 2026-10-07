@@ -497,3 +497,18 @@ def test_lazy_kernel_return_types(kernel, args, return_type):
     # rather than an explicit signature; callers compare against float32 heaps.
     kernel.compile(args)
     assert kernel.overloads[args].signature.return_type == return_type
+
+
+def test_tsss_matches_definition():
+    # https://github.com/lmcinnes/pynndescent/issues/233
+    # TS-SS (Heidarian & Dinneen, 2016) is the product of the triangle area
+    # |x||y|sin(theta)/2 and the sector area pi*(ED + MD)^2*theta/360 with theta
+    # in degrees, i.e. (ED + MD)^2*theta/2 with theta in radians.
+    x = np.array([1.0, 2.0, 3.0])
+    y = np.array([2.0, 0.5, 1.0])
+    norm_x = np.linalg.norm(x)
+    norm_y = np.linalg.norm(y)
+    theta = np.arccos(x @ y / (norm_x * norm_y)) + np.radians(10)
+    triangle = norm_x * norm_y * np.sin(theta) / 2
+    sector = (np.linalg.norm(x - y) + abs(norm_x - norm_y)) ** 2 * theta / 2
+    assert dist.tsss(x, y) == pytest.approx(triangle * sector)
