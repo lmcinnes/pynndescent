@@ -41,6 +41,9 @@ testing = ["pytest"]
 cicd = ["pytest-azurepipelines", "pytest-cov", {include-group="testing"}]
 
 [tool.setuptools]
-packages = ["pynndescent"]
+packages = ["pynndescent", "pynndescent.tests", "pynndescent.tests.test_data"]
 zip-safe = false
-include-package-data = false
+include-package-data = true
+
+[tool.setuptools.package-data]
+"pynndescent.test.test_data" = ["*.np*"]
