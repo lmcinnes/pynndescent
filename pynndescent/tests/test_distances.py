@@ -497,3 +497,18 @@ def test_lazy_kernel_return_types(kernel, args, return_type):
     # rather than an explicit signature; callers compare against float32 heaps.
     kernel.compile(args)
     assert kernel.overloads[args].signature.return_type == return_type
+
+
+def test_sparse_dot_product_with_empty_vectors():
+    empty_inds = np.zeros(0, dtype=np.int32)
+    empty_data = np.zeros(0, dtype=np.float32)
+    inds = np.array([0, 3], dtype=np.int32)
+    data = np.array([0.6, 0.8], dtype=np.float32)
+
+    assert spdist.sparse_dot_product(empty_inds, empty_data, inds, data) == 0.0
+    assert spdist.sparse_dot_product(inds, data, empty_inds, empty_data) == 0.0
+    assert (
+        spdist.sparse_dot_product(empty_inds, empty_data, empty_inds, empty_data) == 0.0
+    )
+    # matches the dense dot distance, which is 1.0 for a zero vector
+    assert spdist.sparse_dot(empty_inds, empty_data, inds, data) == 1.0
