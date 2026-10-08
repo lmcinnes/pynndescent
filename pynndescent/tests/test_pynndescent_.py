@@ -754,3 +754,35 @@ def test_bad_data():
     test_data_dir = pathlib.Path(__file__).parent / "test_data"
     data = np.sqrt(np.load(test_data_dir / "pynndescent_bug_np.npz")["arr_0"])
     index = NNDescent(data, metric="cosine")
+
+
+def test_diversify_csr_compares_with_retained_neighbor():
+    # https://github.com/lmcinnes/pynndescent/issues/234
+    from pynndescent.pynndescent_ import diversify_csr
+    from pynndescent.distances import euclidean
+
+    # node 0 sits at x=0 and its neighbours are stored out of distance order:
+    # node 3 (x=-3, d=3), node 1 (x=1, d=1), node 2 (x=2, d=2).
+    # Node 2 is occluded by node 1, so the edge 0 -> 2 should be pruned.
+    points = np.array([[0.0], [1.0], [2.0], [-3.0]], dtype=np.float32)
+    indptr = np.array([0, 3, 3, 3, 3], dtype=np.int32)
+    indices = np.array([3, 1, 2], dtype=np.int32)
+    data = np.array([3.0, 1.0, 2.0], dtype=np.float32)
+    rng_state = np.array([1, 2, 3], dtype=np.int64)
+
+    diversify_csr(indptr, indices, data, points, euclidean, rng_state, 1.0)
+
+    np.testing.assert_array_equal(data, [3.0, 1.0, 0.0])
+
+
+def test_reverse_diversification_prunes_edges(nn_data):
+    # https://github.com/lmcinnes/pynndescent/issues/234
+    out = io.StringIO()
+    with redirect_stdout(out):
+        index = NNDescent(nn_data[:300], n_neighbors=15, random_state=42, verbose=True)
+        index.prepare()
+    match = re.search(
+        r"Reverse diversification reduced edges from (\d+) to (\d+)", out.getvalue()
+    )
+    assert match is not None
+    assert int(match.group(2)) < int(match.group(1))
