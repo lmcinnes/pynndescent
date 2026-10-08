@@ -1147,7 +1147,7 @@ def tsss(x, y):
     d_cos /= norm_x * norm_y
     theta = np.arccos(d_cos) + np.radians(10)  # Add 10 degrees as an "epsilon" to
     # avoid problems
-    sector = ((np.sqrt(d_euc_squared) + magnitude_difference) ** 2) * theta
+    sector = ((np.sqrt(d_euc_squared) + magnitude_difference) ** 2) * theta / 2.0
     triangle = norm_x * norm_y * np.sin(theta) / 2.0
     return triangle * sector
 
