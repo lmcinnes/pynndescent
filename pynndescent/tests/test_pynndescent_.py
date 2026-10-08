@@ -754,3 +754,11 @@ def test_bad_data():
     test_data_dir = pathlib.Path(__file__).parent / "test_data"
     data = np.sqrt(np.load(test_data_dir / "pynndescent_bug_np.npz")["arr_0"])
     index = NNDescent(data, metric="cosine")
+
+
+def test_update_compressed_index_raises(nn_data):
+    # https://github.com/lmcinnes/pynndescent/issues/246
+    index = NNDescent(nn_data[:200], n_neighbors=10, random_state=42, compressed=True)
+    index.prepare()
+    with pytest.raises(ValueError, match="compressed"):
+        index.update(nn_data[200:300])
