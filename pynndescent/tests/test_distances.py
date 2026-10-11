@@ -315,6 +315,32 @@ def test_haversine(spatial_data):
     )
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("latitude", [-89.0, -85.0, 85.0, 89.0])
+def test_haversine_antipodal(dtype, latitude):
+    x = np.deg2rad(np.array([latitude, 15.0], dtype=dtype))
+    y = np.deg2rad(np.array([-latitude, -165.0], dtype=dtype))
+
+    assert dist.haversine(x, y) == pytest.approx(np.pi, abs=1e-6)
+    assert dist.haversine(y, x) == pytest.approx(np.pi, abs=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize(
+    "x, y, expected",
+    [
+        ([0.0, 0.0], [0.0, 0.0], 0.0),
+        ([0.0, 0.0], [0.0, 90.0], np.pi / 2),
+        ([0.0, 0.0], [90.0, 0.0], np.pi / 2),
+    ],
+)
+def test_haversine_regular_points(dtype, x, y, expected):
+    x = np.deg2rad(np.array(x, dtype=dtype))
+    y = np.deg2rad(np.array(y, dtype=dtype))
+
+    assert dist.haversine(x, y) == pytest.approx(expected, abs=1e-6)
+
+
 def test_spearmanr():
     x = np.random.randn(100)
     y = np.random.randn(100)

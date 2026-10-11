@@ -16,6 +16,31 @@ import scipy
 from pynndescent import NNDescent, PyNNDescentTransformer
 
 
+def test_haversine_antipodal_neighbor_graph():
+    data = np.deg2rad(
+        np.array(
+            [[-89, 15], [-85, 15], [-70, 15], [89, -165], [85, -165], [70, -165]],
+            dtype=np.float32,
+        )
+    )
+    init_graph = np.tile(np.arange(len(data), dtype=np.int32), (len(data), 1))
+    index = NNDescent(
+        data,
+        metric="haversine",
+        n_neighbors=len(data),
+        n_trees=0,
+        n_iters=2,
+        init_graph=init_graph,
+        n_jobs=1,
+        random_state=0,
+    )
+
+    indices, distances = index.neighbor_graph
+    assert np.isfinite(distances).all()
+    np.testing.assert_array_equal(np.sort(indices, axis=1), init_graph)
+    np.testing.assert_allclose(distances[:, -1], np.pi, rtol=0, atol=1e-6)
+
+
 def test_nn_descent_neighbor_accuracy(nn_data, seed):
     knn_indices, _ = NNDescent(
         nn_data, "euclidean", {}, 10, random_state=np.random.RandomState(seed)
