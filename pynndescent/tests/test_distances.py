@@ -164,6 +164,51 @@ def test_sparse_spatial_check(sparse_spatial_data, metric, decimal=6):
     )
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("store_zeros", [False, True])
+@pytest.mark.parametrize(
+    "x,y,expected",
+    [
+        pytest.param([1, 2, 3], [1, 3, 2], 0.5, id="above-two"),
+        pytest.param([1, 2, 3], [2, 1, 3], 0.5, id="below-zero"),
+        pytest.param([0, 1, 2, 1], [1, 2, 0, 1], 1.5, id="partial-overlap"),
+        pytest.param([1, 0, 0, 0], [0, 2, 0, 0], 4 / 3, id="disjoint"),
+        pytest.param([0, 1, 2, 1], [0, 1, 2, 1], 0.0, id="identical"),
+        pytest.param([1, 2, 3], [3, 2, 1], 2.0, id="anticorrelated"),
+        pytest.param([0, 1, -1, 0], [1, 0, 2, 1], 2.0, id="zero-mean"),
+        pytest.param([2, 2, 2], [0, 1, 2], 1.0, id="constant"),
+        pytest.param([2, 2, 2], [3, 3, 3], 0.0, id="both-constant"),
+        pytest.param([0, 0, 0], [1, 2, 3], 1.0, id="empty"),
+        pytest.param([0, 0, 0], [0, 0, 0], 0.0, id="both-empty"),
+    ],
+)
+def test_sparse_correlation_centered_zeros(x, y, expected, store_zeros, dtype):
+    data = np.array([x, y], dtype=dtype)
+    n_features = data.shape[1]
+    if store_zeros:
+        sparse_data = csr_matrix(
+            (
+                data.ravel(),
+                np.tile(np.arange(n_features), 2),
+                np.arange(3) * n_features,
+            ),
+            shape=data.shape,
+        )
+    else:
+        sparse_data = csr_matrix(data)
+
+    assert dist.correlation(data[0], data[1]) == pytest.approx(expected, abs=1e-6)
+    for i, j in [(0, 1), (1, 0)]:
+        result = spdist.sparse_named_distances["correlation"](
+            sparse_data[i].indices,
+            sparse_data[i].data,
+            sparse_data[j].indices,
+            sparse_data[j].data,
+            n_features,
+        )
+        assert result == pytest.approx(expected, abs=1e-6)
+
+
 @pytest.mark.parametrize(
     "metric",
     [

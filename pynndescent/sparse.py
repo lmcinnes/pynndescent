@@ -655,9 +655,10 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
         (norm(shifted_data2) ** 2) + (n_features - ind2.shape[0]) * (mu_y**2)
     )
 
-    dot_prod_inds, dot_prod_data = sparse_mul(ind1, shifted_data1, ind2, shifted_data2)
+    _, dot_prod_data = sparse_mul(ind1, shifted_data1, ind2, shifted_data2)
 
-    common_indices = set(dot_prod_inds)
+    # sparse_mul drops zero products, but their indices are still shared.
+    common_indices = set(arr_intersect(ind1, ind2))
 
     for val in dot_prod_data:
         dot_product += val
