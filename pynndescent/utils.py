@@ -424,10 +424,18 @@ def checked_heap_push(priorities, indices, p, n):
 
     size = priorities.shape[0]
 
-    # break if we already have this element.
-    for i in range(size):
-        if n == indices[i]:
+    # break if we already have this element. For wider heaps this is written as a
+    # branch-free reduction (no early exit) so that LLVM can vectorise the scan.
+    if size >= 16:
+        found = False
+        for j in range(size):
+            found |= indices[j] == n
+        if found:
             return 0
+    else:
+        for j in range(size):
+            if n == indices[j]:
+                return 0
 
     # insert val at position zero
     priorities[0] = p
@@ -486,10 +494,18 @@ def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
 
     size = priorities.shape[0]
 
-    # break if we already have this element.
-    for i in range(size):
-        if n == indices[i]:
+    # break if we already have this element. For wider heaps this is written as a
+    # branch-free reduction (no early exit) so that LLVM can vectorise the scan.
+    if size >= 16:
+        found = False
+        for j in range(size):
+            found |= indices[j] == n
+        if found:
             return 0
+    else:
+        for j in range(size):
+            if n == indices[j]:
+                return 0
 
     # insert val at position zero
     priorities[0] = p
