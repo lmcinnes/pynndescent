@@ -66,7 +66,6 @@ def euclidean(x, y):
         "result": numba.types.float32,
         "diff": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def squared_euclidean(x, y):
@@ -283,7 +282,6 @@ def jaccard(x, y):
         "x_true": numba.types.uint8,
         "y_true": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def alternative_jaccard(x, y):
@@ -573,7 +571,6 @@ def cosine(x, y):
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def alternative_cosine(x, y):
@@ -614,7 +611,6 @@ def alternative_cosine(x, y):
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def dot(x, y):
@@ -645,7 +641,6 @@ def dot(x, y):
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def alternative_dot(x, y):
@@ -687,7 +682,6 @@ def correct_alternative_cosine(d):
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def inner_product(x, y):
@@ -716,7 +710,6 @@ def inner_product(x, y):
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def alternative_inner_product(x, y):
@@ -760,7 +753,6 @@ def alternative_inner_product(x, y):
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def proxy_inner_product(x, y):
@@ -818,7 +810,6 @@ def correct_alternative_inner_product(d):
         "cdf_x": numba.types.float32,
         "cdf_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def proxy_wasserstein_1d(x, y):
@@ -873,7 +864,6 @@ def proxy_wasserstein_1d(x, y):
         "px": numba.types.float32,
         "py": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def proxy_kantorovich(x, y):
@@ -925,7 +915,6 @@ def proxy_kantorovich(x, y):
         "cdf_y": numba.types.float32,
         "mu": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def proxy_circular_kantorovich(x, y):
@@ -981,7 +970,6 @@ def proxy_circular_kantorovich(x, y):
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def proxy_jensen_shannon(x, y):
@@ -1032,7 +1020,6 @@ def proxy_jensen_shannon(x, y):
         "denom": numba.types.float32,
         "diff": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def proxy_symmetric_kl(x, y):
@@ -1082,7 +1069,6 @@ def proxy_symmetric_kl(x, y):
         "px": numba.types.float32,
         "py": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def proxy_sinkhorn(x, y):
@@ -1241,7 +1227,6 @@ def correlation(x, y):
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def hellinger(x, y):
@@ -1281,7 +1266,6 @@ def hellinger(x, y):
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def alternative_hellinger(x, y):
@@ -1667,7 +1651,6 @@ def symmetric_kl_divergence(x, y):
         "result": numba.types.int32,
         "intersection": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def bit_hamming(x, y):
@@ -1702,7 +1685,6 @@ def bit_hamming(x, y):
         "and_": numba.types.uint8,
         "or_": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def bit_jaccard(x, y):
@@ -1740,7 +1722,6 @@ def bit_jaccard(x, y):
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
         "y_i": numba.types.float32,
     },
 )
@@ -1769,7 +1750,6 @@ def quantized_uint8_sq_euclidean(x, y, quantized_values):
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def quantized_uint8_alternative_cosine(x, y, quantized_values):
@@ -1804,7 +1784,6 @@ def quantized_uint8_alternative_cosine(x, y, quantized_values):
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def quantized_uint8_alternative_dot(x, y, quantized_values):
@@ -1834,7 +1813,6 @@ def quantized_uint8_alternative_dot(x, y, quantized_values):
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def quantized_uint4_sq_euclidean(x, y, quantized_values):
@@ -1865,7 +1843,6 @@ def quantized_uint4_sq_euclidean(x, y, quantized_values):
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def quantized_uint4_alternative_cosine(x, y, quantized_values):
@@ -1908,7 +1885,6 @@ def quantized_uint4_alternative_cosine(x, y, quantized_values):
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
 )
 def quantized_uint4_alternative_dot(x, y, quantized_values):
