@@ -302,7 +302,7 @@ def nn_descent(
         current_graph = make_heap(n_samples, n_neighbors)
 
         if rp_tree_init:
-            init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array)
+            init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array, n_threads=numba.get_num_threads())
 
         init_random(n_neighbors, inds, indptr, data, current_graph, dist, rng_state)
     elif init_graph[0].shape[0] == n_samples and init_graph[0].shape[1] == n_neighbors:

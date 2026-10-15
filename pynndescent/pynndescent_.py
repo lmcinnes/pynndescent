@@ -340,7 +340,7 @@ def nn_descent(
         current_graph = make_heap(data.shape[0], n_neighbors)
 
         if rp_tree_init:
-            init_rp_tree(data, dist, current_graph, leaf_array)
+            init_rp_tree(data, dist, current_graph, leaf_array, n_threads=numba.get_num_threads())
 
         init_random(n_neighbors, data, current_graph, dist, rng_state)
     elif (
@@ -2512,7 +2512,7 @@ class NNDescent:
             init_from_neighbor_graph(
                 current_graph, self._neighbor_graph[0], self._neighbor_graph[1]
             )
-            init_rp_tree(self._raw_data, self._distance_func, current_graph, leaf_array)
+            init_rp_tree(self._raw_data, self._distance_func, current_graph, leaf_array, n_threads=numba.get_num_threads())
 
             if self.max_candidates is None:
                 effective_max_candidates = min(60, self.n_neighbors)
