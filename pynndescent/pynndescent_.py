@@ -37,6 +37,8 @@ from pynndescent.utils import (
     check_and_mark_visited,
     generate_graph_update_array,
     apply_graph_update_array,
+    sort_updates_by_block,
+    apply_sorted_graph_update_array,
     initalize_heap_from_graph_indices,
     initalize_heap_from_graph_indices_and_distances,
     sparse_initalize_heap_from_graph_indices,
@@ -130,9 +132,10 @@ def init_rp_tree(data, dist, current_graph, leaf_array, n_threads=8):
     )
     updates = np.zeros((n_threads, updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+    sorted_updates = np.empty((n_threads, 2 * updates_per_thread, 3), dtype=np.float32)
+    block_offsets = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
 
     n_vertices = current_graph[0].shape[0]
-    vertex_block_size = n_vertices // n_threads + 1
 
     for i in range(n_blocks + 1):
         block_start = i * block_size
@@ -151,38 +154,12 @@ def init_rp_tree(data, dist, current_graph, leaf_array, n_threads=8):
             n_threads,
         )
 
-        for t in numba.prange(n_threads):
-            v_block_start = t * vertex_block_size
-            v_block_end = min(v_block_start + vertex_block_size, n_vertices)
-
-            for j in range(n_threads):
-                for k in range(n_updates_per_thread[j]):
-                    p = np.int32(updates[j, k, 0])
-
-                    if p < 0:
-                        continue
-
-                    q = np.int32(updates[j, k, 1])
-                    d = updates[j, k, 2]
-
-                    if p >= v_block_start and p < v_block_end:
-                        checked_flagged_heap_push(
-                            current_graph[1][p],
-                            current_graph[0][p],
-                            current_graph[2][p],
-                            d,
-                            q,
-                            np.uint8(1),
-                        )
-                    if q >= v_block_start and q < v_block_end:
-                        checked_flagged_heap_push(
-                            current_graph[1][q],
-                            current_graph[0][q],
-                            current_graph[2][q],
-                            d,
-                            p,
-                            np.uint8(1),
-                        )
+        sort_updates_by_block(
+            updates, n_updates_per_thread, sorted_updates, block_offsets, n_vertices, n_threads
+        )
+        apply_sorted_graph_update_array(
+            current_graph, sorted_updates, block_offsets, n_threads
+        )
 
 
 @numba.njit(
@@ -226,6 +203,8 @@ def process_candidates(
     n_threads,
     update_array,
     n_updates_per_thread,
+    sorted_updates,
+    block_offsets,
 ):
     """Process candidate neighbors using array-based update generation.
 
@@ -256,9 +235,24 @@ def process_candidates(
             n_threads,
         )
 
-        c += apply_graph_update_array(
-            current_graph, update_array, n_updates_per_thread, n_threads
-        )
+        if n_threads > 1:
+            # Bucket updates by destination block so each thread only reads the
+            # updates it will apply, instead of scanning every thread's updates.
+            sort_updates_by_block(
+                update_array,
+                n_updates_per_thread,
+                sorted_updates,
+                block_offsets,
+                n_vertices,
+                n_threads,
+            )
+            c += apply_sorted_graph_update_array(
+                current_graph, sorted_updates, block_offsets, n_threads
+            )
+        else:
+            c += apply_graph_update_array(
+                current_graph, update_array, n_updates_per_thread, n_threads
+            )
 
     return c
 
@@ -292,6 +286,14 @@ def nn_descent_internal(
     )
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+    # Each update is written to at most two destination blocks.
+    if n_threads > 1:
+        sorted_updates = np.empty(
+            (n_threads, 2 * max_updates_per_thread, 3), dtype=np.float32
+        )
+    else:
+        sorted_updates = np.empty((1, 1, 3), dtype=np.float32)
+    block_offsets = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
 
     for n in range(n_iters):
         if verbose:
@@ -312,6 +314,8 @@ def nn_descent_internal(
             n_threads,
             update_array,
             n_updates_per_thread,
+            sorted_updates,
+            block_offsets,
         )
 
         if c <= delta * n_neighbors * data.shape[0]:
