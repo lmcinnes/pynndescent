@@ -29,6 +29,7 @@ from pynndescent.utils import (
     make_heap,
     deheap_sort,
     new_build_candidates,
+    build_candidates_owner,
     ts,
     simple_heap_push,
     checked_flagged_heap_push,
@@ -310,12 +311,39 @@ def nn_descent_internal(
         sorted_updates = np.empty((1, 1, 3), dtype=np.float32)
     block_offsets = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
 
+    # Candidate workspace, reused across iterations; build_candidates_owner only
+    # resets the rows it wrote on the previous iteration.
+    new_candidate_indices = np.full((n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    old_candidate_indices = np.full((n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    active = np.ones(n_vertices, dtype=np.uint8)
+    # Cross-block reverse edges, bucketed by owning thread (at most one per edge).
+    reverse_dst = np.empty(n_vertices * n_neighbors, dtype=np.int32)
+    reverse_src = np.empty(n_vertices * n_neighbors, dtype=np.int32)
+    bucket_bounds = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
+
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        new_candidate_neighbors, old_candidate_neighbors = new_build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+        new_candidate_neighbors, old_candidate_neighbors = build_candidates_owner(
+            current_graph,
+            max_candidates,
+            rng_state,
+            n_threads,
+            new_candidate_indices,
+            new_candidate_priority,
+            old_candidate_indices,
+            old_candidate_priority,
+            active,
+            reverse_dst,
+            reverse_src,
+            bucket_bounds,
         )
 
         c = process_candidates(
