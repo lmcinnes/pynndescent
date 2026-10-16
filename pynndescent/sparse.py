@@ -512,18 +512,30 @@ def sparse_hamming(ind1, data1, ind2, data2, n_features):
 
 @numba.njit()
 def sparse_canberra(ind1, data1, ind2, data2):
-    abs_data1 = np.abs(data1)
-    abs_data2 = np.abs(data2)
-    denom_inds, denom_data = sparse_sum(ind1, abs_data1, ind2, abs_data2)
-    denom_data = (1.0 / denom_data).astype(np.float32)
-    numer_inds, numer_data = sparse_diff(ind1, data1, ind2, data2)
-    numer_data = np.abs(numer_data)
-
-    _, val_data = sparse_mul(numer_inds, numer_data, denom_inds, denom_data)
+    # sum over the union support of |x - y| / (|x| + |y|), as a single merge
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
     result = 0.0
-    for val in val_data:
-        result += val
-
+    while i1 < n1 or i2 < n2:
+        if i2 >= n2 or (i1 < n1 and ind1[i1] < ind2[i2]):
+            a = data1[i1]
+            b = np.float32(0.0)
+            i1 += 1
+        elif i1 >= n1 or ind2[i2] < ind1[i1]:
+            a = np.float32(0.0)
+            b = data2[i2]
+            i2 += 1
+        else:
+            a = data1[i1]
+            b = data2[i2]
+            i1 += 1
+            i2 += 1
+        denominator = np.float32(abs(a) + abs(b))
+        numerator = np.float32(abs(a - b))
+        if denominator != 0 and numerator != 0:
+            result += numerator * np.float32(1.0 / denominator)
     return result
 
 
@@ -532,21 +544,32 @@ def sparse_canberra(ind1, data1, ind2, data2):
     cache=True,
 )
 def sparse_bray_curtis(ind1, data1, ind2, data2):  # pragma: no cover
-    _, denom_data = sparse_sum(ind1, data1, ind2, data2)
-    denom_data = np.abs(denom_data)
-
-    if denom_data.shape[0] == 0:
-        return np.float32(0.0)
-
-    denominator = np.sum(denom_data)
+    # sum |x - y| / sum |x + y| over the union support, as a single merge
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    numerator = np.float32(0.0)
+    denominator = np.float32(0.0)
+    while i1 < n1 or i2 < n2:
+        if i2 >= n2 or (i1 < n1 and ind1[i1] < ind2[i2]):
+            a = data1[i1]
+            b = np.float32(0.0)
+            i1 += 1
+        elif i1 >= n1 or ind2[i2] < ind1[i1]:
+            a = np.float32(0.0)
+            b = data2[i2]
+            i2 += 1
+        else:
+            a = data1[i1]
+            b = data2[i2]
+            i1 += 1
+            i2 += 1
+        denominator += abs(a + b)
+        numerator += abs(a - b)
 
     if denominator == 0.0:
         return np.float32(0.0)
-
-    _, numer_data = sparse_diff(ind1, data1, ind2, data2)
-    numer_data = np.abs(numer_data)
-
-    numerator = np.sum(numer_data)
 
     return np.float32(float(numerator) / denominator)
 
@@ -742,7 +765,6 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
 
     mu_x = 0.0
     mu_y = 0.0
-    dot_product = 0.0
 
     if ind1.shape[0] == 0 and ind2.shape[0] == 0:
         return 0.0
@@ -757,38 +779,42 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
     mu_x /= n_features
     mu_y /= n_features
 
-    shifted_data1 = np.empty(data1.shape[0], dtype=np.float32)
-    shifted_data2 = np.empty(data2.shape[0], dtype=np.float32)
-
+    # Norms of the centred vectors: stored entries plus the implicit zeros.
+    sq1 = 0.0
     for i in range(data1.shape[0]):
-        shifted_data1[i] = data1[i] - mu_x
+        v = np.float32(data1[i] - mu_x)
+        sq1 += v * v
+    sq2 = 0.0
     for i in range(data2.shape[0]):
-        shifted_data2[i] = data2[i] - mu_y
+        v = np.float32(data2[i] - mu_y)
+        sq2 += v * v
+    norm1 = np.sqrt(sq1 + (n_features - ind1.shape[0]) * (mu_x**2))
+    norm2 = np.sqrt(sq2 + (n_features - ind2.shape[0]) * (mu_y**2))
 
-    norm1 = np.sqrt(
-        (norm(shifted_data1) ** 2) + (n_features - ind1.shape[0]) * (mu_x**2)
-    )
-    norm2 = np.sqrt(
-        (norm(shifted_data2) ** 2) + (n_features - ind2.shape[0]) * (mu_y**2)
-    )
+    # Centred dot product in one merge over the union support; positions
+    # stored in neither vector contribute mu_x * mu_y each.
+    dot_product = 0.0
+    n_union = 0
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    while i1 < n1 or i2 < n2:
+        if i2 >= n2 or (i1 < n1 and ind1[i1] < ind2[i2]):
+            dot_product -= np.float32(data1[i1] - mu_x) * mu_y
+            i1 += 1
+        elif i1 >= n1 or ind2[i2] < ind1[i1]:
+            dot_product -= np.float32(data2[i2] - mu_y) * mu_x
+            i2 += 1
+        else:
+            dot_product += np.float32(data1[i1] - mu_x) * np.float32(
+                data2[i2] - mu_y
+            )
+            i1 += 1
+            i2 += 1
+        n_union += 1
 
-    dot_prod_inds, dot_prod_data = sparse_mul(ind1, shifted_data1, ind2, shifted_data2)
-
-    common_indices = set(dot_prod_inds)
-
-    for val in dot_prod_data:
-        dot_product += val
-
-    for i in range(ind1.shape[0]):
-        if ind1[i] not in common_indices:
-            dot_product -= shifted_data1[i] * (mu_y)
-
-    for i in range(ind2.shape[0]):
-        if ind2[i] not in common_indices:
-            dot_product -= shifted_data2[i] * (mu_x)
-
-    all_indices = arr_union(ind1, ind2)
-    dot_product += mu_x * mu_y * (n_features - all_indices.shape[0])
+    dot_product += mu_x * mu_y * (n_features - n_union)
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0
