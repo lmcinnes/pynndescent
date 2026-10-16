@@ -91,8 +91,8 @@ def _four_alt_dot(x, data, q0, q1, q2, q3):
 
 
 @numba.njit(fastmath=True, inline="always")
-def _emit(update_array, t, idx, p, q, d, dist_thresh_p, dist_thresholds):
-    if d <= max(dist_thresh_p, dist_thresholds[q]):
+def _emit(update_array, t, idx, p, q, d, dist_thresh_p, heap_distances):
+    if d <= max(dist_thresh_p, heap_distances[q, 0]):
         update_array[t, idx, 0] = p
         update_array[t, idx, 1] = q
         update_array[t, idx, 2] = d
@@ -111,7 +111,7 @@ def _join_row(
     dist_thresh_p,
     candidates,
     start,
-    dist_thresholds,
+    heap_distances,
     data,
     kernel,
 ):
@@ -132,6 +132,10 @@ def _join_row(
             and candidates[k + 1] >= 0
             and candidates[k + 2] >= 0
             and candidates[k + 3] >= 0
+            and candidates[k] != p
+            and candidates[k + 1] != p
+            and candidates[k + 2] != p
+            and candidates[k + 3] != p
         ):
             q0 = candidates[k]
             q1 = candidates[k + 1]
@@ -141,19 +145,19 @@ def _join_row(
                 d0, d1, d2, d3 = _four_sqeuclidean(data_p, data, q0, q1, q2, q3)
             else:
                 d0, d1, d2, d3 = _four_alt_dot(data_p, data, q0, q1, q2, q3)
-            idx = _emit(update_array, t, idx, p, q0, d0, dist_thresh_p, dist_thresholds)
-            idx = _emit(update_array, t, idx, p, q1, d1, dist_thresh_p, dist_thresholds)
-            idx = _emit(update_array, t, idx, p, q2, d2, dist_thresh_p, dist_thresholds)
-            idx = _emit(update_array, t, idx, p, q3, d3, dist_thresh_p, dist_thresholds)
+            idx = _emit(update_array, t, idx, p, q0, d0, dist_thresh_p, heap_distances)
+            idx = _emit(update_array, t, idx, p, q1, d1, dist_thresh_p, heap_distances)
+            idx = _emit(update_array, t, idx, p, q2, d2, dist_thresh_p, heap_distances)
+            idx = _emit(update_array, t, idx, p, q3, d3, dist_thresh_p, heap_distances)
             k += 4
         else:
             q = candidates[k]
-            if q >= 0:
+            if q >= 0 and q != p:
                 if kernel == 1:
                     d = squared_euclidean(data_p, data[q])
                 else:
                     d = alternative_dot(data_p, data[q])
-                idx = _emit(update_array, t, idx, p, q, d, dist_thresh_p, dist_thresholds)
+                idx = _emit(update_array, t, idx, p, q, d, dist_thresh_p, heap_distances)
             k += 1
     return idx
 
@@ -169,12 +173,13 @@ def generate_graph_update_array_batched(
     n_updates_per_thread,
     new_candidate_block,
     old_candidate_block,
-    dist_thresholds,
+    current_graph,
     data,
     kernel,
     n_threads,
 ):
     """Batched equivalent of ``utils.generate_graph_update_array`` for kernels 1 and 2."""
+    heap_distances = current_graph[1]
     block_size = new_candidate_block.shape[0]
     max_new_candidates = new_candidate_block.shape[1]
     rows_per_thread = (block_size // n_threads) + 1
@@ -197,9 +202,10 @@ def generate_graph_update_array_batched(
                     continue
 
                 data_p = data[p]
-                dist_thresh_p = dist_thresholds[p]
+                dist_thresh_p = heap_distances[p, 0]
 
-                # new-new pairs start at j to match the pairwise implementation
+                # new-new pairs start at j + 1 (and _join_row skips q == p) to
+                # avoid self-loops, matching the pairwise implementation
                 idx = _join_row(
                     update_array,
                     t,
@@ -209,8 +215,8 @@ def generate_graph_update_array_batched(
                     data_p,
                     dist_thresh_p,
                     new_candidate_block[i],
-                    j,
-                    dist_thresholds,
+                    j + 1,
+                    heap_distances,
                     data,
                     kernel,
                 )
@@ -224,7 +230,7 @@ def generate_graph_update_array_batched(
                     dist_thresh_p,
                     old_candidate_block[i],
                     0,
-                    dist_thresholds,
+                    heap_distances,
                     data,
                     kernel,
                 )

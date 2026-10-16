@@ -1119,7 +1119,7 @@ def initalize_heap_from_graph_indices(heap, graph_indices, data, metric):
     for i in range(graph_indices.shape[0]):
         for idx in range(graph_indices.shape[1]):
             j = graph_indices[i, idx]
-            if j >= 0:
+            if j >= 0 and j != i:
                 d = metric(data[i], data[j])
                 checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, j, 1)
 
@@ -1133,7 +1133,7 @@ def initalize_heap_from_graph_indices_and_distances(
     for i in range(graph_indices.shape[0]):
         for idx in range(graph_indices.shape[1]):
             j = graph_indices[i, idx]
-            if j >= 0:
+            if j >= 0 and j != i:
                 d = graph_distances[i, idx]
                 checked_flagged_heap_push(heap[1][i], heap[0][i], heap[2][i], d, j, 1)
 
@@ -1148,6 +1148,8 @@ def sparse_initalize_heap_from_graph_indices(
     for i in numba.prange(graph_indices.shape[0]):
         for idx in range(graph_indices.shape[1]):
             j = graph_indices[i, idx]
+            if j < 0 or j == i:
+                continue
             ind1 = data_indices[data_indptr[i] : data_indptr[i + 1]]
             data1 = data_vals[data_indptr[i] : data_indptr[i + 1]]
             ind2 = data_indices[data_indptr[j] : data_indptr[j + 1]]

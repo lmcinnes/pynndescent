@@ -238,7 +238,7 @@ def process_candidates(
                 n_updates_per_thread,
                 new_candidate_block,
                 old_candidate_block,
-                current_graph[1][:, 0],
+                current_graph,
                 data,
                 kernel,
                 n_threads,
@@ -920,11 +920,6 @@ class NNDescent:
         Arguments to pass on to the metric, such as the ``p`` value for
         Minkowski distance.
 
-    bit_metric: bool (optional, default=False)
-        Whether ``metric`` assumes bit-packed data. Only to be used if ``metric`` is
-        a callable; if ``metric`` is a string referring to one of the available already
-        implemented metrics, this argument is ignored.
-
     n_neighbors: int (optional, default=30)
         The number of neighbors to use in k-neighbor graph graph_data structure
         used for fast approximate nearest neighbor search. Larger values
@@ -938,11 +933,6 @@ class NNDescent:
         of performance. The default of None means a value will be chosen based on the
         size of the data (typically 3-12 trees). Benchmarks show that 2-4 trees are
         usually sufficient for best recall.
-
-    angular_trees: bool (optional, default=False)
-        Whether angular trees should be used in initialization. Only to be used if
-        ``metric`` is a callable; if ``metric`` is a string referring to one of the
-        available already implemented metrics, this argument is ignored.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
@@ -963,22 +953,17 @@ class NNDescent:
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. A value of 1.0 will prune all edges that it can.
 
-    n_search_trees: int (optional, default=1)
-        The number of random projection trees to use in initializing searching or
-        querying.
+    n_search_trees: int (optional, default=None)
+        No longer has any effect; a single search tree is always used.
 
         .. deprecated:: 0.5.5
+            This parameter will be removed in the next version.
 
     search_tree_leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the search tree (hub tree).
         This is independent of leaf_size which controls the init RP trees.
         The default of None means a value will be chosen automatically (currently 30).
         Smaller values may improve search accuracy at the cost of more tree traversals.
-
-    search_tree_leaf_budget: int (optional, default=1)
-        Number of dense search-tree leaves used to initialize each query. A value
-        of 1 preserves hard routing. Larger values enable best-first spill routing
-        through alternate branches ranked by their hyperplane margin.
 
     max_search_tree_depth: int (optional, default=None)
         Maximum depth of the search tree. If None, uses max_rptree_depth.
@@ -1059,6 +1044,21 @@ class NNDescent:
 
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
+
+    bit_metric: bool (optional, default=False)
+        Whether ``metric`` assumes bit-packed data. Only to be used if ``metric`` is
+        a callable; if ``metric`` is a string referring to one of the available already
+        implemented metrics, this argument is ignored.
+
+    angular_trees: bool (optional, default=False)
+        Whether angular trees should be used in initialization. Only to be used if
+        ``metric`` is a callable; if ``metric`` is a string referring to one of the
+        available already implemented metrics, this argument is ignored.
+
+    search_tree_leaf_budget: int (optional, default=1)
+        Number of dense search-tree leaves used to initialize each query. A value
+        of 1 preserves hard routing. Larger values enable best-first spill routing
+        through alternate branches ranked by their hyperplane margin.
     """
 
     def __init__(
@@ -1066,18 +1066,15 @@ class NNDescent:
         data,
         metric="euclidean",
         metric_kwds=None,
-        bit_metric=False,
         n_neighbors=30,
         n_trees=None,
-        angular_trees=False,
         leaf_size=None,
         pruning_degree_multiplier=1.5,
         diversify_prob=1.0,
         diversify_method="standard",
         degree_prune_aggressiveness=1.0,
-        n_search_trees=1,
+        n_search_trees=None,
         search_tree_leaf_size=None,
-        search_tree_leaf_budget=1,
         max_search_tree_depth=None,
         quantization=None,
         tree_init=True,
@@ -1093,6 +1090,9 @@ class NNDescent:
         compressed=False,
         parallel_batch_queries=False,
         verbose=False,
+        bit_metric=False,
+        angular_trees=False,
+        search_tree_leaf_budget=1,
     ):
 
         if n_trees is None:
@@ -1112,6 +1112,12 @@ class NNDescent:
         self.diversify_prob = diversify_prob
         self.diversify_method = diversify_method
         self.degree_prune_aggressiveness = degree_prune_aggressiveness
+        if n_search_trees is not None:
+            warn(
+                "n_search_trees no longer has any effect and will be removed in "
+                "the next version.",
+                FutureWarning,
+            )
         self.n_search_trees = n_search_trees
         self.search_tree_leaf_size = search_tree_leaf_size
         if search_tree_leaf_budget < 1:
@@ -1162,6 +1168,12 @@ class NNDescent:
 
         self._distance_correction = None
 
+        # Dense cosine is computed as a dot product on unit-normalized data, which
+        # lets it share the fast dot-product kernels.
+        self._normalized_data = metric in ("dot", "direct_cosine") or (
+            metric == "cosine" and not issparse(data)
+        )
+
         self._set_distance_func()
 
         if metric in (
@@ -1191,7 +1203,7 @@ class NNDescent:
             else:
                 self._bit_trees = False
 
-        if metric in ("dot", "direct_cosine"):
+        if self._normalized_data:
             data = normalize(data, norm="l2", copy=copy_on_normalize)
             self._raw_data = data
 
@@ -1362,6 +1374,12 @@ class NNDescent:
 
         numba.set_num_threads(self._original_num_threads)
 
+    def _uses_normalized_data(self):
+        # Indexes pickled before this attribute existed only normalized dot data.
+        return getattr(
+            self, "_normalized_data", self.metric in ("dot", "direct_cosine")
+        )
+
     def _set_distance_func(self):
         self._is_proxy_distance = False
         if callable(self.metric):
@@ -1382,6 +1400,8 @@ class NNDescent:
                 ]["correction"]
             else:
                 _distance_func = pynnd_dist.named_distances[self.metric]
+            if self.metric == "cosine" and self._uses_normalized_data():
+                _distance_func = pynnd_dist.alternative_dot
         else:
             raise ValueError("Metric is neither callable, " + "nor a recognised string")
 
@@ -1418,6 +1438,10 @@ class NNDescent:
     def __setstate__(self, d):
         self.__dict__ = d
         self._set_distance_func()
+        if self.quantization is not None:
+            # _set_distance_func resets the proxy state that prepare() set up
+            self._is_proxy_distance = True
+            self._true_distance_func = self._distance_func
         self._search_forest = tuple(
             [renumbaify_tree(tree) for tree in d["_search_forest"]]
         )
@@ -1453,7 +1477,7 @@ class NNDescent:
                     rp_forest = make_forest(
                         self._raw_data,
                         self.n_neighbors,
-                        self.n_search_trees,
+                        1,
                         search_leaf_size,
                         self.rng_state,
                         current_random_state,
@@ -1747,7 +1771,7 @@ class NNDescent:
             tree_order = np.argsort(self._vertex_order)
             self._search_forest = tuple(
                 resort_tree_indices(tree, tree_order)
-                for tree in self._search_forest[: self.n_search_trees]
+                for tree in self._search_forest[:1]
             )
         else:
             self._vertex_order = np.arange(self._raw_data.shape[0])
@@ -2049,6 +2073,11 @@ class NNDescent:
                     visited_nodes = visited
                     visited_nodes[:] = 0
 
+                heap_priorities = result[1][i]
+                heap_indices = result[0][i]
+                heap_priorities[:] = np.inf
+                heap_indices[:] = -1
+
                 if normalize_query and not query_is_normalized:
                     norm = np.sqrt((query_points[i] ** 2).sum())
                     if norm > 0.0:
@@ -2062,20 +2091,18 @@ class NNDescent:
 
                 if bit_trees:
                     tree_current_query = current_query
-                else:
-                    if tree_normalize_query and not query_is_normalized:
-                        tree_norm = np.sqrt((tree_query_points[i] ** 2).sum())
-                        if tree_norm > 0.0:
-                            tree_current_query = tree_query_points[i] / tree_norm
-                        else:
-                            continue
-                    else:
+                elif tree_normalize_query:
+                    # Zero queries have no defined angle; searching with them
+                    # would visit the whole graph, so leave their row empty.
+                    tree_norm = np.sqrt((tree_query_points[i] ** 2).sum())
+                    if tree_norm == 0.0:
+                        continue
+                    if query_is_normalized:
                         tree_current_query = tree_query_points[i]
-
-                heap_priorities = result[1][i]
-                heap_indices = result[0][i]
-                heap_priorities[:] = np.inf
-                heap_indices[:] = -1
+                    else:
+                        tree_current_query = tree_query_points[i] / tree_norm
+                else:
+                    tree_current_query = tree_query_points[i]
                 seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
                 # heapq.heapify(seed_set)
 
@@ -2668,7 +2695,7 @@ class NNDescent:
         query_data,
         k=10,
         epsilon=0.1,
-        proxy_beam_size=4,
+        proxy_beam_size=None,
         candidate_width=None,
         rerank_width=None,
         return_distances=True,
@@ -2691,14 +2718,16 @@ class NNDescent:
             cost for the search. Values should be in the range 0.0 to 0.5, but
             should probably not exceed 0.3 without good reason.
 
-        proxy_beam_size: int (optional, default=4)
+        proxy_beam_size: int or None (optional, default=None)
             Backward-compatible multiplier for the proxy candidate width.
             Ignored when ``candidate_width`` is supplied.
 
         candidate_width: int or None (optional, default=None)
             Absolute number of proxy candidates retained before exact reranking.
             Only applies to proxy and quantized searches and must be at least
-            ``k``. Defaults to ``proxy_beam_size * k``.
+            ``k``. Defaults to ``proxy_beam_size * k`` if ``proxy_beam_size`` is
+            given, otherwise ``int(1.66 * k)`` for int8 quantization and
+            ``4 * k`` for other proxy searches.
 
         rerank_width: int or None (optional, default=None)
             Number of proxy finalists to score with the exact distance. Defaults
@@ -2710,7 +2739,8 @@ class NNDescent:
             correction and copying. This is useful for ID-only consumers.
 
         pre_normalized: bool (optional, default=False)
-            For ``direct_cosine`` and ``dot``, state that each dense query row
+            For ``cosine``, ``direct_cosine`` and ``dot`` on dense data, state
+            that each query row
             is already unit-normalized. This skips query and RP-tree routing
             normalization. Callers are responsible for preserving the unit-norm
             invariant; other metrics reject this option.
@@ -2731,14 +2761,21 @@ class NNDescent:
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
 
-        if pre_normalized and self.metric not in ("direct_cosine", "dot"):
+        normalized_data = self._uses_normalized_data()
+        if pre_normalized and (self._is_sparse or not normalized_data):
             raise ValueError(
-                "pre_normalized is only supported for direct_cosine and dot"
+                "pre_normalized is only supported for dense cosine, direct_cosine "
+                "and dot"
             )
 
         if self._is_proxy_distance:
             if candidate_width is None:
-                search_k = proxy_beam_size * k
+                if proxy_beam_size is not None:
+                    search_k = proxy_beam_size * k
+                elif self.quantization == "int8":
+                    search_k = int(1.66 * k)
+                else:
+                    search_k = 4 * k
             else:
                 search_k = candidate_width
                 if search_k < k:
@@ -2764,7 +2801,7 @@ class NNDescent:
             else:
                 query_data = np.asarray(query_data).astype(np.float32, order="C")
 
-            if self.metric in ("dot", "direct_cosine") and not pre_normalized:
+            if normalized_data and not pre_normalized:
                 query_data = normalize(query_data, norm="l2", copy=False)
 
             if self.quantization is not None:
@@ -2803,7 +2840,7 @@ class NNDescent:
                 search_k,
                 epsilon,
                 self._visited,
-                pre_normalized,
+                normalized_data,
                 self.search_rng_state,
             )
         else:
@@ -2826,8 +2863,10 @@ class NNDescent:
 
         indices, dists = self._deheap_function(indices, dists)
 
+        reranked = False
         if self._is_proxy_distance:
             if effective_rerank_width > 0:
+                reranked = True
                 indices, dists = rerank(
                     indices[:, :effective_rerank_width],
                     query_data,
@@ -2846,13 +2885,12 @@ class NNDescent:
         if not return_distances:
             return indices
 
-        # Dense non-proxy searches reuse their internal distance heap. Preserve
-        # the public query result when that workspace is reset by a later call.
-        if not self._is_sparse and not self._is_proxy_distance:
-            dists = dists.copy()
-
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)
+        elif not self._is_sparse and not reranked:
+            # Dense searches return views into the reused query workspace; copy
+            # so results survive later queries.
+            dists = dists.copy()
 
         return indices, dists
 
@@ -2861,7 +2899,7 @@ class NNDescent:
         query_data,
         k=10,
         epsilon=0.1,
-        proxy_beam_size=4,
+        proxy_beam_size=None,
         candidate_width=None,
         rerank_width=None,
         pre_normalized=False,
@@ -2973,9 +3011,15 @@ class NNDescent:
                 # but will leave this here as a marker
                 raise error_sparse_to_do
         else:
+            if self._uses_normalized_data() and xs_fresh.shape[0] > 0:
+                xs_fresh = normalize(xs_fresh, norm="l2")
             self._raw_data = self._raw_data[original_order, :]
             for x_updated, i_fresh in zip(xs_updated, updated_indices):
                 self._raw_data[i_fresh] = x_updated
+            if self._uses_normalized_data() and len(updated_indices) > 0:
+                self._raw_data[updated_indices] = normalize(
+                    self._raw_data[updated_indices], norm="l2"
+                )
             self._raw_data = np.ascontiguousarray(np.vstack([self._raw_data, xs_fresh]))
             ns, ds = self._neighbor_graph
             n_examples, n_neighbors = ns.shape
@@ -3133,11 +3177,11 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. A value of 1.0 will prune all edges that it can.
 
-    n_search_trees: int (optional, default=1)
-        The number of random projection trees to use in initializing searching or
-        querying.
+    n_search_trees: int (optional, default=None)
+        No longer has any effect; a single search tree is always used.
 
-        .. deprecated::  0.5.5
+        .. deprecated:: 0.5.5
+            This parameter will be removed in the next version.
 
     search_epsilon: float (optional, default=0.1)
         When searching for nearest neighbors of a query point this values
@@ -3217,7 +3261,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         search_epsilon=0.1,
         pruning_degree_multiplier=1.5,
         diversify_prob=1.0,
-        n_search_trees=1,
+        n_search_trees=None,
         tree_init=True,
         random_state=None,
         n_jobs=None,

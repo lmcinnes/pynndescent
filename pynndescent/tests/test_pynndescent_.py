@@ -9,12 +9,14 @@ import numpy as np
 from sklearn.neighbors import KDTree
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
+from sklearn.metrics.pairwise import cosine_distances
 import pickle
 import joblib
 import scipy
 
 from pynndescent import NNDescent, PyNNDescentTransformer
 from pynndescent.distances import (
+    alternative_dot,
     quantized_int8_alternative_cosine,
     quantized_int8_alternative_dot,
     quantized_int8_alternative_cosine_with_norms,
@@ -23,6 +25,7 @@ from pynndescent.distances import (
     quantized_int8_direct_cosine_with_norms,
 )
 from pynndescent.pynndescent_ import _int8_code_inv_norms, _quantize_int8_rows
+from pynndescent.kernels import select_kernel
 
 
 def test_nn_descent_neighbor_accuracy(nn_data, seed):
@@ -41,6 +44,28 @@ def test_nn_descent_neighbor_accuracy(nn_data, seed):
     assert (
         percent_correct >= 0.98
     ), "NN-descent did not get 99% accuracy on nearest neighbors"
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine", "manhattan"])
+@pytest.mark.parametrize("use_init_graph", [False, True])
+def test_neighbor_graph_has_single_self_loop(nn_data, seed, metric, use_init_graph):
+    data = nn_data[:-2]  # drop the duplicated all-zero rows
+    init_graph = None
+    if use_init_graph:
+        init_graph = NNDescent(
+            data, metric=metric, n_neighbors=10, random_state=seed
+        ).neighbor_graph[0]
+    knn_indices, _ = NNDescent(
+        data,
+        metric=metric,
+        n_neighbors=10,
+        init_graph=init_graph,
+        random_state=np.random.RandomState(seed),
+    ).neighbor_graph
+
+    assert np.all(knn_indices[:, 0] == np.arange(data.shape[0]))
+    for row in knn_indices:
+        assert np.unique(row).shape[0] == row.shape[0]
 
 
 def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
@@ -218,9 +243,61 @@ def test_direct_cosine_and_indices_only_query(nn_data):
     np.testing.assert_allclose(fast_distances, distances, atol=3.0e-7)
 
     with pytest.raises(ValueError, match="pre_normalized"):
-        NNDescent(nn_data[200:], "cosine", n_neighbors=20, random_state=42).query(
+        NNDescent(nn_data[200:], "euclidean", n_neighbors=20, random_state=42).query(
             normalized_queries, k=10, pre_normalized=True
         )
+
+
+def test_cosine_uses_normalized_dot_product(nn_data):
+    train = nn_data[200:].astype(np.float32)
+    original_train = train.copy()
+    queries = nn_data[:20]
+    index = NNDescent(train, "cosine", n_neighbors=20, random_state=42)
+
+    assert index._distance_func is alternative_dot
+    assert select_kernel(index._distance_func, index._raw_data) != 0
+    np.testing.assert_array_equal(train, original_train)
+
+    indices, distances = index.query(queries, k=10, epsilon=0.2)
+    expected = cosine_distances(queries, train)
+    np.testing.assert_allclose(
+        distances, np.take_along_axis(expected, indices, 1), atol=1.0e-5
+    )
+
+    fast_indices, fast_distances = index.query(
+        normalize(queries, norm="l2"), k=10, epsilon=0.2, pre_normalized=True
+    )
+    np.testing.assert_array_equal(fast_indices, indices)
+    np.testing.assert_allclose(fast_distances, distances, atol=1.0e-6)
+
+    graph_indices, graph_distances = index.neighbor_graph
+    expected_graph = cosine_distances(train)
+    nonzero_rows = np.linalg.norm(train, axis=1) > 0
+    np.testing.assert_allclose(
+        graph_distances[nonzero_rows],
+        np.take_along_axis(expected_graph, graph_indices, 1)[nonzero_rows],
+        atol=1.0e-5,
+    )
+
+
+def test_n_search_trees_is_deprecated(nn_data):
+    with pytest.warns(FutureWarning, match="n_search_trees"):
+        NNDescent(nn_data[:100], n_neighbors=5, n_search_trees=2)
+
+
+@pytest.mark.parametrize("metric", ["cosine", "dot"])
+def test_zero_angular_query_is_not_searched(nn_data, metric):
+    index = NNDescent(nn_data[200:], metric, n_neighbors=20, random_state=42)
+    index.query(nn_data[:10], k=10, epsilon=0.2)
+
+    queries = nn_data[10:20].copy()
+    queries[0] = 0.0
+    indices, distances = index.query(queries, k=10, epsilon=0.2)
+
+    # Row 0 must be empty (corrected infinite distance), not a stale result
+    # left over in the reused workspace from the previous query.
+    np.testing.assert_array_equal(distances[0], 1.0)
+    assert np.all(distances[1:] < 1.0)
 
 
 def test_int8_quantized_distance_self_similarity():
@@ -307,6 +384,31 @@ def test_int8_quantized_query_and_width_controls(nn_data):
         index.query(queries, k=10, candidate_width=9)
     with pytest.raises(ValueError, match="rerank_width"):
         index.query(queries, k=10, candidate_width=20, rerank_width=5)
+
+    index.query(queries, k=10)
+    assert index._query_workspace[0].shape[1] == int(1.66 * 10)
+    index.query(queries, k=10, proxy_beam_size=4)
+    assert index._query_workspace[0].shape[1] == 40
+
+
+def test_proxy_only_results_survive_later_queries(nn_data):
+    index = NNDescent(
+        nn_data[200:],
+        "direct_cosine",
+        n_neighbors=30,
+        random_state=42,
+        quantization="int8",
+    )
+    indices, distances = index.query(
+        nn_data[:50], k=10, epsilon=0.2, candidate_width=20, rerank_width=0
+    )
+    expected_indices = indices.copy()
+    expected_distances = distances.copy()
+
+    index.query(nn_data[50:100], k=10, epsilon=0.2, candidate_width=20, rerank_width=0)
+
+    np.testing.assert_array_equal(indices, expected_indices)
+    np.testing.assert_array_equal(distances, expected_distances)
 
 
 def test_direct_cosine_int8_quantized_query(nn_data):
@@ -632,6 +734,23 @@ def test_pickle_unpickle():
 
     np.testing.assert_equal(neighbors1, neighbors2)
     np.testing.assert_equal(distances1, distances2)
+
+
+@pytest.mark.parametrize("quantization", [None, "int8"])
+def test_cosine_pickle_unpickle(quantization):
+    seed = np.random.RandomState(42)
+    x1 = seed.normal(0, 1, (1000, 32))
+    x2 = seed.normal(0, 1, (100, 32))
+
+    index1 = NNDescent(
+        x1, "cosine", n_neighbors=15, quantization=quantization, random_state=1
+    )
+    neighbors1, distances1 = index1.query(x2)
+    index2 = pickle.loads(pickle.dumps(index1))
+    neighbors2, distances2 = index2.query(x2)
+
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_allclose(distances1, distances2, atol=1.0e-6)
 
 
 def test_compressed_pickle_unpickle():
