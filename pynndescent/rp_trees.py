@@ -16,6 +16,7 @@ from pynndescent.sparse import (
     sparse_dot_accumulate,
 )
 from pynndescent.utils import tau_rand_int, norm
+from pynndescent.distances import popcnt_u8
 import joblib
 
 from collections import namedtuple
@@ -251,9 +252,9 @@ def angular_bitpacked_random_projection_split(data, indices, rng_state):
     hyperplane_norm = 0.0
 
     for d in range(dim):
-        hyperplane_norm += popcnt[hyperplane_vector[d]]
-        left_norm += popcnt[data[left, d]]
-        right_norm += popcnt[data[right, d]]
+        hyperplane_norm += np.float32(popcnt_u8(hyperplane_vector[d]))
+        left_norm += np.float32(popcnt_u8(data[left, d]))
+        right_norm += np.float32(popcnt_u8(data[right, d]))
 
     # For each point compute the margin (project into normal vector)
     # If we are on lower side of the hyperplane put in one pile, otherwise
@@ -264,8 +265,8 @@ def angular_bitpacked_random_projection_split(data, indices, rng_state):
     for i in range(indices.shape[0]):
         margin = 0.0
         for d in range(dim):
-            margin += popcnt[positive_hyperplane_component[d] & data[indices[i], d]]
-            margin -= popcnt[negative_hyperplane_component[d] & data[indices[i], d]]
+            margin += np.float32(popcnt_u8(positive_hyperplane_component[d] & data[indices[i], d]))
+            margin -= np.float32(popcnt_u8(negative_hyperplane_component[d] & data[indices[i], d]))
 
         if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
@@ -2050,12 +2051,8 @@ def bit_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
             for i in range(n_points):
                 margin = np.float32(0.0)
                 for d in range(dim):
-                    margin += popcnt[
-                        positive_hyperplane_component[d] & data[indices[i], d]
-                    ]
-                    margin -= popcnt[
-                        negative_hyperplane_component[d] & data[indices[i], d]
-                    ]
+                    margin += np.float32(popcnt_u8(positive_hyperplane_component[d] & data[indices[i], d]))
+                    margin -= np.float32(popcnt_u8(negative_hyperplane_component[d] & data[indices[i], d]))
 
                 if margin > EPS:
                     side[i] = 0
@@ -2830,8 +2827,8 @@ def select_side_bit(hyperplane, offset, point, rng_state):
     margin = offset
     dim = point.shape[0]
     for d in range(dim):
-        margin += popcnt[hyperplane[d] & point[d]]
-        margin -= popcnt[hyperplane[dim + d] & point[d]]
+        margin += np.float32(popcnt_u8(hyperplane[d] & point[d]))
+        margin -= np.float32(popcnt_u8(hyperplane[dim + d] & point[d]))
 
     if abs(margin) < EPS:
         side = np.abs(tau_rand_int(rng_state)) % 2
