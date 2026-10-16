@@ -13,6 +13,7 @@ from pynndescent.sparse import (
     sparse_sum,
     arr_intersect,
     sparse_dot_product,
+    sparse_dot_accumulate,
 )
 from pynndescent.utils import tau_rand_int, norm
 import joblib
@@ -517,9 +518,9 @@ def sparse_angular_random_projection_split(inds, indptr, data, indices, rng_stat
         i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
-        _, mul_data = sparse_mul(hyperplane_inds, hyperplane_data, i_inds, i_data)
-        for val in mul_data:
-            margin += val
+        margin = sparse_dot_accumulate(
+            margin, hyperplane_inds, hyperplane_data, i_inds, i_data
+        )
 
         if abs(margin) < EPS:
             side[i] = tau_rand_int(rng_state) % 2
@@ -636,9 +637,9 @@ def sparse_euclidean_random_projection_split(inds, indptr, data, indices, rng_st
         i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
         i_data = data[indptr[indices[i]] : indptr[indices[i] + 1]]
 
-        _, mul_data = sparse_mul(hyperplane_inds, hyperplane_data, i_inds, i_data)
-        for val in mul_data:
-            margin += val
+        margin = sparse_dot_accumulate(
+            margin, hyperplane_inds, hyperplane_data, i_inds, i_data
+        )
 
         if abs(margin) < EPS:
             side[i] = abs(tau_rand_int(rng_state)) % 2
@@ -1462,11 +1463,9 @@ def sparse_euclidean_hub_split(
                 i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
                 i_data = spdata[indptr[indices[i]] : indptr[indices[i] + 1]]
 
-                _, mul_data = sparse_mul(
-                    hyperplane_inds, hyperplane_data, i_inds, i_data
+                margin = sparse_dot_accumulate(
+                    margin, hyperplane_inds, hyperplane_data, i_inds, i_data
                 )
-                for val in mul_data:
-                    margin += val
 
                 if margin > EPS:
                     side[i] = 0
@@ -1613,11 +1612,9 @@ def sparse_angular_hub_split(
                 i_inds = inds[indptr[indices[i]] : indptr[indices[i] + 1]]
                 i_data = spdata[indptr[indices[i]] : indptr[indices[i] + 1]]
 
-                _, mul_data = sparse_mul(
-                    hyperplane_inds, hyperplane_data, i_inds, i_data
+                margin = sparse_dot_accumulate(
+                    margin, hyperplane_inds, hyperplane_data, i_inds, i_data
                 )
-                for val in mul_data:
-                    margin += val
 
                 if margin > EPS:
                     side[i] = 0

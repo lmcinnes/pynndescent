@@ -442,6 +442,33 @@ def _merge_sqrt_product(ind1, data1, ind2, data2):
 
 
 
+@numba.njit()
+def sparse_dot_accumulate(start, ind1, data1, ind2, data2):
+    """Return ``start`` plus the dot product of two sorted sparse vectors.
+
+    The float32 products are added to ``start`` one at a time in index order,
+    which is exactly what summing the output of :func:`sparse_mul` onto
+    ``start`` computes, without allocating the product vector.
+    """
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = start
+    while i1 < n1 and i2 < n2:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+        if j1 == j2:
+            result += np.float32(data1[i1] * data2[i2])
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            i1 += 1
+        else:
+            i2 += 1
+    return result
+
+
 @numba.njit(fastmath=True)
 def sparse_euclidean(ind1, data1, ind2, data2):
     return np.sqrt(_merge_sq_diff(ind1, data1, ind2, data2))
