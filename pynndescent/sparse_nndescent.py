@@ -7,6 +7,8 @@ import numpy as np
 import numba
 
 from pynndescent.utils import (
+    int32_bits_as_float32,
+    float32_bits_as_int32,
     tau_rand_int,
     make_heap,
     new_build_candidates,
@@ -67,8 +69,8 @@ def generate_leaf_updates(
 
                     if d < heap_distances[p, 0] or d < heap_distances[q, 0]:
                         if count < max_updates:
-                            updates[t, count, 0] = np.float32(p)
-                            updates[t, count, 1] = np.float32(q)
+                            updates[t, count, 0] = int32_bits_as_float32(p)
+                            updates[t, count, 1] = int32_bits_as_float32(q)
                             updates[t, count, 2] = d
                             count += 1
 
@@ -121,8 +123,8 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array, n_threads=
 
             for j in range(n_threads):
                 for k in range(n_updates_per_thread[j]):
-                    p = np.int32(updates[j, k, 0])
-                    q = np.int32(updates[j, k, 1])
+                    p = float32_bits_as_int32(updates[j, k, 0])
+                    q = float32_bits_as_int32(updates[j, k, 1])
                     d = updates[j, k, 2]
 
                     if p >= v_block_start and p < v_block_end:

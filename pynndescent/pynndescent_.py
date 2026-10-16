@@ -24,6 +24,8 @@ import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as pynnd_dist
 
 from pynndescent.utils import (
+    int32_bits_as_float32,
+    float32_bits_as_int32,
     tau_rand_int,
     tau_rand,
     make_heap,
@@ -113,8 +115,8 @@ def generate_leaf_updates(
                     max_threshold = max(heap_distances[p, 0], heap_distances[q, 0])
                     if d < max_threshold:
                         if count < max_updates:
-                            updates[t, count, 0] = np.float32(p)
-                            updates[t, count, 1] = np.float32(q)
+                            updates[t, count, 0] = int32_bits_as_float32(p)
+                            updates[t, count, 1] = int32_bits_as_float32(q)
                             updates[t, count, 2] = d
                             count += 1
 

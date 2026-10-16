@@ -18,6 +18,7 @@ import numpy as np
 import numba
 
 from pynndescent.distances import squared_euclidean, alternative_dot
+from pynndescent.utils import int32_bits_as_float32
 
 FLOAT32_MAX = np.finfo(np.float32).max
 
@@ -93,8 +94,8 @@ def _four_alt_dot(x, data, q0, q1, q2, q3):
 @numba.njit(fastmath=True, inline="always")
 def _emit(update_array, t, idx, p, q, d, dist_thresh_p, heap_distances):
     if d <= max(dist_thresh_p, heap_distances[q, 0]):
-        update_array[t, idx, 0] = p
-        update_array[t, idx, 1] = q
+        update_array[t, idx, 0] = int32_bits_as_float32(p)
+        update_array[t, idx, 1] = int32_bits_as_float32(q)
         update_array[t, idx, 2] = d
         return idx + 1
     return idx

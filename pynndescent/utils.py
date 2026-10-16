@@ -8,6 +8,44 @@ import numba
 import numpy as np
 
 
+
+# ---------------------------------------------------------------------------
+# Graph update buffers are float32 arrays of (p, q, d) records. The vertex ids p
+# and q are stored as the raw bits of an int32, not converted to float32 values,
+# which could not represent ids above 2**24 exactly. These intrinsics
+# reinterpret the bits (an LLVM bitcast, which costs nothing). Never perform
+# arithmetic or comparisons on the float32 form of an id.
+# ---------------------------------------------------------------------------
+from numba import types as _nb_types
+from numba.extending import intrinsic as _nb_intrinsic
+from llvmlite import ir as _llvm_ir
+
+
+@_nb_intrinsic
+def int32_bits_as_float32(typingctx, x):
+    """Store an integer vertex id in a float32 slot without changing its bits."""
+    if not isinstance(x, _nb_types.Integer):
+        return None
+
+    def codegen(context, builder, sig, args):
+        val = context.cast(builder, args[0], sig.args[0], _nb_types.int32)
+        return builder.bitcast(val, _llvm_ir.FloatType())
+
+    return _nb_types.float32(x), codegen
+
+
+@_nb_intrinsic
+def float32_bits_as_int32(typingctx, x):
+    """Recover a vertex id stored with int32_bits_as_float32."""
+    if not isinstance(x, _nb_types.Float) or x.bitwidth != 32:
+        return None
+
+    def codegen(context, builder, sig, args):
+        return builder.bitcast(args[0], _llvm_ir.IntType(32))
+
+    return _nb_types.int32(x), codegen
+
+
 @numba.njit("void(i8[:], i8)", cache=True)
 def seed(rng_state, seed):
     """Seed the random number generator with a given seed."""
@@ -792,8 +830,8 @@ def generate_graph_update_array(
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
 
                     if d <= max_threshold:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
 
@@ -811,8 +849,8 @@ def generate_graph_update_array(
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
 
                     if d <= max_threshold:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
 
@@ -875,8 +913,8 @@ def apply_graph_update_array(
         # where p or q falls in its block
         for t in range(n_threads):
             for j in range(n_updates_per_thread[t]):
-                p = np.int32(update_array[t, j, 0])
-                q = np.int32(update_array[t, j, 1])
+                p = float32_bits_as_int32(update_array[t, j, 0])
+                q = float32_bits_as_int32(update_array[t, j, 1])
                 d = np.float32(update_array[t, j, 2])
 
                 if p >= block_start and p < block_end:
@@ -925,10 +963,10 @@ def sort_updates_by_block(
         n_updates = n_updates_per_thread[t]
 
         for j in range(n_updates):
-            p = np.int32(update_array[t, j, 0])
+            p = float32_bits_as_int32(update_array[t, j, 0])
             if p < 0:
                 continue
-            q = np.int32(update_array[t, j, 1])
+            q = float32_bits_as_int32(update_array[t, j, 1])
             bp = p // vertex_block_size
             bq = q // vertex_block_size
             positions[bp + 1] += 1
@@ -941,10 +979,10 @@ def sort_updates_by_block(
             block_offsets[t, b] = positions[b]
 
         for j in range(n_updates):
-            p = np.int32(update_array[t, j, 0])
+            p = float32_bits_as_int32(update_array[t, j, 0])
             if p < 0:
                 continue
-            q = np.int32(update_array[t, j, 1])
+            q = float32_bits_as_int32(update_array[t, j, 1])
             bp = p // vertex_block_size
             bq = q // vertex_block_size
             k = positions[bp]
@@ -993,8 +1031,8 @@ def apply_sorted_graph_update_array(current_graph, sorted_updates, block_offsets
 
         for t in range(n_threads):
             for j in range(block_offsets[t, n], block_offsets[t, n + 1]):
-                p = np.int32(sorted_updates[t, j, 0])
-                q = np.int32(sorted_updates[t, j, 1])
+                p = float32_bits_as_int32(sorted_updates[t, j, 0])
+                q = float32_bits_as_int32(sorted_updates[t, j, 1])
                 d = np.float32(sorted_updates[t, j, 2])
 
                 if p >= block_start and p < block_end:
@@ -1083,8 +1121,8 @@ def sparse_generate_graph_update_array(
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
 
                     if d <= max_threshold:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
 
@@ -1105,8 +1143,8 @@ def sparse_generate_graph_update_array(
                     max_threshold = max(dist_thresh_p, dist_thresh_q)
 
                     if d <= max_threshold:
-                        update_array[t, idx, 0] = p
-                        update_array[t, idx, 1] = q
+                        update_array[t, idx, 0] = int32_bits_as_float32(p)
+                        update_array[t, idx, 1] = int32_bits_as_float32(q)
                         update_array[t, idx, 2] = d
                         idx += 1
 
