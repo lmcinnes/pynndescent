@@ -57,6 +57,11 @@ from pynndescent.kernels import (
 from pynndescent.hybrid_forest import make_hybrid_leaf_array
 from pynndescent.hub_tree import make_hub_search_tree
 from pynndescent.search_graph import build_search_graph, permute_graph, permute_rows
+from pynndescent.search import (
+    make_cached_search_function,
+    deheap_sort_serial,
+    deheap_sort_parallel,
+)
 from pynndescent.rp_trees import (
     make_forest,
     rptree_leaf_array,
@@ -1276,6 +1281,9 @@ class NNDescent:
         result = self.__dict__.copy()
         if hasattr(self, "_rp_forest"):
             del result["_rp_forest"]
+        # Rebuilt by __setstate__ (and not picklable when it wraps the cached
+        # search function)
+        result.pop("_search_function", None)
         if "_query_workspace" in result:
             del result["_query_workspace"]
         result["_search_forest"] = tuple(
@@ -1510,10 +1518,77 @@ class NNDescent:
 
         numba.set_num_threads(self._original_num_threads)
 
+    def _init_cached_search_function(self):
+        """Use the shared, disk-cached search function where it applies.
+
+        Returns True if the cached search function was installed, in which case
+        no per-index compilation is needed.
+        """
+        if (
+            self.quantization is not None
+            or not self.tree_init
+            or self._bit_trees
+            or self._is_sparse
+        ):
+            return False
+        data = self._raw_data
+        if not (
+            isinstance(data, np.ndarray)
+            and data.dtype == np.float32
+            and data.ndim == 2
+            and data.flags.c_contiguous
+        ):
+            return False
+        kernel = select_kernel(self._distance_func, data)
+        if kernel == 0:
+            return False
+
+        angular_query = self.metric in ("cosine", "direct_cosine", "dot")
+        self._search_function = make_cached_search_function(
+            data,
+            self._search_graph.indptr,
+            self._search_graph.indices,
+            self._search_forest,
+            self.search_tree_leaf_budget,
+            self.n_neighbors,
+            self._min_distance,
+            angular_query,
+            angular_query,
+            kernel,
+            self.parallel_batch_queries,
+        )
+        self._deheap_function = (
+            deheap_sort_parallel if self.parallel_batch_queries else deheap_sort_serial
+        )
+        if hasattr(rerank, "py_func"):
+            self._rerank_function = numba.njit(
+                parallel=self.parallel_batch_queries, fastmath=True
+            )(rerank.py_func)
+        else:
+            self._rerank_function = rerank
+
+        # Make sure everything is compiled (or loaded from cache) up front
+        inds, dists, _ = self._search_function(
+            data[:1],
+            data[:1],
+            np.ones(1, dtype=np.float32),
+            make_heap(1, 5),
+            5,
+            0.0,
+            self._visited,
+            False,
+            self.search_rng_state,
+        )
+        _ = self._deheap_function(inds, dists)
+        return True
+
     def _init_search_function(self):
 
         if self.verbose:
             print(ts(), "Building and compiling search function")
+
+        if self._init_cached_search_function():
+            return
 
         if self.tree_init:
             n_search_trees = len(self._search_forest)
@@ -1991,12 +2066,9 @@ class NNDescent:
             return result
 
         self._search_function = search_closure
-        if hasattr(deheap_sort, "py_func"):
-            self._deheap_function = numba.njit(parallel=self.parallel_batch_queries)(
-                deheap_sort.py_func
-            )
-        else:
-            self._deheap_function = deheap_sort
+        self._deheap_function = (
+            deheap_sort_parallel if self.parallel_batch_queries else deheap_sort_serial
+        )
 
         if hasattr(rerank, "py_func"):
             self._rerank_function = numba.njit(
@@ -2250,12 +2322,9 @@ class NNDescent:
             return result
 
         self._search_function = search_closure
-        if hasattr(deheap_sort, "py_func"):
-            self._deheap_function = numba.njit(parallel=self.parallel_batch_queries)(
-                deheap_sort.py_func
-            )
-        else:
-            self._deheap_function = deheap_sort
+        self._deheap_function = (
+            deheap_sort_parallel if self.parallel_batch_queries else deheap_sort_serial
+        )
 
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = self._raw_data[:1]
