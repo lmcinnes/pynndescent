@@ -936,6 +936,50 @@ def test_update_with_changed_data(update_data, case, metric):
         evaluate(index, xs, xs_updated)
 
 
+def test_graph_update_ids_survive_float32_buffers():
+    import numba
+    from pynndescent.utils import (
+        int32_bits_as_float32,
+        float32_bits_as_int32,
+        sort_updates_by_block,
+    )
+
+    # Ids above 2**24 are not exactly representable as float32 values.
+    ids = np.array(
+        [0, 1, 2**23 - 1, 2**24, 2**24 + 1, 2**25 + 7, 2**31 - 2], dtype=np.int32
+    )
+
+    @numba.njit()
+    def encode(ids, buf):
+        for j in range(ids.shape[0]):
+            buf[0, j, 0] = int32_bits_as_float32(ids[j])
+            buf[0, j, 1] = int32_bits_as_float32(ids[(j + 1) % ids.shape[0]])
+            buf[0, j, 2] = np.float32(j)
+
+    @numba.njit()
+    def decode(buf, n, out):
+        for j in range(n):
+            out[j, 0] = float32_bits_as_int32(buf[0, j, 0])
+            out[j, 1] = float32_bits_as_int32(buf[0, j, 1])
+
+    n = ids.shape[0]
+    expected = set(zip(ids, np.roll(ids, -1)))
+    updates = np.zeros((1, n, 3), dtype=np.float32)
+    encode(ids, updates)
+
+    decoded = np.zeros((n, 2), dtype=np.int32)
+    decode(updates, n, decoded)
+    assert set(map(tuple, decoded)) == expected
+
+    sorted_updates = np.zeros((1, 2 * n, 3), dtype=np.float32)
+    block_offsets = np.zeros((1, 2), dtype=np.int64)
+    sort_updates_by_block(
+        updates, np.array([n], dtype=np.int32), sorted_updates, block_offsets, 2**31 - 1, 1
+    )
+    decode(sorted_updates, n, decoded)
+    assert set(map(tuple, decoded)) == expected
+
+
 def test_init_forest_respects_n_jobs_and_is_used_by_update(nn_data, monkeypatch):
     import numba
     import pynndescent.pynndescent_ as nnd_module

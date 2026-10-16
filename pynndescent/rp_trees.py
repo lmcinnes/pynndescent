@@ -45,8 +45,6 @@ offsets_list_type = numba.types.ListType(offset_type)
 children_list_type = numba.types.ListType(children_type)
 point_indices_list_type = numba.types.ListType(point_indices_type)
 
-popcnt = np.array([bin(i).count("1") for i in range(256)], dtype=np.float32)
-
 
 @numba.njit(
     numba.types.Tuple(

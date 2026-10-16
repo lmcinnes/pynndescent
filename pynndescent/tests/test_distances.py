@@ -512,3 +512,17 @@ def test_tsss_matches_definition():
     triangle = norm_x * norm_y * np.sin(theta) / 2
     sector = (np.linalg.norm(x - y) + abs(norm_x - norm_y)) ** 2 * theta / 2
     assert dist.tsss(x, y) == pytest.approx(triangle * sector)
+
+
+def test_sparse_correlation_with_zero_centred_shared_entry():
+    # Index 1 is stored in both rows and x[1] equals mean(x), so its centred
+    # product is exactly zero; it must still be treated as a shared index.
+    x = np.array([3.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    y = np.array([1.0, 2.0, 0.0, 0.0], dtype=np.float32)
+    sx = csr_matrix(x[None, :])
+    sy = csr_matrix(y[None, :])
+    result = spdist.sparse_correlation(
+        sx.indices, sx.data, sy.indices, sy.data, x.shape[0]
+    )
+    expected = pairwise_distances(x[None, :], y[None, :], metric="correlation")[0, 0]
+    assert_array_almost_equal(result, expected, decimal=6)
