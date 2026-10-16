@@ -1173,3 +1173,33 @@ def test_bad_data():
     test_data_dir = pathlib.Path(__file__).parent / "test_data"
     data = np.sqrt(np.load(test_data_dir / "pynndescent_bug_np.npz")["arr_0"])
     index = NNDescent(data, metric="cosine")
+
+
+@pytest.mark.parametrize(
+    "metric,kwargs",
+    [
+        ("euclidean", {}),
+        ("cosine", {}),
+        ("euclidean", {"n_search_trees": 3}),
+        ("euclidean", {"search_tree_leaf_budget": 4}),
+        ("euclidean", {"parallel_batch_queries": True}),
+    ],
+)
+def test_cached_search_matches_closure(nn_data, metric, kwargs):
+    # The disk-cached dense search function must return exactly what the
+    # per-index search closure returns.
+    index = NNDescent(
+        nn_data[:600], metric=metric, n_neighbors=10, random_state=42, **kwargs
+    )
+    index.prepare()
+    assert index._search_function.__name__ == "search"  # cached path in use
+    cached_indices, cached_dists = index.query(nn_data[600:700], k=8, epsilon=0.1)
+
+    # Build the closure for the same index and compare
+    index._init_cached_search_function = lambda: False
+    index._init_search_function()
+    assert index._search_function.__name__ == "search_closure"
+    closure_indices, closure_dists = index.query(nn_data[600:700], k=8, epsilon=0.1)
+
+    np.testing.assert_array_equal(cached_indices, closure_indices)
+    np.testing.assert_allclose(cached_dists, closure_dists, rtol=1e-6)
