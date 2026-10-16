@@ -328,13 +328,123 @@ def dense_union(ind1, data1, ind2, data2):
     return result_data1, result_data2
 
 
+# ---------------------------------------------------------------------------
+# Allocation-free merges over two sorted sparse vectors. These replace building
+# temporary difference/product vectors with sparse_diff / sparse_mul inside
+# distance functions, which are called millions of times during construction
+# and search.
+# ---------------------------------------------------------------------------
+
+
+@numba.njit(fastmath=True, inline="always")
+def _merge_sq_diff(ind1, data1, ind2, data2):
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = np.float32(0.0)
+    while i1 < n1 and i2 < n2:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+        if j1 == j2:
+            v = data1[i1] - data2[i2]
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            v = data1[i1]
+            i1 += 1
+        else:
+            v = data2[i2]
+            i2 += 1
+        result += v * v
+    while i1 < n1:
+        v = data1[i1]
+        result += v * v
+        i1 += 1
+    while i2 < n2:
+        v = data2[i2]
+        result += v * v
+        i2 += 1
+    return result
+
+
+@numba.njit(fastmath=True, inline="always")
+def _merge_abs_diff_reduce(ind1, data1, ind2, data2, mode, p):
+    """Reduce |x_j - y_j| over the union support.
+
+    mode 0: sum, 1: max, 2: sum of |.|**p
+    """
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = 0.0
+    while i1 < n1 or i2 < n2:
+        if i2 >= n2 or (i1 < n1 and ind1[i1] < ind2[i2]):
+            v = abs(data1[i1])
+            i1 += 1
+        elif i1 >= n1 or ind2[i2] < ind1[i1]:
+            v = abs(data2[i2])
+            i2 += 1
+        else:
+            v = abs(data1[i1] - data2[i2])
+            i1 += 1
+            i2 += 1
+        if mode == 0:
+            result += v
+        elif mode == 1:
+            result = max(result, v)
+        else:
+            result += v**p
+    return result
+
+
+@numba.njit(fastmath=True, inline="always")
+def _merge_dot(ind1, data1, ind2, data2):
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = np.float32(0.0)
+    while i1 < n1 and i2 < n2:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+        if j1 == j2:
+            result += data1[i1] * data2[i2]
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            i1 += 1
+        else:
+            i2 += 1
+    return result
+
+
+@numba.njit(fastmath=True, inline="always")
+def _merge_sqrt_product(ind1, data1, ind2, data2):
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = 0.0
+    while i1 < n1 and i2 < n2:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+        if j1 == j2:
+            result += np.sqrt(data1[i1] * data2[i2])
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            i1 += 1
+        else:
+            i2 += 1
+    return result
+
+
+
 @numba.njit(fastmath=True)
 def sparse_euclidean(ind1, data1, ind2, data2):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    for i in range(aux_data.shape[0]):
-        result += aux_data[i] ** 2
-    return np.sqrt(result)
+    return np.sqrt(_merge_sq_diff(ind1, data1, ind2, data2))
 
 
 @numba.njit(
@@ -348,38 +458,22 @@ def sparse_euclidean(ind1, data1, ind2, data2):
     },
 )
 def sparse_squared_euclidean(ind1, data1, ind2, data2):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    dim = len(aux_data)
-    for i in range(dim):
-        result += aux_data[i] * aux_data[i]
-    return result
+    return _merge_sq_diff(ind1, data1, ind2, data2)
 
 
 @numba.njit()
 def sparse_manhattan(ind1, data1, ind2, data2):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    for i in range(aux_data.shape[0]):
-        result += np.abs(aux_data[i])
-    return result
+    return _merge_abs_diff_reduce(ind1, data1, ind2, data2, 0, 1.0)
 
 
 @numba.njit()
 def sparse_chebyshev(ind1, data1, ind2, data2):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    for i in range(aux_data.shape[0]):
-        result = max(result, np.abs(aux_data[i]))
-    return result
+    return _merge_abs_diff_reduce(ind1, data1, ind2, data2, 1, 1.0)
 
 
 @numba.njit()
 def sparse_minkowski(ind1, data1, ind2, data2, p=2.0):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    for i in range(aux_data.shape[0]):
-        result += np.abs(aux_data[i]) ** p
+    result = _merge_abs_diff_reduce(ind1, data1, ind2, data2, 2, p)
     return result ** (1.0 / p)
 
 
@@ -545,13 +639,9 @@ def sparse_sokal_sneath(ind1, data1, ind2, data2):
 
 @numba.njit(cache=True)
 def sparse_cosine(ind1, data1, ind2, data2):
-    _, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = _merge_dot(ind1, data1, ind2, data2)
     norm1 = norm(data1)
     norm2 = norm(data2)
-
-    for val in aux_data:
-        result += val
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0
@@ -574,13 +664,9 @@ def sparse_cosine(ind1, data1, ind2, data2):
     cache=True,
 )
 def sparse_alternative_cosine(ind1, data1, ind2, data2):
-    _, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = _merge_dot(ind1, data1, ind2, data2)
     norm_x = norm(data1)
     norm_y = norm(data2)
-    dim = len(aux_data)
-    for i in range(dim):
-        result += aux_data[i]
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
     elif norm_x == 0.0 or norm_y == 0.0:
@@ -687,14 +773,10 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
 
 @numba.njit(cache=True)
 def sparse_hellinger(ind1, data1, ind2, data2):
-    aux_inds, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = _merge_sqrt_product(ind1, data1, ind2, data2)
     norm1 = np.sum(data1)
     norm2 = np.sum(data2)
     sqrt_norm_prod = np.sqrt(norm1 * norm2)
-
-    for val in aux_data:
-        result += np.sqrt(val)
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0
@@ -718,14 +800,9 @@ def sparse_hellinger(ind1, data1, ind2, data2):
     },
 )
 def sparse_alternative_hellinger(ind1, data1, ind2, data2):
-    aux_inds, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = _merge_sqrt_product(ind1, data1, ind2, data2)
     l1_norm_x = np.sum(data1)
     l1_norm_y = np.sum(data2)
-    dim = len(aux_data)
-
-    for i in range(dim):
-        result += np.sqrt(aux_data[i])
 
     if l1_norm_x == 0 and l1_norm_y == 0:
         return 0.0
