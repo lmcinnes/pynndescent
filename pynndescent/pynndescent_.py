@@ -45,6 +45,7 @@ from pynndescent.utils import (
     EMPTY_GRAPH,
 )
 
+from pynndescent.kernels import select_kernel, generate_graph_update_array_batched
 from pynndescent.rp_trees import (
     make_forest,
     rptree_leaf_array,
@@ -205,6 +206,7 @@ def process_candidates(
     n_updates_per_thread,
     sorted_updates,
     block_offsets,
+    kernel=0,
 ):
     """Process candidate neighbors using array-based update generation.
 
@@ -224,16 +226,28 @@ def process_candidates(
 
         dist_thresholds = current_graph[1][:, 0]
 
-        generate_graph_update_array(
-            update_array,
-            n_updates_per_thread,
-            new_candidate_block,
-            old_candidate_block,
-            dist_thresholds,
-            data,
-            dist,
-            n_threads,
-        )
+        if kernel != 0:
+            generate_graph_update_array_batched(
+                update_array,
+                n_updates_per_thread,
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                kernel,
+                n_threads,
+            )
+        else:
+            generate_graph_update_array(
+                update_array,
+                n_updates_per_thread,
+                new_candidate_block,
+                old_candidate_block,
+                dist_thresholds,
+                data,
+                dist,
+                n_threads,
+            )
 
         if n_threads > 1:
             # Bucket updates by destination block so each thread only reads the
@@ -268,6 +282,7 @@ def nn_descent_internal(
     n_iters=10,
     delta=0.001,
     verbose=False,
+    kernel=0,
 ):
     n_vertices = data.shape[0]
     block_size = 16384
@@ -316,6 +331,7 @@ def nn_descent_internal(
             n_updates_per_thread,
             sorted_updates,
             block_offsets,
+            kernel,
         )
 
         if c <= delta * n_neighbors * data.shape[0]:
@@ -338,6 +354,7 @@ def nn_descent(
     leaf_array=None,
     low_memory=True,
     verbose=False,
+    kernel=0,
 ):
 
     if init_graph[0].shape[0] == 1:  # EMPTY_GRAPH
@@ -365,6 +382,7 @@ def nn_descent(
         n_iters=n_iters,
         delta=delta,
         verbose=verbose,
+        kernel=kernel,
     )
 
     return deheap_sort(current_graph[0], current_graph[1])
@@ -1261,6 +1279,7 @@ class NNDescent:
                 init_graph=_init_graph,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
         if np.any(self._neighbor_graph[0] < 0):
@@ -2536,6 +2555,7 @@ class NNDescent:
                 rp_tree_init=False,
                 leaf_array=np.array([[-1], [-1]]),
                 verbose=self.verbose,
+                kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
             # Remove search graph and search function
