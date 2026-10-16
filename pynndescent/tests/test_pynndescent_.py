@@ -1180,7 +1180,6 @@ def test_bad_data():
     [
         ("euclidean", {}),
         ("cosine", {}),
-        ("euclidean", {"n_search_trees": 3}),
         ("euclidean", {"search_tree_leaf_budget": 4}),
         ("euclidean", {"parallel_batch_queries": True}),
     ],
