@@ -549,6 +549,151 @@ def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
     return 1
 
 
+@numba.njit(inline="always")
+def _push_candidate(priorities, indices, row, d, n):
+    checked_heap_push(priorities[row], indices[row], d, n)
+
+
+@numba.njit(
+    parallel=True,
+    cache=False,
+    locals={"idx": numba.types.int64, "owner": numba.types.int64, "k": numba.types.int64},
+)
+def build_candidates_owner(
+    current_graph,
+    max_candidates,
+    rng_state,
+    n_threads,
+    new_candidate_indices,
+    new_candidate_priority,
+    old_candidate_indices,
+    old_candidate_priority,
+    active,
+    reverse_dst,
+    reverse_src,
+    bucket_bounds,
+):
+    """Owner-computes candidate construction with an active set.
+
+    Each thread scans only the rows of its own vertex block. Forward edges and
+    reverse edges whose endpoint is in the same block are pushed directly;
+    other reverse edges are counting-sorted into buckets addressed to the
+    owning thread, which drains them in a second parallel pass. Per-thread work
+    is therefore O(n_vertices * n_neighbors / n_threads), rather than a scan of
+    the whole graph per thread.
+
+    New candidates are built first. Old candidates are then built only for
+    vertices that received at least one new candidate, since the local join
+    never reads the old list of a vertex with no new candidates. The candidate
+    arrays are a workspace reused across calls; only rows written by the
+    previous call (``active``) are reset. On the first call the workspace must
+    be (-1, inf) and ``active`` all ones.
+
+    ``reverse_dst`` and ``reverse_src`` need room for n_vertices * n_neighbors
+    entries; ``bucket_bounds`` has shape (n_threads, n_threads + 1).
+    """
+    current_indices = current_graph[0]
+    current_flags = current_graph[2]
+    n_vertices = current_indices.shape[0]
+    n_neighbors = current_indices.shape[1]
+    block_size = n_vertices // n_threads + 1
+
+    for i in numba.prange(n_vertices):
+        if active[i]:
+            for k in range(max_candidates):
+                new_candidate_indices[i, k] = -1
+                new_candidate_priority[i, k] = np.inf
+                old_candidate_indices[i, k] = -1
+                old_candidate_priority[i, k] = np.inf
+
+    for phase in range(2):
+        # phase 0 gathers new candidates (flag 1); phase 1 gathers old ones (flag 0)
+        # for active vertices only.
+        want_flag = 1 - phase
+        if phase == 0:
+            cand_idx = new_candidate_indices
+            cand_pri = new_candidate_priority
+        else:
+            cand_idx = old_candidate_indices
+            cand_pri = old_candidate_priority
+
+        # 1. count cross-block reverse edges per destination block
+        for t in numba.prange(n_threads):
+            for b in range(n_threads + 1):
+                bucket_bounds[t, b] = 0
+            row_start = t * block_size
+            row_end = min(row_start + block_size, n_vertices)
+            for i in range(row_start, row_end):
+                for j in range(n_neighbors):
+                    idx = current_indices[i, j]
+                    if idx >= 0 and current_flags[i, j] == want_flag:
+                        owner = idx // block_size
+                        if owner != t and (phase == 0 or active[idx]):
+                            bucket_bounds[t, owner + 1] += 1
+
+        # 2. prefix sum: bucket (t, b) occupies bucket_bounds[t, b]:bucket_bounds[t, b + 1]
+        total = 0
+        for t in range(n_threads):
+            for b in range(n_threads):
+                count = bucket_bounds[t, b + 1]
+                bucket_bounds[t, b] = total
+                total += count
+            bucket_bounds[t, n_threads] = total
+
+        # 3. scan own rows: push local edges, scatter cross-block reverse edges
+        for t in numba.prange(n_threads):
+            local_rng_state = rng_state + (phase * n_threads + t)
+            cursor = bucket_bounds[t, :n_threads].copy()
+            row_start = t * block_size
+            row_end = min(row_start + block_size, n_vertices)
+            for i in range(row_start, row_end):
+                for j in range(n_neighbors):
+                    idx = current_indices[i, j]
+                    if idx < 0 or current_flags[i, j] != want_flag:
+                        continue
+                    if phase == 0 or active[i]:
+                        d = tau_rand(local_rng_state)
+                        _push_candidate(cand_pri, cand_idx, i, d, idx)
+                    if phase == 0 or active[idx]:
+                        owner = idx // block_size
+                        if owner == t:
+                            d = tau_rand(local_rng_state)
+                            _push_candidate(cand_pri, cand_idx, idx, d, i)
+                        else:
+                            k = cursor[owner]
+                            reverse_dst[k] = idx
+                            reverse_src[k] = i
+                            cursor[owner] = k + 1
+
+        # 4. each owner drains the buckets addressed to it, in producer order
+        for b in numba.prange(n_threads):
+            local_rng_state = rng_state + ((2 + phase) * n_threads + b)
+            for t in range(n_threads):
+                end = bucket_bounds[t, b + 1]
+                for k in range(bucket_bounds[t, b], end):
+                    d = tau_rand(local_rng_state)
+                    _push_candidate(cand_pri, cand_idx, reverse_dst[k], d, reverse_src[k])
+
+        if phase == 0:
+            for i in numba.prange(n_vertices):
+                has_new = 0
+                for k in range(max_candidates):
+                    if new_candidate_indices[i, k] >= 0:
+                        has_new = 1
+                active[i] = has_new
+
+    for i in numba.prange(n_vertices):
+        if active[i]:
+            for j in range(n_neighbors):
+                idx = current_indices[i, j]
+                for k in range(max_candidates):
+                    if new_candidate_indices[i, k] == idx:
+                        current_flags[i, j] = 0
+                        break
+
+    return new_candidate_indices, old_candidate_indices
+
+
 @numba.njit(
     parallel=True,
     locals={
