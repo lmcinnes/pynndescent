@@ -424,10 +424,18 @@ def checked_heap_push(priorities, indices, p, n):
 
     size = priorities.shape[0]
 
-    # break if we already have this element.
-    for i in range(size):
-        if n == indices[i]:
+    # break if we already have this element. For wider heaps this is written as a
+    # branch-free reduction (no early exit) so that LLVM can vectorise the scan.
+    if size >= 16:
+        found = False
+        for j in range(size):
+            found |= indices[j] == n
+        if found:
             return 0
+    else:
+        for j in range(size):
+            if n == indices[j]:
+                return 0
 
     # insert val at position zero
     priorities[0] = p
@@ -486,10 +494,18 @@ def checked_flagged_heap_push(priorities, indices, flags, p, n, f):
 
     size = priorities.shape[0]
 
-    # break if we already have this element.
-    for i in range(size):
-        if n == indices[i]:
+    # break if we already have this element. For wider heaps this is written as a
+    # branch-free reduction (no early exit) so that LLVM can vectorise the scan.
+    if size >= 16:
+        found = False
+        for j in range(size):
+            found |= indices[j] == n
+        if found:
             return 0
+    else:
+        for j in range(size):
+            if n == indices[j]:
+                return 0
 
     # insert val at position zero
     priorities[0] = p
@@ -717,6 +733,124 @@ def apply_graph_update_array(
                 p = np.int32(update_array[t, j, 0])
                 q = np.int32(update_array[t, j, 1])
                 d = np.float32(update_array[t, j, 2])
+
+                if p >= block_start and p < block_end:
+                    added = checked_flagged_heap_push(
+                        priorities[p], indices[p], flags[p], d, q, 1
+                    )
+                    n_changes += added
+
+                if q >= block_start and q < block_end:
+                    added = checked_flagged_heap_push(
+                        priorities[q], indices[q], flags[q], d, p, 1
+                    )
+                    n_changes += added
+
+    return n_changes
+
+
+@numba.njit(
+    parallel=True,
+    cache=False,
+    locals={
+        "p": numba.int32,
+        "q": numba.int32,
+        "bp": numba.intp,
+        "bq": numba.intp,
+    },
+)
+def sort_updates_by_block(
+    update_array, n_updates_per_thread, sorted_updates, block_offsets, n_vertices, n_threads
+):
+    """Counting-sort each thread's updates by destination vertex block.
+
+    Each producer thread ``t`` sorts its own updates into ``sorted_updates[t]`` so
+    that the updates destined for vertex block ``b`` occupy the half-open range
+    ``block_offsets[t, b]:block_offsets[t, b + 1]``. An update whose endpoints
+    lie in different blocks is written to both blocks. Producer order is kept
+    within each range, so applying the ranges in thread order reproduces the
+    exact push sequence of :func:`apply_graph_update_array`.
+
+    ``sorted_updates`` must have room for twice the per-thread update capacity.
+    """
+    vertex_block_size = n_vertices // n_threads + 1
+
+    for t in numba.prange(n_threads):
+        positions = np.zeros(n_threads + 1, dtype=np.int64)
+        n_updates = n_updates_per_thread[t]
+
+        for j in range(n_updates):
+            p = np.int32(update_array[t, j, 0])
+            if p < 0:
+                continue
+            q = np.int32(update_array[t, j, 1])
+            bp = p // vertex_block_size
+            bq = q // vertex_block_size
+            positions[bp + 1] += 1
+            if bq != bp:
+                positions[bq + 1] += 1
+
+        for b in range(n_threads):
+            positions[b + 1] += positions[b]
+        for b in range(n_threads + 1):
+            block_offsets[t, b] = positions[b]
+
+        for j in range(n_updates):
+            p = np.int32(update_array[t, j, 0])
+            if p < 0:
+                continue
+            q = np.int32(update_array[t, j, 1])
+            bp = p // vertex_block_size
+            bq = q // vertex_block_size
+            k = positions[bp]
+            sorted_updates[t, k, 0] = update_array[t, j, 0]
+            sorted_updates[t, k, 1] = update_array[t, j, 1]
+            sorted_updates[t, k, 2] = update_array[t, j, 2]
+            positions[bp] = k + 1
+            if bq != bp:
+                k = positions[bq]
+                sorted_updates[t, k, 0] = update_array[t, j, 0]
+                sorted_updates[t, k, 1] = update_array[t, j, 1]
+                sorted_updates[t, k, 2] = update_array[t, j, 2]
+                positions[bq] = k + 1
+
+
+@numba.njit(
+    parallel=True,
+    cache=False,
+    locals={
+        "p": numba.int32,
+        "q": numba.int32,
+        "d": numba.float32,
+        "added": numba.uint8,
+        "n": numba.uint32,
+        "t": numba.uint32,
+        "j": numba.intp,
+    },
+)
+def apply_sorted_graph_update_array(current_graph, sorted_updates, block_offsets, n_threads):
+    """Apply updates bucketed by :func:`sort_updates_by_block`.
+
+    Each thread reads only the updates destined for its own vertex block, rather
+    than scanning every update produced by every thread.
+    """
+    n_changes = 0
+    priorities = current_graph[1]
+    indices = current_graph[0]
+    flags = current_graph[2]
+
+    n_vertices = priorities.shape[0]
+    vertex_block_size = n_vertices // n_threads + 1
+
+    for n in numba.prange(n_threads):
+        block_start = n * vertex_block_size
+        block_end = min(block_start + vertex_block_size, n_vertices)
+
+        for t in range(n_threads):
+            for j in range(block_offsets[t, n], block_offsets[t, n + 1]):
+                p = np.int32(sorted_updates[t, j, 0])
+                q = np.int32(sorted_updates[t, j, 1])
+                d = np.float32(sorted_updates[t, j, 2])
 
                 if p >= block_start and p < block_end:
                     added = checked_flagged_heap_push(

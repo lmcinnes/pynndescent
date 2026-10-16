@@ -61,19 +61,11 @@ def euclidean(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "diff": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -283,13 +275,6 @@ def jaccard(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -298,7 +283,6 @@ def jaccard(x, y):
         "x_true": numba.types.uint8,
         "y_true": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -323,9 +307,9 @@ def alternative_jaccard(x, y):
         num_equal += x_true and y_true
 
     if num_non_zero == 0.0:
-        return 0.0
+        return np.float32(0.0)
     else:
-        return -np.log2(num_equal / num_non_zero)
+        return np.float32(-np.log2(num_equal / num_non_zero))
 
 
 @numba.vectorize(fastmath=True)
@@ -583,20 +567,12 @@ def cosine(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -623,29 +599,21 @@ def alternative_cosine(x, y):
         norm_y += y[i] * y[i]
 
     if norm_x == 0.0 and norm_y == 0.0:
-        return 0.0
+        return np.float32(0.0)
     elif norm_x == 0.0 or norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     elif result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
         result = np.sqrt(norm_x * norm_y) / result
-        return np.log2(result)
+        return np.float32(np.log2(result))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -667,24 +635,16 @@ def dot(x, y):
         result += x[i] * y[i]
 
     if result <= 0.0:
-        return 1.0
+        return np.float32(1.0)
     else:
-        return 1.0 - result
+        return np.float32(1.0 - result)
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -701,26 +661,17 @@ def direct_cosine(x, y):
         result += x[i] * y[i]
 
     if result <= 0.0:
-        return 1.0
+        return np.float32(1.0)
     else:
-        return 1.0 - min(np.float32(1.0), result)
+        return np.float32(1.0 - result)
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
-    cache=True,
 )
 def alternative_dot(x, y):
     r"""Alternative dot product distance using log transform.
@@ -757,18 +708,10 @@ def correct_alternative_cosine(d):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -794,18 +737,10 @@ def inner_product(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -837,19 +772,12 @@ def alternative_inner_product(x, y):
         result += x[i] * y[i]
 
     if result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
-        return 1.0 / result
+        return np.float32(1.0 / result)
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -857,7 +785,6 @@ def alternative_inner_product(x, y):
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -883,13 +810,13 @@ def proxy_inner_product(x, y):
         norm_y += y[i] * y[i]
 
     if norm_x == 0 or norm_y == 0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
 
     cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
     if ip_result >= 0:
-        return cosine_result + 1.0 / np.sqrt(ip_result)
+        return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
     else:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
 
 
 @numba.vectorize(fastmath=True)
@@ -908,13 +835,6 @@ def correct_alternative_inner_product(d):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -923,7 +843,6 @@ def correct_alternative_inner_product(d):
         "cdf_x": numba.types.float32,
         "cdf_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -969,13 +888,6 @@ def proxy_wasserstein_1d(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -986,7 +898,6 @@ def proxy_wasserstein_1d(x, y):
         "px": numba.types.float32,
         "py": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1013,7 +924,7 @@ def proxy_kantorovich(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0.0 or l1_norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
 
     # Total variation distance + Hellinger-like term
     tv_result = 0.0
@@ -1026,17 +937,10 @@ def proxy_kantorovich(x, y):
         hellinger_result += np.sqrt(px * py)
 
     # Combine: TV captures mass difference, Hellinger captures shape similarity
-    return 0.5 * tv_result + (1.0 - hellinger_result)
+    return np.float32(0.5 * tv_result + (1.0 - hellinger_result))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -1046,7 +950,6 @@ def proxy_kantorovich(x, y):
         "cdf_y": numba.types.float32,
         "mu": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1097,20 +1000,12 @@ def proxy_circular_kantorovich(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "bc": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1138,7 +1033,7 @@ def proxy_jensen_shannon(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0.0 or l1_norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
 
     # Bhattacharyya coefficient
     bc = 0.0
@@ -1148,17 +1043,10 @@ def proxy_jensen_shannon(x, y):
     # Squared Hellinger-like distance: 1 - BC^2
     # This spreads values more than standard Hellinger and correlates
     # well with Jensen-Shannon divergence
-    return 1.0 - bc * bc
+    return np.float32(1.0 - bc * bc)
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -1169,7 +1057,6 @@ def proxy_jensen_shannon(x, y):
         "denom": numba.types.float32,
         "diff": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1210,13 +1097,6 @@ def proxy_symmetric_kl(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -1227,7 +1107,6 @@ def proxy_symmetric_kl(x, y):
         "px": numba.types.float32,
         "py": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1249,7 +1128,7 @@ def proxy_sinkhorn(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0.0 or l1_norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
 
     # Total variation distance + Hellinger-like term
     tv_result = 0.0
@@ -1261,7 +1140,7 @@ def proxy_sinkhorn(x, y):
         tv_result += np.abs(px - py)
         hellinger_result += np.sqrt(px * py)
 
-    return 0.5 * tv_result + (1.0 - hellinger_result)
+    return np.float32(0.5 * tv_result + (1.0 - hellinger_result))
 
 
 @numba.njit(fastmath=True)
@@ -1293,7 +1172,7 @@ def tsss(x, y):
     d_cos /= norm_x * norm_y
     theta = np.arccos(d_cos) + np.radians(10)  # Add 10 degrees as an "epsilon" to
     # avoid problems
-    sector = ((np.sqrt(d_euc_squared) + magnitude_difference) ** 2) * theta
+    sector = ((np.sqrt(d_euc_squared) + magnitude_difference) ** 2) * theta / 2.0
     triangle = norm_x * norm_y * np.sin(theta) / 2.0
     return triangle * sector
 
@@ -1381,20 +1260,12 @@ def correlation(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1421,28 +1292,20 @@ def hellinger(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0 and l1_norm_y == 0:
-        return 0.0
+        return np.float32(0.0)
     elif l1_norm_x == 0 or l1_norm_y == 0:
-        return 1.0
+        return np.float32(1.0)
     else:
-        return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
+        return np.float32(np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y)))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1468,14 +1331,14 @@ def alternative_hellinger(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0 and l1_norm_y == 0:
-        return 0.0
+        return np.float32(0.0)
     elif l1_norm_x == 0 or l1_norm_y == 0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     elif result <= 0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
         result = np.sqrt(l1_norm_x * l1_norm_y) / result
-        return np.log2(result)
+        return np.float32(np.log2(result))
 
 
 @numba.vectorize(fastmath=True)
@@ -1822,13 +1685,6 @@ def symmetric_kl_divergence(x, y):
 
 
 @numba.njit(
-    [
-        "f4(u1[::1],u1[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     nogil=True,
     boundscheck=False,
@@ -1836,7 +1692,6 @@ def symmetric_kl_divergence(x, y):
         "result": numba.types.int32,
         "intersection": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1863,13 +1718,6 @@ def bit_hamming(x, y):
 
 
 @numba.njit(
-    [
-        "f4(u1[::1],u1[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     nogil=True,
     boundscheck=False,
@@ -1879,7 +1727,6 @@ def bit_hamming(x, y):
         "and_": numba.types.uint8,
         "or_": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1906,27 +1753,18 @@ def bit_jaccard(x, y):
         denom += popcnt_u8(or_)
 
     if denom == 0:
-        return 0.0
+        return np.float32(0.0)
     else:
-        return -np.log(np.float32(result) / np.float32(denom))
+        return np.float32(-np.log(np.float32(result) / np.float32(denom)))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     nogil=True,
     boundscheck=False,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
         "y_i": numba.types.float32,
     },
     cache=True,
@@ -1948,14 +1786,6 @@ def quantized_uint8_sq_euclidean(x, y, quantized_values):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     nogil=True,
     boundscheck=False,
@@ -1964,7 +1794,6 @@ def quantized_uint8_sq_euclidean(x, y, quantized_values):
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -1985,30 +1814,21 @@ def quantized_uint8_alternative_cosine(x, y, quantized_values):
         norm_y += qy * qy
 
     if norm_x == 0.0 and norm_y == 0.0:
-        return 0.0
+        return np.float32(0.0)
     elif norm_x == 0.0 or norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     elif result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
         result = result / np.sqrt(norm_x * norm_y)
-        return -np.log2((result + 1.0) / 2.0)
+        return np.float32(-np.log2((result + 1.0) / 2.0))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2028,26 +1848,17 @@ def quantized_uint8_alternative_dot(x, y, quantized_values):
         norm_y += qy * qy
 
     if result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
-        return -np.log2(result / np.sqrt(norm_y))
+        return np.float32(-np.log2(result / np.sqrt(norm_y)))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2074,20 +1885,11 @@ def quantized_uint4_sq_euclidean(x, y, quantized_values):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2115,31 +1917,22 @@ def quantized_uint4_alternative_cosine(x, y, quantized_values):
         norm_y += qy * qy
 
     if norm_x == 0.0 and norm_y == 0.0:
-        return 0.0
+        return np.float32(0.0)
     elif norm_x == 0.0 or norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     elif result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
         result = result / np.sqrt(norm_x * norm_y)
-        return -np.log2((result + 1.0) / 2.0)
+        return np.float32(-np.log2((result + 1.0) / 2.0))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2165,9 +1958,9 @@ def quantized_uint4_alternative_dot(x, y, quantized_values):
         norm_y += qy * qy
 
     if result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
-        return -np.log2(result / np.sqrt(norm_y))
+        return np.float32(-np.log2(result / np.sqrt(norm_y)))
 
 
 @numba.njit(

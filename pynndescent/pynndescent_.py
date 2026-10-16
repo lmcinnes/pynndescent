@@ -37,6 +37,8 @@ from pynndescent.utils import (
     check_and_mark_visited,
     generate_graph_update_array,
     apply_graph_update_array,
+    sort_updates_by_block,
+    apply_sorted_graph_update_array,
     initalize_heap_from_graph_indices,
     initalize_heap_from_graph_indices_and_distances,
     sparse_initalize_heap_from_graph_indices,
@@ -131,9 +133,10 @@ def init_rp_tree(data, dist, current_graph, leaf_array, n_threads=8):
     )
     updates = np.zeros((n_threads, updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+    sorted_updates = np.empty((n_threads, 2 * updates_per_thread, 3), dtype=np.float32)
+    block_offsets = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
 
     n_vertices = current_graph[0].shape[0]
-    vertex_block_size = n_vertices // n_threads + 1
 
     for i in range(n_blocks + 1):
         block_start = i * block_size
@@ -151,38 +154,12 @@ def init_rp_tree(data, dist, current_graph, leaf_array, n_threads=8):
             n_threads,
         )
 
-        for t in numba.prange(n_threads):
-            v_block_start = t * vertex_block_size
-            v_block_end = min(v_block_start + vertex_block_size, n_vertices)
-
-            for j in range(n_threads):
-                for k in range(n_updates_per_thread[j]):
-                    p = np.int32(updates[j, k, 0])
-
-                    if p < 0:
-                        continue
-
-                    q = np.int32(updates[j, k, 1])
-                    d = updates[j, k, 2]
-
-                    if p >= v_block_start and p < v_block_end:
-                        checked_flagged_heap_push(
-                            current_graph[1][p],
-                            current_graph[0][p],
-                            current_graph[2][p],
-                            d,
-                            q,
-                            np.uint8(1),
-                        )
-                    if q >= v_block_start and q < v_block_end:
-                        checked_flagged_heap_push(
-                            current_graph[1][q],
-                            current_graph[0][q],
-                            current_graph[2][q],
-                            d,
-                            p,
-                            np.uint8(1),
-                        )
+        sort_updates_by_block(
+            updates, n_updates_per_thread, sorted_updates, block_offsets, n_vertices, n_threads
+        )
+        apply_sorted_graph_update_array(
+            current_graph, sorted_updates, block_offsets, n_threads
+        )
 
 
 @numba.njit(
@@ -229,6 +206,8 @@ def process_candidates(
     n_threads,
     update_array,
     n_updates_per_thread,
+    sorted_updates,
+    block_offsets,
 ):
     """Process candidate neighbors using array-based update generation.
 
@@ -257,9 +236,24 @@ def process_candidates(
             n_threads,
         )
 
-        c += apply_graph_update_array(
-            current_graph, update_array, n_updates_per_thread, n_threads
-        )
+        if n_threads > 1:
+            # Bucket updates by destination block so each thread only reads the
+            # updates it will apply, instead of scanning every thread's updates.
+            sort_updates_by_block(
+                update_array,
+                n_updates_per_thread,
+                sorted_updates,
+                block_offsets,
+                n_vertices,
+                n_threads,
+            )
+            c += apply_sorted_graph_update_array(
+                current_graph, sorted_updates, block_offsets, n_threads
+            )
+        else:
+            c += apply_graph_update_array(
+                current_graph, update_array, n_updates_per_thread, n_threads
+            )
 
     return c
 
@@ -293,6 +287,14 @@ def nn_descent_internal(
     )
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+    # Each update is written to at most two destination blocks.
+    if n_threads > 1:
+        sorted_updates = np.empty(
+            (n_threads, 2 * max_updates_per_thread, 3), dtype=np.float32
+        )
+    else:
+        sorted_updates = np.empty((1, 1, 3), dtype=np.float32)
+    block_offsets = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
 
     for n in range(n_iters):
         if verbose:
@@ -313,6 +315,8 @@ def nn_descent_internal(
             n_threads,
             update_array,
             n_updates_per_thread,
+            sorted_updates,
+            block_offsets,
         )
 
         if c <= delta * n_neighbors * data.shape[0]:
@@ -341,7 +345,7 @@ def nn_descent(
         current_graph = make_heap(data.shape[0], n_neighbors)
 
         if rp_tree_init:
-            init_rp_tree(data, dist, current_graph, leaf_array)
+            init_rp_tree(data, dist, current_graph, leaf_array, n_threads=numba.get_num_threads())
 
         init_random(n_neighbors, data, current_graph, dist, rng_state)
     elif (
@@ -866,6 +870,11 @@ class NNDescent:
         Arguments to pass on to the metric, such as the ``p`` value for
         Minkowski distance.
 
+    bit_metric: bool (optional, default=False)
+        Whether ``metric`` assumes bit-packed data. Only to be used if ``metric`` is
+        a callable; if ``metric`` is a string referring to one of the available already
+        implemented metrics, this argument is ignored.
+
     n_neighbors: int (optional, default=30)
         The number of neighbors to use in k-neighbor graph graph_data structure
         used for fast approximate nearest neighbor search. Larger values
@@ -879,6 +888,11 @@ class NNDescent:
         of performance. The default of None means a value will be chosen based on the
         size of the data (typically 3-12 trees). Benchmarks show that 2-4 trees are
         usually sufficient for best recall.
+
+    angular_trees: bool (optional, default=False)
+        Whether angular trees should be used in initialization. Only to be used if
+        ``metric`` is a callable; if ``metric`` is a string referring to one of the
+        available already implemented metrics, this argument is ignored.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
@@ -1002,8 +1016,10 @@ class NNDescent:
         data,
         metric="euclidean",
         metric_kwds=None,
+        bit_metric=False,
         n_neighbors=30,
         n_trees=None,
+        angular_trees=False,
         leaf_size=None,
         pruning_degree_multiplier=1.5,
         diversify_prob=1.0,
@@ -1035,10 +1051,12 @@ class NNDescent:
             n_iters = max(5, int(round(np.log2(data.shape[0]))))
 
         self.n_trees = n_trees
+        self.angular_trees = angular_trees
         self.n_trees_after_update = max(2, int(np.round(self.n_trees / 3)))
         self.n_neighbors = n_neighbors
         self.metric = metric
         self.metric_kwds = metric_kwds
+        self.bit_metric = bit_metric
         self.leaf_size = leaf_size
         self.prune_degree_multiplier = pruning_degree_multiplier
         self.diversify_prob = diversify_prob
@@ -1069,7 +1087,9 @@ class NNDescent:
         else:
             copy_on_normalize = False
 
-        if metric in ("bit_hamming", "bit_jaccard"):
+        if metric in ("bit_hamming", "bit_jaccard") or (
+            callable(self.metric) and self.bit_metric
+        ):
             data = check_array(data, dtype=np.uint8, order="C")
             self._input_dtype = np.uint8
         else:
@@ -1112,8 +1132,14 @@ class NNDescent:
             else:
                 self._bit_trees = False
         else:
-            self._angular_trees = False
-            self._bit_trees = False
+            if callable(self.metric) and self.angular_trees:
+                self._angular_trees = True
+            else:
+                self._angular_trees = False
+            if callable(self.metric) and self.bit_metric:
+                self._bit_trees = True
+            else:
+                self._bit_trees = False
 
         if metric in ("dot", "direct_cosine"):
             data = normalize(data, norm="l2", copy=copy_on_normalize)
@@ -2888,7 +2914,7 @@ class NNDescent:
             init_from_neighbor_graph(
                 current_graph, self._neighbor_graph[0], self._neighbor_graph[1]
             )
-            init_rp_tree(self._raw_data, self._distance_func, current_graph, leaf_array)
+            init_rp_tree(self._raw_data, self._distance_func, current_graph, leaf_array, n_threads=numba.get_num_threads())
 
             if self.max_candidates is None:
                 effective_max_candidates = min(60, self.n_neighbors)

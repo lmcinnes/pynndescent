@@ -2791,7 +2791,6 @@ def make_dense_bit_tree(data, rng_state, leaf_size=30, angular=False, max_depth=
     locals={
         "margin": numba.types.float32,
         "dim": numba.types.intp,
-        "d": numba.types.uint16,
     },
     cache=True,
 )
@@ -2827,7 +2826,6 @@ def select_side(hyperplane, offset, point, rng_state):
     locals={
         "margin": numba.types.float32,
         "dim": numba.types.intp,
-        "d": numba.types.uint16,
     },
     cache=True,
 )
