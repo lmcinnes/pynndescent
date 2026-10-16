@@ -46,7 +46,11 @@ from pynndescent.utils import (
     EMPTY_GRAPH,
 )
 
-from pynndescent.kernels import select_kernel, generate_graph_update_array_batched
+from pynndescent.kernels import (
+    select_kernel,
+    generate_graph_update_array_batched,
+    four_distances,
+)
 from pynndescent.rp_trees import (
     make_forest,
     rptree_leaf_array,
@@ -1818,6 +1822,12 @@ class NNDescent:
         else:
             normalize_query = False
 
+        # Batched 1x4 distances during graph traversal (dense float32 only).
+        if self.quantization is None:
+            search_kernel = select_kernel(dist, data)
+        else:
+            search_kernel = 0
+
         @numba.njit(
             fastmath=True,
             locals={
@@ -1904,26 +1914,67 @@ class NNDescent:
 
                 # Find smallest seed point
                 d_vertex, vertex = heapq.heappop(seed_set)
+                pending = np.empty(4, dtype=np.int32)
+                pending_d = np.empty(4, dtype=np.float32)
 
                 while d_vertex < distance_bound:
-
-                    for j in range(indptr[vertex], indptr[vertex + 1]):
-
-                        candidate = indices[j]
-
-                        if check_and_mark_visited(visited_nodes, candidate) == 0:
-
-                            d = np.float32(dist(current_query, data[candidate]))
-
+                    if search_kernel != 0:
+                        # Collect unvisited neighbours four at a time and compute
+                        # their distances together, then consider them in the
+                        # original order so the search path is unchanged.
+                        n_pending = 0
+                        for j in range(indptr[vertex], indptr[vertex + 1]):
+                            candidate = indices[j]
+                            if check_and_mark_visited(visited_nodes, candidate) == 0:
+                                pending[n_pending] = candidate
+                                n_pending += 1
+                                if n_pending == 4:
+                                    four_distances(
+                                        current_query,
+                                        data,
+                                        pending,
+                                        pending_d,
+                                        search_kernel,
+                                    )
+                                    for r in range(4):
+                                        d = pending_d[r]
+                                        if d < distance_bound:
+                                            simple_heap_push(
+                                                heap_priorities,
+                                                heap_indices,
+                                                d,
+                                                pending[r],
+                                            )
+                                            heapq.heappush(seed_set, (d, pending[r]))
+                                            distance_bound = heap_priorities[0] + (
+                                                epsilon
+                                                * (heap_priorities[0] - min_distance)
+                                            )
+                                    n_pending = 0
+                        for r in range(n_pending):
+                            d = np.float32(dist(current_query, data[pending[r]]))
                             if d < distance_bound:
                                 simple_heap_push(
-                                    heap_priorities, heap_indices, d, candidate
+                                    heap_priorities, heap_indices, d, pending[r]
                                 )
-                                heapq.heappush(seed_set, (d, candidate))
-                                # Update bound
+                                heapq.heappush(seed_set, (d, pending[r]))
                                 distance_bound = heap_priorities[0] + (
                                     epsilon * (heap_priorities[0] - min_distance)
                                 )
+                    else:
+                        for j in range(indptr[vertex], indptr[vertex + 1]):
+                            candidate = indices[j]
+                            if check_and_mark_visited(visited_nodes, candidate) == 0:
+                                d = np.float32(dist(current_query, data[candidate]))
+                                if d < distance_bound:
+                                    simple_heap_push(
+                                        heap_priorities, heap_indices, d, candidate
+                                    )
+                                    heapq.heappush(seed_set, (d, candidate))
+                                    # Update bound
+                                    distance_bound = heap_priorities[0] + (
+                                        epsilon * (heap_priorities[0] - min_distance)
+                                    )
 
                     # find new smallest seed point
                     if len(seed_set) == 0:

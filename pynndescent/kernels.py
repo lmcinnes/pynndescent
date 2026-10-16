@@ -230,3 +230,20 @@ def generate_graph_update_array_batched(
                 )
 
         n_updates_per_thread[t] = idx
+
+
+@numba.njit(fastmath=True, inline="always")
+def four_distances(query, data, candidates, out, kernel):
+    """Distances from ``query`` to the four rows ``data[candidates]`` (kernels 1, 2)."""
+    if kernel == 1:
+        d0, d1, d2, d3 = _four_sqeuclidean(
+            query, data, candidates[0], candidates[1], candidates[2], candidates[3]
+        )
+    else:
+        d0, d1, d2, d3 = _four_alt_dot(
+            query, data, candidates[0], candidates[1], candidates[2], candidates[3]
+        )
+    out[0] = d0
+    out[1] = d1
+    out[2] = d2
+    out[3] = d3
