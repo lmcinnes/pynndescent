@@ -24,7 +24,7 @@ LOCAL_SUBTREE_BYTES = 1 << 20
 _U = np.uint64
 
 
-@numba.njit(inline="always")
+@numba.njit(inline="always", cache=True)
 def _mix64(x):
     # splitmix64 finaliser
     x = x + _U(0x9E3779B97F4A7C15)
@@ -33,7 +33,7 @@ def _mix64(x):
     return x ^ (x >> _U(31))
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def _root_seeds(seed, n_trees):
     out = np.empty(n_trees, dtype=np.uint64)
     for t in range(n_trees):
@@ -41,7 +41,7 @@ def _root_seeds(seed, n_trees):
     return out
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def _child_seeds(seeds):
     left = np.empty(seeds.shape[0], dtype=np.uint64)
     right = np.empty(seeds.shape[0], dtype=np.uint64)
@@ -51,7 +51,7 @@ def _child_seeds(seeds):
     return left, right
 
 
-@numba.njit(inline="always")
+@numba.njit(inline="always", cache=True)
 def _two_points(seed, size):
     a = np.int64(_mix64(seed) % _U(size))
     b = np.int64(_mix64(seed ^ _U(0x5851F42D4C957F2D)) % _U(size - 1))
@@ -60,7 +60,7 @@ def _two_points(seed, size):
     return a, b
 
 
-@numba.njit(inline="always")
+@numba.njit(inline="always", cache=True)
 def _side(margin, seed, point):
     if abs(margin) < EPS:
         return np.uint8(_mix64(seed ^ _U(point)) & _U(1))
@@ -72,7 +72,7 @@ def _side(margin, seed, point):
 # --------------------------------------------------------------------------- dense
 
 
-@numba.njit(fastmath=True, inline="always")
+@numba.njit(fastmath=True, inline="always", cache=True)
 def _dense_plane(data, p, q, plane, angular):
     dim = data.shape[1]
     if angular:
@@ -106,7 +106,7 @@ def _dense_plane(data, p, q, plane, angular):
     return offset
 
 
-@numba.njit(parallel=True, fastmath=True)
+@numba.njit(parallel=True, fastmath=True, cache=True)
 def _dense_planes(data, perm, s_tree, s_start, s_end, s_seed, planes, offsets, angular):
     for s in numba.prange(s_tree.shape[0]):
         t = s_tree[s]
@@ -116,7 +116,7 @@ def _dense_planes(data, perm, s_tree, s_start, s_end, s_seed, planes, offsets, a
         )
 
 
-@numba.njit(parallel=True, fastmath=True, boundscheck=False)
+@numba.njit(parallel=True, fastmath=True, boundscheck=False, cache=True)
 def _dense_sides(data, assign, planes, offsets, s_seed, sides):
     n, dim = data.shape
     n_trees = assign.shape[0]
@@ -165,7 +165,7 @@ def _dense_sides(data, assign, planes, offsets, s_seed, sides):
                         )
 
 
-@numba.njit(parallel=True, fastmath=True, boundscheck=False)
+@numba.njit(parallel=True, fastmath=True, boundscheck=False, cache=True)
 def _dense_local_subtrees(
     data, perm, leaf_mark, d_tree, d_start, d_end, d_seed, d_depth, leaf_size, max_depth, angular
 ):
@@ -225,7 +225,7 @@ def _dense_local_subtrees(
 # --------------------------------------------------------------------------- sparse
 
 
-@numba.njit(inline="always")
+@numba.njit(inline="always", cache=True)
 def _row_norm(indptr, values, p):
     r = 0.0
     for i in range(indptr[p], indptr[p + 1]):
@@ -236,7 +236,7 @@ def _row_norm(indptr, values, p):
     return r
 
 
-@numba.njit(inline="always")
+@numba.njit(inline="always", cache=True)
 def _sparse_plane_size(inds, indptr, p, q):
     i = indptr[p]
     ie = indptr[p + 1]
@@ -255,7 +255,7 @@ def _sparse_plane_size(inds, indptr, p, q):
     return count + (ie - i) + (je - j)
 
 
-@numba.njit(inline="always")
+@numba.njit(inline="always", cache=True)
 def _sparse_plane_fill(inds, indptr, values, p, q, out_inds, out_values, pos, angular):
     """Write the hyperplane for points p, q at out[pos:]; return its offset."""
     if angular:
@@ -304,7 +304,7 @@ def _sparse_plane_fill(inds, indptr, values, p, q, out_inds, out_values, pos, an
     return np.float32(offset)
 
 
-@numba.njit(inline="always")
+@numba.njit(inline="always", cache=True)
 def _sparse_margin(inds, indptr, values, p, plane_inds, plane_values, a, b):
     i = indptr[p]
     ie = indptr[p + 1]
@@ -321,7 +321,7 @@ def _sparse_margin(inds, indptr, values, p, plane_inds, plane_values, a, b):
     return m
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def _sparse_planes(inds, indptr, values, perm, s_tree, s_start, s_end, s_seed, angular):
     n_split = s_tree.shape[0]
     points = np.empty((n_split, 2), np.int64)
@@ -345,7 +345,7 @@ def _sparse_planes(inds, indptr, values, perm, s_tree, s_start, s_end, s_seed, a
     return plane_ptr, plane_inds, plane_values, offsets
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def _sparse_sides(inds, indptr, values, assign, plane_ptr, plane_inds, plane_values, offsets, s_seed, sides):
     n = indptr.shape[0] - 1
     n_trees = assign.shape[0]
@@ -360,7 +360,7 @@ def _sparse_sides(inds, indptr, values, assign, plane_ptr, plane_inds, plane_val
                 sides[p, t] = _side(m, s_seed[s], p)
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def _sparse_local_subtrees(
     inds, indptr, values, perm, leaf_mark, d_tree, d_start, d_end, d_seed, d_depth,
     leaf_size, max_depth, angular,
@@ -424,7 +424,7 @@ def _sparse_local_subtrees(
 # --------------------------------------------------------------------------- shared
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def _set_assignments(perm, assign, n_tree, n_start, n_end, values):
     for s in numba.prange(n_tree.shape[0]):
         t = n_tree[s]
@@ -433,7 +433,7 @@ def _set_assignments(perm, assign, n_tree, n_start, n_end, values):
             assign[t, perm[t, i]] = v
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def _partition(perm, sides, s_tree, s_start, s_end, lefts):
     for s in numba.prange(s_tree.shape[0]):
         t = s_tree[s]
@@ -455,7 +455,7 @@ def _partition(perm, sides, s_tree, s_start, s_end, lefts):
         lefts[s] = left
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def _leaves_to_array(perm, leaf_mark):
     n_trees, n = perm.shape
     n_leaves = 0

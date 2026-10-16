@@ -1218,45 +1218,17 @@ class NNDescent:
         for i in range(10):
             _ = tau_rand_int(self.search_rng_state)
 
+        # Set threading constraints (the forest build is numba-parallel too)
+        self._original_num_threads = numba.get_num_threads()
+        if self.n_jobs != -1 and self.n_jobs is not None:
+            numba.set_num_threads(self.n_jobs)
+
         if self.tree_init:
             if verbose:
                 print(ts(), "Building RP forest with", str(n_trees), "trees")
-            if self._bit_trees:
-                self._rp_forest = make_forest(
-                    data,
-                    n_neighbors,
-                    n_trees,
-                    leaf_size,
-                    self.rng_state,
-                    current_random_state,
-                    self.n_jobs,
-                    self._angular_trees,
-                    self._bit_trees,
-                    max_depth=self.max_rptree_depth,
-                )
-                leaf_array = rptree_leaf_array(self._rp_forest)
-            else:
-                # NN-descent only needs the forest's leaves, and the search tree is
-                # built separately in prepare(), so build a leaf-only forest
-                # breadth-first across all trees (parallel within each tree).
-                if hasattr(data, "indptr") and not data.has_sorted_indices:
-                    data.sort_indices()
-                forest_leaf_size = (
-                    leaf_size
-                    if leaf_size is not None
-                    else max(60, min(256, 5 * int(n_neighbors)))
-                )
-                leaf_array = make_hybrid_leaf_array(
-                    data,
-                    n_trees,
-                    forest_leaf_size,
-                    int(current_random_state.randint(0, 2**62)),
-                    angular=self._angular_trees,
-                    max_depth=self.max_rptree_depth,
-                )
-                # Only the leaves are kept; prepare() checks for a construction
-                # forest before building its graph-informed search tree.
-                self._rp_forest = leaf_array
+            leaf_array = self._build_init_forest(
+                data, n_trees, self.rng_state, current_random_state
+            )
         else:
             self._rp_forest = None
             leaf_array = np.array([[-1]])
@@ -1265,11 +1237,6 @@ class NNDescent:
             effective_max_candidates = min(60, self.n_neighbors)
         else:
             effective_max_candidates = self.max_candidates
-
-        # Set threading constraints
-        self._original_num_threads = numba.get_num_threads()
-        if self.n_jobs != -1 and self.n_jobs is not None:
-            numba.set_num_threads(self.n_jobs)
 
         if isspmatrix_csr(self._raw_data) or isinstance(self._raw_data, csr_array):
 
@@ -1397,6 +1364,46 @@ class NNDescent:
             )
 
         numba.set_num_threads(self._original_num_threads)
+
+    def _build_init_forest(self, data, n_trees, rng_state, random_state):
+        """Build the NN-descent initialisation forest and return its leaf array."""
+        if self._bit_trees:
+            self._rp_forest = make_forest(
+                data,
+                self.n_neighbors,
+                n_trees,
+                self.leaf_size,
+                rng_state,
+                random_state,
+                self.n_jobs,
+                self._angular_trees,
+                self._bit_trees,
+                max_depth=self.max_rptree_depth,
+            )
+            return rptree_leaf_array(self._rp_forest)
+
+        # NN-descent only needs the forest's leaves, and the search tree is built
+        # separately in prepare(), so build a leaf-only forest breadth-first
+        # across all trees (parallel within each tree).
+        if hasattr(data, "indptr") and not data.has_sorted_indices:
+            data.sort_indices()
+        forest_leaf_size = (
+            self.leaf_size
+            if self.leaf_size is not None
+            else max(60, min(256, 5 * int(self.n_neighbors)))
+        )
+        leaf_array = make_hybrid_leaf_array(
+            data,
+            n_trees,
+            forest_leaf_size,
+            int(random_state.randint(0, 2**62, dtype=np.int64)),
+            angular=self._angular_trees,
+            max_depth=self.max_rptree_depth,
+        )
+        # Only the leaves are kept; prepare() checks for a construction forest
+        # before building its graph-informed search tree.
+        self._rp_forest = leaf_array
+        return leaf_array
 
     def _uses_normalized_data(self):
         # Indexes pickled before this attribute existed only normalized dot data.
@@ -3064,18 +3071,9 @@ class NNDescent:
             raise error_sparse_to_do
         else:
             self.n_trees = self.n_trees_after_update
-            self._rp_forest = make_forest(
-                self._raw_data,
-                self.n_neighbors,
-                self.n_trees,
-                self.leaf_size,
-                rng_state,
-                current_random_state,
-                self.n_jobs,
-                self._angular_trees,
-                max_depth=self.max_rptree_depth,
+            leaf_array = self._build_init_forest(
+                self._raw_data, self.n_trees, rng_state, current_random_state
             )
-            leaf_array = rptree_leaf_array(self._rp_forest)
             current_graph = make_heap(self._raw_data.shape[0], self.n_neighbors)
             init_from_neighbor_graph(
                 current_graph, self._neighbor_graph[0], self._neighbor_graph[1]

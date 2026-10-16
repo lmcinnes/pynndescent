@@ -936,6 +936,28 @@ def test_update_with_changed_data(update_data, case, metric):
         evaluate(index, xs, xs_updated)
 
 
+def test_init_forest_respects_n_jobs_and_is_used_by_update(nn_data, monkeypatch):
+    import numba
+    import pynndescent.pynndescent_ as nnd_module
+
+    thread_counts = []
+    original = nnd_module.make_hybrid_leaf_array
+
+    def spy(*args, **kwargs):
+        thread_counts.append(numba.get_num_threads())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(nnd_module, "make_hybrid_leaf_array", spy)
+    threads_before = numba.get_num_threads()
+
+    index = NNDescent(nn_data[:600], n_neighbors=10, n_jobs=1, random_state=42)
+    assert thread_counts == [1]
+    assert numba.get_num_threads() == threads_before
+
+    index.update(xs_fresh=nn_data[600:])
+    assert len(thread_counts) == 2
+
+
 @pytest.mark.parametrize("n_trees", [1, 2, 3, 10])
 def test_tree_numbers_after_multiple_updates(n_trees):
     trees_after_update = max(2, int(np.round(n_trees / 3)))
