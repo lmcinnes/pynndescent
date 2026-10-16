@@ -51,6 +51,7 @@ from pynndescent.kernels import (
     generate_graph_update_array_batched,
     four_distances,
 )
+from pynndescent.hybrid_forest import make_hybrid_leaf_array
 from pynndescent.rp_trees import (
     make_forest,
     rptree_leaf_array,
@@ -1220,19 +1221,42 @@ class NNDescent:
         if self.tree_init:
             if verbose:
                 print(ts(), "Building RP forest with", str(n_trees), "trees")
-            self._rp_forest = make_forest(
-                data,
-                n_neighbors,
-                n_trees,
-                leaf_size,
-                self.rng_state,
-                current_random_state,
-                self.n_jobs,
-                self._angular_trees,
-                self._bit_trees,
-                max_depth=self.max_rptree_depth,
-            )
-            leaf_array = rptree_leaf_array(self._rp_forest)
+            if self._bit_trees:
+                self._rp_forest = make_forest(
+                    data,
+                    n_neighbors,
+                    n_trees,
+                    leaf_size,
+                    self.rng_state,
+                    current_random_state,
+                    self.n_jobs,
+                    self._angular_trees,
+                    self._bit_trees,
+                    max_depth=self.max_rptree_depth,
+                )
+                leaf_array = rptree_leaf_array(self._rp_forest)
+            else:
+                # NN-descent only needs the forest's leaves, and the search tree is
+                # built separately in prepare(), so build a leaf-only forest
+                # breadth-first across all trees (parallel within each tree).
+                if hasattr(data, "indptr") and not data.has_sorted_indices:
+                    data.sort_indices()
+                forest_leaf_size = (
+                    leaf_size
+                    if leaf_size is not None
+                    else max(60, min(256, 5 * int(n_neighbors)))
+                )
+                leaf_array = make_hybrid_leaf_array(
+                    data,
+                    n_trees,
+                    forest_leaf_size,
+                    int(current_random_state.randint(0, 2**62)),
+                    angular=self._angular_trees,
+                    max_depth=self.max_rptree_depth,
+                )
+                # Only the leaves are kept; prepare() checks for a construction
+                # forest before building its graph-informed search tree.
+                self._rp_forest = leaf_array
         else:
             self._rp_forest = None
             leaf_array = np.array([[-1]])
