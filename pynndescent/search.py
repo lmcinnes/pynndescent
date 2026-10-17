@@ -7,16 +7,22 @@ search function in every ``prepare()``.
 
 The functions here are compiled once, cached on disk, and shared by every index
 whose distance is squared euclidean or alternative dot on dense float32 data.
-Two things keep them as fast as the closure:
+They are the default search path (``NNDescent.prepare(compile_search=False)``);
+``compile_search=True`` still compiles the per-index closure. Several things
+keep them as fast as the closure:
 
 * the data, graph and tree arrays are typed read-only, which lets LLVM assume
   that writes to the result heaps and visited bitset never alias them, as it can
   for a closure's captured constants;
+* the index's arrays and settings travel as a single structref, and one
+  function is compiled per distance kernel, so the kernel is a compile-time
+  constant as it is in the closure;
 * queries call the compiled entry point for the one exact signature directly,
   skipping the dispatcher's per-argument type resolution (which would otherwise
   cost one to two microseconds per single-vector query). Argument types are
-  fixed when the search function is built, and the query is checked by a cheap
-  guard before each call.
+  fixed when the search function is built, and query() validates the query;
+* the seed heap is pushed to directly rather than through a helper, which
+  would add reference counting to every push.
 """
 import functools
 import heapq

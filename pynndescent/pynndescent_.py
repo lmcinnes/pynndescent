@@ -732,6 +732,7 @@ class NNDescent:
         The metric to use for computing nearest neighbors. If a callable is
         used it must be a numba njit compiled function. Supported metrics
         include:
+
             * euclidean
             * manhattan
             * chebyshev
@@ -743,6 +744,7 @@ class NNDescent:
             * seuclidean
             * cosine
             * direct_cosine
+            * dot
             * correlation
             * haversine
             * hamming
@@ -756,6 +758,7 @@ class NNDescent:
             * yule
             * hellinger
             * wasserstein-1d
+
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
@@ -798,6 +801,20 @@ class NNDescent:
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. A value of 1.0 will prune all edges that it can.
 
+    diversify_method: string (optional, default="standard")
+        How the search graph is diversified. ``"standard"`` removes an edge
+        from a point to a neighbor whenever a closer, already retained neighbor
+        is nearer to that neighbor than the point is. ``"degree_aware"`` also
+        prunes edges to high-degree "hub" vertices more readily (see
+        ``degree_prune_aggressiveness``), giving a sparser search graph.
+
+    degree_prune_aggressiveness: float (optional, default=1.0)
+        Only used with ``diversify_method="degree_aware"``. Controls how much
+        more readily edges to high-degree vertices are pruned; 0.0 is equivalent
+        to standard diversification, and larger values prune more (1.0 removes
+        up to about 10% more edges than standard diversification, 3.0 up to
+        about 25%).
+
     n_search_trees: int (optional, default=None)
         No longer has any effect; a single search tree is always used.
 
@@ -813,6 +830,20 @@ class NNDescent:
     max_search_tree_depth: int (optional, default=None)
         Maximum depth of the search tree. If None, uses max_rptree_depth.
         This allows independent tuning of search tree depth vs init tree depth.
+
+    quantization: string or None (optional, default=None)
+        Store a compressed copy of the data and search with it, then rerank the
+        best candidates with the exact distance (see ``query``). Options are:
+
+            * ``"binary"``: one bit per feature (sign); euclidean, l2, cosine,
+              dot, hamming and jaccard metrics.
+            * ``"uint8"`` / ``"uint4"``: per-feature quantile codes; euclidean,
+              l2, cosine and dot metrics.
+            * ``"int8"``: symmetric signed 8-bit codes with a per-row scale;
+              cosine, direct_cosine and dot metrics on dense data.
+
+        Quantization is applied when the index is prepared. The full precision
+        data is kept for reranking, so it does not reduce memory use.
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -832,13 +863,6 @@ class NNDescent:
         If RandomState instance, random_state is the random number generator;
         If None, the random number generator is the RandomState instance used
         by `np.random`.
-
-    algorithm: string (optional, default='standard')
-        This implementation provides an alternative algorithm for
-        construction of the k-neighbors graph used as a search index. The
-        alternative algorithm can be fast for large ``n_neighbors`` values.
-        The``'alternative'`` algorithm has been deprecated and is no longer
-        available.
 
     low_memory: boolean (optional, default=True)
         Whether to use a lower memory, but more computationally expensive
@@ -873,9 +897,10 @@ class NNDescent:
         what you're doing.
 
     n_jobs: int or None, optional (default=None)
-        The number of parallel jobs to run for neighbors index construction.
-        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
-        ``-1`` means using all processors.
+        The number of threads to use for index construction and preparation.
+        ``None`` or ``-1`` use numba's current number of threads (all cores
+        unless changed with ``numba.set_num_threads`` or the
+        ``NUMBA_NUM_THREADS`` environment variable).
 
     compressed: bool (optional, default=False)
         Whether to prune out data not needed for searching the index. This will
@@ -2375,6 +2400,17 @@ class NNDescent:
 
     @property
     def neighbor_graph(self):
+        """The approximate k-nearest neighbor graph of the training data.
+
+        Returns
+        -------
+        indices, distances: array (n_samples, n_neighbors), array (n_samples, n_neighbors)
+            For each training point, the indices of its approximate nearest
+            neighbors and the distances to them, sorted by increasing distance.
+            Each point is listed as its own first neighbor (at distance 0). Rows
+            with fewer neighbors found are padded with -1 indices. Returns None,
+            with a warning, for compressed indexes.
+        """
         if self.compressed and not hasattr(self, "_neighbor_graph"):
             warn("Compressed indexes do not have neighbor graph information.")
             return None
@@ -2397,6 +2433,13 @@ class NNDescent:
         return (indices, distances)
 
     def compress_index(self):
+        """Prepare the index, then discard data needed only for construction.
+
+        The k-NN graph (``neighbor_graph``) and the random projection forest
+        are dropped, leaving only what is required for querying. This makes the
+        index much smaller, which is useful before pickling it, but the index
+        can no longer be updated.
+        """
         import gc
 
         self.prepare()
@@ -2413,7 +2456,11 @@ class NNDescent:
     def prepare(self, compile_search=False):
         """Prepare the index for querying.
 
-        Builds the search graph and search tree, and sets up the search function.
+        Builds the search tree (a graph-informed "hub" tree, built in parallel)
+        and the search graph (the k-NN graph diversified, symmetrised and
+        degree pruned), reorders the data to match the tree, and sets up the
+        search function. This is done automatically by the first ``query``, but
+        can be called explicitly to control when the cost is paid.
 
         Parameters
         ----------
@@ -2567,8 +2614,9 @@ class NNDescent:
 
         Parameters
         ----------
-        query_data: array-like, last dimension self.dim
-            An array of points to query
+        query_data: array-like of shape (n_queries, n_features)
+            The points to query; dense queries must have the same number of
+            features as the indexed data.
 
         k: integer (default = 10)
             The number of nearest neighbors to return
@@ -2602,10 +2650,9 @@ class NNDescent:
 
         pre_normalized: bool (optional, default=False)
             For ``cosine``, ``direct_cosine`` and ``dot`` on dense data, state
-            that each query row
-            is already unit-normalized. This skips query and RP-tree routing
-            normalization. Callers are responsible for preserving the unit-norm
-            invariant; other metrics reject this option.
+            that each query row is already unit-normalized. This skips query and
+            search tree normalization. Callers are responsible for preserving the
+            unit-norm invariant; other metrics reject this option.
 
         Returns
         -------
@@ -2619,6 +2666,8 @@ class NNDescent:
             of the query points such that ``distances[i, j]`` is the distance
             from the ith query point to its jth nearest neighbor in the
             training graph_data.
+
+            If ``return_distances`` is False only ``indices`` is returned.
         """
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
@@ -2775,7 +2824,16 @@ class NNDescent:
         rerank_width=None,
         pre_normalized=False,
     ):
-        """Return nearest-neighbor IDs without materializing public distances."""
+        """Query for the k nearest neighbors, returning only their indices.
+
+        Equivalent to ``query(..., return_distances=False)``; see ``query`` for
+        the parameters.
+
+        Returns
+        -------
+        indices: array of shape (n_queries, k)
+            The indices of the nearest neighbors of each query point.
+        """
         return self.query(
             query_data,
             k=k,
@@ -2983,6 +3041,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         The metric to use for computing nearest neighbors. If a callable is
         used it must be a numba njit compiled function. Supported metrics
         include:
+
             * euclidean
             * manhattan
             * chebyshev
@@ -3006,6 +3065,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             * yule
             * hellinger
             * wasserstein-1d
+
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
@@ -3062,10 +3122,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         by `np.random`.
 
     n_jobs: int or None (optional, default=None)
-        The maximum number of parallel threads to be run at a time. If none
-        this will default to using all the cores available. Note that there is
-        not perfect parallelism, so at several pints the algorithm will be
-        single threaded.
+        The number of threads to use for index construction and preparation.
+        ``None`` or ``-1`` use numba's current number of threads (all cores
+        unless changed with ``numba.set_num_threads`` or the
+        ``NUMBA_NUM_THREADS`` environment variable).
 
     low_memory: boolean (optional, default=False)
         Whether to use a lower memory, but more computationally expensive
@@ -3162,6 +3222,11 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         ----------
         X : array-like, shape (n_samples, n_features)
             Sample graph_data
+
+        compress_index : bool (optional, default=True)
+            Whether to compress the fitted index (see
+            ``NNDescent.compress_index``), discarding data needed only for
+            construction. This makes the transformer smaller to store.
 
         Returns
         -------
