@@ -144,12 +144,6 @@ def _tree_spill_leaves(point, rng_state, leaves, tree_hyperplanes, tree_offsets,
     return leaf_count
 
 
-@numba.njit(inline="always", fastmath=True)
-def _push_seed(heap_priorities, heap_indices, seed_set, d, candidate):
-    simple_heap_push(heap_priorities, heap_indices, d, candidate)
-    heapq.heappush(seed_set, (d, candidate))
-
-
 @numba.njit(
     inline="always",
     fastmath=True,
@@ -183,6 +177,9 @@ def _search_one(
     min_distance,
     kernel,
 ):
+    # seed_set is pushed to directly throughout: passing the list to a helper
+    # (even an inlined one) adds reference counting to every push, which cost
+    # ~1.5% of query instructions.
     seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
 
     # Initialise from all retained trees (or several leaves of the first tree)
@@ -197,7 +194,8 @@ def _search_one(
                 candidate = tree_indices[tree_num, j]
                 if check_and_mark_visited(visited, candidate) == 0:
                     d = np.float32(_distance(kernel, current_query, data[candidate]))
-                    _push_seed(heap_priorities, heap_indices, seed_set, d, candidate)
+                    simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                    heapq.heappush(seed_set, (d, candidate))
                     n_initial_points += 1
     else:
         leaf_bounds = np.empty((tree_leaf_budget, 2), dtype=np.int32)
@@ -210,7 +208,8 @@ def _search_one(
                 candidate = tree_indices[0, j]
                 if check_and_mark_visited(visited, candidate) == 0:
                     d = np.float32(_distance(kernel, current_query, data[candidate]))
-                    _push_seed(heap_priorities, heap_indices, seed_set, d, candidate)
+                    simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                    heapq.heappush(seed_set, (d, candidate))
                     n_initial_points += 1
 
     # Random samples if needed
@@ -220,7 +219,8 @@ def _search_one(
             candidate = np.int32(np.abs(tau_rand_int(rng_state)) % data.shape[0])
             if check_and_mark_visited(visited, candidate) == 0:
                 d = np.float32(_distance(kernel, current_query, data[candidate]))
-                _push_seed(heap_priorities, heap_indices, seed_set, d, candidate)
+                simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                heapq.heappush(seed_set, (d, candidate))
 
     if len(seed_set) == 0:
         return
@@ -247,7 +247,8 @@ def _search_one(
                     for r in range(4):
                         d = pending_d[r]
                         if d < distance_bound:
-                            _push_seed(heap_priorities, heap_indices, seed_set, d, pending[r])
+                            simple_heap_push(heap_priorities, heap_indices, d, pending[r])
+                            heapq.heappush(seed_set, (d, pending[r]))
                             distance_bound = heap_priorities[0] + (
                                 epsilon * (heap_priorities[0] - min_distance)
                             )
@@ -255,7 +256,8 @@ def _search_one(
         for r in range(n_pending):
             d = np.float32(_distance(kernel, current_query, data[pending[r]]))
             if d < distance_bound:
-                _push_seed(heap_priorities, heap_indices, seed_set, d, pending[r])
+                simple_heap_push(heap_priorities, heap_indices, d, pending[r])
+                heapq.heappush(seed_set, (d, pending[r]))
                 distance_bound = heap_priorities[0] + (
                     epsilon * (heap_priorities[0] - min_distance)
                 )
