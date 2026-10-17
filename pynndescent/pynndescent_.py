@@ -1615,10 +1615,11 @@ class NNDescent:
         if self.verbose:
             print(ts(), "Building and compiling search function")
 
-        # Without an explicit prepare(compile_search=False) -- for example when
-        # query() builds the search function, or for indexes pickled before
-        # this option existed -- compile a specialised search function.
-        if not getattr(self, "_compile_search", True):
+        # The shared, disk-cached search function is used unless
+        # prepare(compile_search=True) asked for a specialised one; this also
+        # covers query() building the search function, and indexes pickled
+        # before this option existed.
+        if not getattr(self, "_compile_search", False):
             if self._init_cached_search_function():
                 return
         self._uses_cached_search = False
@@ -2409,30 +2410,28 @@ class NNDescent:
         gc.collect()
         return
 
-    def prepare(self, compile_search=True):
+    def prepare(self, compile_search=False):
         """Prepare the index for querying.
 
         Builds the search graph and search tree, and sets up the search function.
 
         Parameters
         ----------
-        compile_search: bool (optional, default=True)
-            If True, compile a search function specialised to this index. This
-            gives the fastest queries, but compiling takes time (typically a
-            second or more) every time an index is prepared. If False, dense
-            float32 indexes with euclidean, cosine or dot metrics instead use a
-            search function that is compiled once and cached on disk, so
-            preparing the index compiles nothing; each query then executes
-            slightly more instructions (roughly 1-2% for single-vector queries
-            in our measurements). This suits workloads that build many indexes
-            or care most about time to first query. Other metrics and data types
-            always use a compiled, specialised search function. The choice is
-            kept when the index is pickled.
+        compile_search: bool (optional, default=False)
+            By default, dense float32 indexes with euclidean, cosine or dot
+            metrics use a search function that is compiled once and cached on
+            disk, so preparing the index compiles nothing (the first use after
+            installation populates the cache). If True, compile a search
+            function specialised to this index instead, as earlier versions did;
+            queries are no faster, but compiling takes a second or more every
+            time an index is prepared. Other metrics and data types always use a
+            compiled, specialised search function. The choice is kept when the
+            index is pickled.
         """
         compile_search = bool(compile_search)
         if (
             hasattr(self, "_search_function")
-            and getattr(self, "_compile_search", True) != compile_search
+            and getattr(self, "_compile_search", False) != compile_search
         ):
             # Rebuild the search function with the requested approach
             del self._search_function
