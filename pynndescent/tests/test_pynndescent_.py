@@ -1190,7 +1190,7 @@ def test_cached_search_matches_closure(nn_data, metric, kwargs):
     index = NNDescent(
         nn_data[:600], metric=metric, n_neighbors=10, random_state=42, **kwargs
     )
-    index.prepare()
+    index.prepare(compile_search=False)
     assert index._uses_cached_search  # cached path in use
     cached_indices, cached_dists = index.query(nn_data[600:700], k=8, epsilon=0.1)
 
@@ -1211,3 +1211,32 @@ def test_query_rejects_wrong_shape(nn_data):
         index.query(nn_data[0], k=5)  # 1-D
     with pytest.raises(ValueError):
         index.query(nn_data[:5, :-1], k=5)  # wrong number of features
+
+
+def test_prepare_compile_search_option(nn_data):
+    index = NNDescent(nn_data[:600], n_neighbors=10, random_state=42)
+    index.prepare()
+    assert not index._uses_cached_search  # compiled, specialised by default
+    compiled_indices, compiled_dists = index.query(nn_data[600:650], k=8, epsilon=0.1)
+
+    # Opting in to the shared, cached search function
+    index.prepare(compile_search=False)
+    assert index._uses_cached_search
+    cached_indices, cached_dists = index.query(nn_data[600:650], k=8, epsilon=0.1)
+    np.testing.assert_array_equal(cached_indices, compiled_indices)
+    np.testing.assert_allclose(cached_dists, compiled_dists, rtol=1e-6)
+
+    # The choice survives pickling
+    restored = pickle.loads(pickle.dumps(index))
+    assert restored._uses_cached_search
+    restored_indices, _ = restored.query(nn_data[600:650], k=8, epsilon=0.1)
+    np.testing.assert_array_equal(restored_indices, cached_indices)
+
+    # Querying before prepare() compiles a specialised search function
+    fresh = NNDescent(nn_data[:600], n_neighbors=10, random_state=42)
+    fresh.query(nn_data[600:610], k=8)
+    assert not fresh._uses_cached_search
+
+    # And switching back
+    index.prepare(compile_search=True)
+    assert not index._uses_cached_search
