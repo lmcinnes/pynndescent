@@ -1245,39 +1245,10 @@ class NNDescent:
             if not self._raw_data.has_sorted_indices:
                 self._raw_data.sort_indices()
 
-            if metric in sparse.sparse_named_distances:
-                if metric in sparse.sparse_fast_distance_alternatives:
-                    _distance_func = sparse.sparse_fast_distance_alternatives[metric][
-                        "dist"
-                    ]
-                    self._distance_correction = (
-                        sparse.sparse_fast_distance_alternatives[metric]["correction"]
-                    )
-                else:
-                    _distance_func = sparse.sparse_named_distances[metric]
-            elif callable(metric):
-                _distance_func = metric
-            else:
-                raise ValueError(
-                    "Metric {} not supported for sparse data".format(metric)
-                )
-
             if metric in sparse.sparse_need_n_features:
                 metric_kwds["n_features"] = self._raw_data.shape[1]
             self._dist_args = tuple(metric_kwds.values())
-
-            # Create a partial function for distances with arguments
-            if len(self._dist_args) > 0:
-
-                dist_args = self._dist_args
-
-                @numba.njit()
-                def _partial_dist_func(ind1, data1, ind2, data2):
-                    return _distance_func(ind1, data1, ind2, data2, *dist_args)
-
-                self._distance_func = _partial_dist_func
-            else:
-                self._distance_func = _distance_func
+            self._set_sparse_distance_func()
 
             if init_graph is None:
                 _init_graph = EMPTY_GRAPH
@@ -1405,6 +1376,35 @@ class NNDescent:
         self._rp_forest = leaf_array
         return leaf_array
 
+    def _set_sparse_distance_func(self):
+        metric = self.metric
+        if metric in sparse.sparse_named_distances:
+            if metric in sparse.sparse_fast_distance_alternatives:
+                _distance_func = sparse.sparse_fast_distance_alternatives[metric][
+                    "dist"
+                ]
+                self._distance_correction = sparse.sparse_fast_distance_alternatives[
+                    metric
+                ]["correction"]
+            else:
+                _distance_func = sparse.sparse_named_distances[metric]
+        elif callable(metric):
+            _distance_func = metric
+        else:
+            raise ValueError("Metric {} not supported for sparse data".format(metric))
+
+        # Create a partial function for distances with arguments
+        if len(self._dist_args) > 0:
+            dist_args = self._dist_args
+
+            @numba.njit()
+            def _partial_dist_func(ind1, data1, ind2, data2):
+                return _distance_func(ind1, data1, ind2, data2, *dist_args)
+
+            self._distance_func = _partial_dist_func
+        else:
+            self._distance_func = _distance_func
+
     def _uses_normalized_data(self):
         # Indexes pickled before this attribute existed only normalized dot data.
         return getattr(
@@ -1469,6 +1469,9 @@ class NNDescent:
     def __setstate__(self, d):
         self.__dict__ = d
         self._set_distance_func()
+        if self._is_sparse:
+            # _set_distance_func only knows the dense distances
+            self._set_sparse_distance_func()
         if self.quantization is not None:
             # _set_distance_func resets the proxy state that prepare() set up
             self._is_proxy_distance = True

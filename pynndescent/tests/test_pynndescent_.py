@@ -767,6 +767,17 @@ def test_cosine_pickle_unpickle(quantization):
     np.testing.assert_allclose(distances1, distances2, atol=1.0e-6)
 
 
+@pytest.mark.parametrize("metric", ["euclidean", "cosine", "correlation"])
+def test_sparse_pickle_unpickle(sparse_nn_data, metric):
+    index1 = NNDescent(sparse_nn_data, metric, n_neighbors=10, random_state=42)
+    neighbors1, distances1 = index1.query(sparse_nn_data[:20], k=5)
+    index2 = pickle.loads(pickle.dumps(index1))
+    neighbors2, distances2 = index2.query(sparse_nn_data[:20], k=5)
+
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_allclose(distances1, distances2, atol=1.0e-6)
+
+
 def test_compressed_pickle_unpickle():
     seed = np.random.RandomState(42)
 
