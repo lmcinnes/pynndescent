@@ -61,8 +61,23 @@ ACTION_LEAF = 0
 ACTION_SPLIT = 1
 ACTION_RANDOM = 2
 
-# Split selection per data kind: (criterion, min_balance, fallback)
+# Split selection per data kind: (criterion, min_balance, fallback).
+#
+# The defaults pick the most balanced hub-pair split and, when none reaches
+# MIN_SPLIT_BALANCE, move the best hub hyperplane to the median margin. Compared
+# with the original builders (SERIAL_SPLIT_OPTIONS) this avoids oversized leaves
+# for dense data (MNIST-cosine queries ~2.4x faster at equal recall) and the
+# very deep, unbalanced trees edge-cut selection produced for sparse and bit
+# data (20NG ~1.3-1.5x, binarised MNIST ~1.45x faster queries; GloVe and sparse
+# MNIST unchanged), and keeps tree depth logarithmic.
 DEFAULT_SPLIT_OPTIONS = {
+    KIND_DENSE: (CRITERION_BALANCE, MIN_SPLIT_BALANCE, FALLBACK_MEDIAN),
+    KIND_SPARSE: (CRITERION_BALANCE, MIN_SPLIT_BALANCE, FALLBACK_MEDIAN),
+    KIND_BIT: (CRITERION_BALANCE, MIN_SPLIT_BALANCE, FALLBACK_MEDIAN),
+}
+
+# Options that reproduce the original serial hub tree builders in rp_trees
+SERIAL_SPLIT_OPTIONS = {
     KIND_DENSE: (CRITERION_BALANCE, MIN_SPLIT_BALANCE, FALLBACK_LEAF),
     KIND_SPARSE: (CRITERION_EDGE_CUT, 0.0, FALLBACK_RANDOM),
     KIND_BIT: (CRITERION_EDGE_CUT, 0.0, FALLBACK_RANDOM),

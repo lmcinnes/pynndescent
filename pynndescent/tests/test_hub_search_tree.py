@@ -11,6 +11,10 @@ from pynndescent.hub_tree import (
     FALLBACK_LEAF,
     FALLBACK_MEDIAN,
     FALLBACK_RANDOM,
+    KIND_BIT,
+    KIND_DENSE,
+    KIND_SPARSE,
+    SERIAL_SPLIT_OPTIONS,
     make_hub_search_tree,
 )
 from pynndescent.rp_trees import (
@@ -108,7 +112,11 @@ def test_matches_serial_hub_tree(kind, metric, angular, local_bytes):
     if kind == "dense" and angular:
         data = data / np.linalg.norm(data, axis=1, keepdims=True)
     graph = _graph(data, metric)
-    kwargs = {} if local_bytes is None else {"local_bytes": local_bytes}
+    kind_id = {"dense": KIND_DENSE, "sparse": KIND_SPARSE, "bit": KIND_BIT}[kind]
+    criterion, min_balance, fallback = SERIAL_SPLIT_OPTIONS[kind_id]
+    kwargs = dict(criterion=criterion, min_balance=min_balance, fallback=fallback)
+    if local_bytes is not None:
+        kwargs["local_bytes"] = local_bytes
     tree = make_hub_search_tree(data, graph, angular=angular, **kwargs)
     _assert_same_tree(_serial_tree(data, graph, angular), tree)
 
@@ -167,6 +175,23 @@ def test_training_points_route_to_their_own_leaf(kind):
             assert node == leaf_of[i], f"point {i} routed to the wrong leaf"
     # Ties (points on a hyperplane) are broken at random by the search code
     assert n_untied > (0.95 if kind == "dense" else 0.3) * data.shape[0]
+
+
+@pytest.mark.parametrize("kind", ["dense", "sparse", "bit"])
+def test_default_trees_are_balanced(kind):
+    data = _data(kind, n=4000, seed=5)
+    graph = _graph(data, "bit_jaccard" if kind == "bit" else "euclidean")
+    tree = make_hub_search_tree(data, graph)
+    _check_structure(tree, data.shape[0], 30)
+    # Every split keeps at least MIN_SPLIT_BALANCE of the points on each side,
+    # so depth is at most log_{1/0.9}(n / leaf_size) + 1
+    children = tree.children
+    depth = np.zeros(children.shape[0], dtype=np.int64)
+    for node in range(children.shape[0]):  # pre-order: parents come first
+        if children[node, 0] > 0:
+            depth[children[node]] = depth[node] + 1
+    bound = np.log(data.shape[0] / 30) / np.log(1 / 0.9) + 1
+    assert depth.max() <= bound
 
 
 def test_median_fallback_avoids_oversized_leaves():
