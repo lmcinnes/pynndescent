@@ -54,6 +54,7 @@ from pynndescent.kernels import (
     four_distances,
 )
 from pynndescent.hybrid_forest import make_hybrid_leaf_array
+from pynndescent.hub_tree import make_hub_search_tree
 from pynndescent.rp_trees import (
     make_forest,
     rptree_leaf_array,
@@ -65,9 +66,6 @@ from pynndescent.rp_trees import (
     select_side_bit,
     sparse_select_side,
     score_linked_tree,
-    make_hub_tree,
-    make_sparse_hub_tree,
-    make_bit_hub_tree,
 )
 
 INT32_MIN = np.iinfo(np.int32).min + 1
@@ -1527,79 +1525,26 @@ class NNDescent:
                 else:
                     self._search_forest = []
             else:
-                # Build a graph-informed hub tree that minimizes edge cuts
+                # Build the graph-informed hub search tree (in parallel)
                 if self.verbose:
                     print(ts(), "Building hub-based search tree")
 
-                if self._is_sparse:
-                    # Sparse data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_sparse_hub_tree(
-                        self._raw_data.indices,
-                        self._raw_data.indptr,
-                        self._raw_data.data,
-                        self._neighbor_graph[0],
-                        self.rng_state,
-                        leaf_size=search_leaf_size,
-                        angular=self._angular_trees,
-                        max_depth=search_tree_depth,
-                    )
-                    del self._rp_forest
-                    self._search_forest = [
-                        convert_tree_format(
-                            gi_tree,
-                            self._raw_data.shape[0],
-                            self._raw_data.indptr.shape[0] - 1,
-                        )
-                    ]
-                elif getattr(self, "_bit_trees", False):
-                    # Bit-packed data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_bit_hub_tree(
-                        self._raw_data,
-                        self._neighbor_graph[0],
-                        self.rng_state,
-                        leaf_size=search_leaf_size,
-                        max_depth=search_tree_depth,
-                    )
-                    del self._rp_forest
-                    self._search_forest = [
-                        convert_tree_format(
-                            gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
-                        )
-                    ]
-                elif self.quantization == "binary" and hasattr(self, "_quantized_data"):
-                    # Quantized binary data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_bit_hub_tree(
-                        self._quantized_data,
-                        self._neighbor_graph[0],
-                        self.rng_state,
-                        leaf_size=search_leaf_size,
-                        max_depth=search_tree_depth,
-                    )
-                    del self._rp_forest
-                    self._search_forest = [
-                        convert_tree_format(
-                            gi_tree,
-                            self._quantized_data.shape[0],
-                            self._quantized_data.shape[1],
-                        )
-                    ]
+                if self.quantization == "binary" and hasattr(self, "_quantized_data"):
+                    tree_data = self._quantized_data
                     self._bit_trees = True
                 else:
-                    # Dense data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_hub_tree(
-                        self._raw_data,
+                    tree_data = self._raw_data
+                del self._rp_forest
+                self._search_forest = [
+                    make_hub_search_tree(
+                        tree_data,
                         self._neighbor_graph[0],
-                        self.rng_state,
                         leaf_size=search_leaf_size,
-                        angular=self._angular_trees,
                         max_depth=search_tree_depth,
+                        angular=self._angular_trees and not self._bit_trees,
+                        seed=int(self.rng_state[0]),
                     )
-                    del self._rp_forest
-                    self._search_forest = [
-                        convert_tree_format(
-                            gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
-                        )
-                    ]
+                ]
 
         nnz_pre_diversify = np.sum(self._neighbor_graph[0] >= 0)
         if self._is_sparse:
