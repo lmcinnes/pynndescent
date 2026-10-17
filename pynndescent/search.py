@@ -18,11 +18,13 @@ Two things keep them as fast as the closure:
   fixed when the search function is built, and the query is checked by a cheap
   guard before each call.
 """
+import functools
 import heapq
 
 import numba
 import numpy as np
 from numba import types
+from numba.experimental import structref
 
 from pynndescent.distances import alternative_dot, squared_euclidean
 from pynndescent.kernels import KERNEL_ALT_DOT, KERNEL_SQEUCLIDEAN, four_distances
@@ -44,30 +46,37 @@ _HEAP_TYPE = types.Tuple(
     (_array(types.int32, 2), _array(types.float32, 2), _array(types.uint8, 2))
 )
 
-SEARCH_SIGNATURE = _HEAP_TYPE(
-    _array(types.float32, 2),  # query_points
-    _array(types.float32, 2),  # tree_query_points
-    _HEAP_TYPE,  # result (workspace heap, reset per query)
-    types.int64,  # k
-    types.float32,  # epsilon
-    _array(types.uint8, 1),  # visited
-    types.boolean,  # query_is_normalized
-    _array(types.int64, 1),  # rng_state
-    _array(types.float32, 2, readonly=True),  # data
-    _array(types.int32, 1, readonly=True),  # indptr
-    _array(types.int32, 1, readonly=True),  # indices
-    _array(types.float32, 3, readonly=True),  # tree_hyperplanes (tree, node, dim)
-    _array(types.float32, 2, readonly=True),  # tree_offsets (tree, node)
-    _array(types.int32, 3, readonly=True),  # tree_children (tree, node, 2)
-    _array(types.int32, 2, readonly=True),  # tree_indices (tree, point)
-    types.int64,  # n_search_trees
-    types.int64,  # tree_leaf_budget
-    types.int64,  # n_neighbors
-    types.float32,  # min_distance
-    types.boolean,  # normalize_query
-    types.boolean,  # tree_normalize_query
-    types.int64,  # kernel (KERNEL_SQEUCLIDEAN or KERNEL_ALT_DOT)
-)
+# The index's arrays and settings travel as one structref. Converting each
+# array argument on every call costs about 40ns per array; a structref is a
+# single pointer however many arrays it holds, so a single-query call costs no
+# more than calling a closure over the same arrays.
+@structref.register
+class SearchIndexType(types.StructRef):
+    def preprocess_fields(self, fields):
+        return tuple((name, types.unliteral(typ)) for name, typ in fields)
+
+
+class SearchIndex(structref.StructRefProxy):
+    pass
+
+
+_SEARCH_INDEX_FIELDS = [
+    "data",
+    "indptr",
+    "indices",
+    "tree_hyperplanes",
+    "tree_offsets",
+    "tree_children",
+    "tree_indices",
+    "n_search_trees",
+    "tree_leaf_budget",
+    "n_neighbors",
+    "min_distance",
+    "normalize_query",
+    "tree_normalize_query",
+    "kernel",
+]
+structref.define_proxy(SearchIndex, SearchIndexType, _SEARCH_INDEX_FIELDS)
 
 
 @numba.njit(inline="always", fastmath=True)
@@ -281,13 +290,24 @@ def _prepare_queries(i, query_points, tree_query_points, query_is_normalized, no
     return True, current_query, tree_current_query
 
 
-@numba.njit(fastmath=True, cache=True)
-def search_dense(
-    query_points, tree_query_points, result, k, epsilon, visited, query_is_normalized,
-    rng_state, data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
-    tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
-    normalize_query, tree_normalize_query, kernel,
+@numba.njit(inline="always", fastmath=True)
+def _search_dense_serial(
+    index, query_points, tree_query_points, result, k, epsilon, visited,
+    query_is_normalized, rng_state, kernel,
 ):
+    data = index.data
+    indptr = index.indptr
+    indices = index.indices
+    tree_hyperplanes = index.tree_hyperplanes
+    tree_offsets = index.tree_offsets
+    tree_children = index.tree_children
+    tree_indices = index.tree_indices
+    n_search_trees = index.n_search_trees
+    tree_leaf_budget = index.tree_leaf_budget
+    n_neighbors = index.n_neighbors
+    min_distance = index.min_distance
+    normalize_query = index.normalize_query
+    tree_normalize_query = index.tree_normalize_query
     internal_rng_state = np.copy(rng_state)
     for i in range(query_points.shape[0]):
         visited[:] = 0
@@ -310,13 +330,51 @@ def search_dense(
     return result
 
 
+# One cached function per distance kernel, so that the kernel is a compile-time
+# constant (as it is in a closure). Arguments are in the order query() passes
+# them, after the index, so that functools.partial(entry_point, index) can be
+# called directly. query_inv_norms is only used by int8 quantised search.
+@numba.njit(fastmath=True, cache=True)
+def search_dense_sqeuclidean(
+    index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
+    visited, query_is_normalized, rng_state,
+):
+    return _search_dense_serial(
+        index, query_points, tree_query_points, result, k, epsilon, visited,
+        query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN,
+    )
+
+
+@numba.njit(fastmath=True, cache=True)
+def search_dense_alternative_dot(
+    index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
+    visited, query_is_normalized, rng_state,
+):
+    return _search_dense_serial(
+        index, query_points, tree_query_points, result, k, epsilon, visited,
+        query_is_normalized, rng_state, KERNEL_ALT_DOT,
+    )
+
+
 @numba.njit(fastmath=True, cache=True, parallel=True)
 def search_dense_parallel(
-    query_points, tree_query_points, result, k, epsilon, visited, query_is_normalized,
-    rng_state, data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
-    tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
-    normalize_query, tree_normalize_query, kernel,
+    index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
+    visited, query_is_normalized, rng_state,
 ):
+    data = index.data
+    indptr = index.indptr
+    indices = index.indices
+    tree_hyperplanes = index.tree_hyperplanes
+    tree_offsets = index.tree_offsets
+    tree_children = index.tree_children
+    tree_indices = index.tree_indices
+    n_search_trees = index.n_search_trees
+    tree_leaf_budget = index.tree_leaf_budget
+    n_neighbors = index.n_neighbors
+    min_distance = index.min_distance
+    normalize_query = index.normalize_query
+    tree_normalize_query = index.tree_normalize_query
+    kernel = index.kernel
     internal_rng_state = np.copy(rng_state)
     for i in numba.prange(query_points.shape[0]):
         # Each query needs its own visited set when searched in parallel
@@ -376,11 +434,16 @@ def make_cached_search_function(
     ``query_inv_norms`` is only used by int8 quantised search, which does not
     use this path, and is ignored.
     """
-    dispatcher = search_dense_parallel if parallel else search_dense
+    if parallel:
+        dispatcher = search_dense_parallel
+    elif kernel == KERNEL_SQEUCLIDEAN:
+        dispatcher = search_dense_sqeuclidean
+    else:
+        dispatcher = search_dense_alternative_dot
     hyperplanes, offsets, children, tree_indices = stack_search_forest(
         search_forest, data.shape[0]
     )
-    bound = (
+    index = SearchIndex(
         _readonly(data, np.float32),
         _readonly(indptr, np.int32),
         _readonly(indices, np.int32),
@@ -388,64 +451,55 @@ def make_cached_search_function(
         _readonly(offsets, np.float32),
         _readonly(children, np.int32),
         _readonly(tree_indices, np.int32),
-        len(search_forest),
-        int(tree_leaf_budget),
-        int(n_neighbors),
+        np.int64(len(search_forest)),
+        np.int64(tree_leaf_budget),
+        np.int64(n_neighbors),
         np.float32(min_distance),
         bool(normalize_query),
         bool(tree_normalize_query),
-        int(kernel),
+        np.int64(kernel),
+    )
+    signature = (
+        numba.typeof(index),  # index arrays and settings
+        _array(types.float32, 2),  # query_points
+        _array(types.float32, 2),  # tree_query_points
+        _array(types.float32, 1),  # query_inv_norms (unused here)
+        _HEAP_TYPE,  # result
+        types.int64,  # k
+        types.float32,  # epsilon
+        _array(types.uint8, 1),  # visited
+        types.boolean,  # query_is_normalized
+        _array(types.int64, 1),  # rng_state
     )
 
-    # Compile (or load from the on-disk cache) exactly this signature, then call
-    # its entry point directly to skip per-call type resolution.
+    # Compile (or load from the on-disk cache) exactly this signature.
     entry_point = None
     try:
-        dispatcher.compile(SEARCH_SIGNATURE.args)
-        entry_point = dispatcher.overloads[SEARCH_SIGNATURE.args].entry_point
+        dispatcher.compile(signature)
+        entry_point = dispatcher.overloads[signature].entry_point
     except (AttributeError, KeyError, TypeError):
         entry_point = None
 
-    float32, uint8, int64, int32 = np.float32, np.uint8, np.int64, np.int32
+    if entry_point is not None:
+        # Calling the entry point skips per-call type resolution, and a C-level
+        # partial avoids a Python frame. The entry point only checks dtypes, so
+        # callers must pass C-contiguous 2-D float32 queries and a result heap
+        # from make_heap, as query() does; the visited set and rng state belong
+        # to the index.
+        return functools.partial(entry_point, index)
 
-    def _checked(query_points, tree_query_points, result, visited, rng_state):
-        return (
-            query_points.dtype == float32
-            and query_points.ndim == 2
-            and query_points.flags.c_contiguous
-            and query_points.flags.writeable
-            and tree_query_points.dtype == float32
-            and tree_query_points.ndim == 2
-            and tree_query_points.flags.c_contiguous
-            and tree_query_points.flags.writeable
-            and result[0].dtype == int32
-            and result[0].flags.c_contiguous
-            and result[1].dtype == float32
-            and result[1].flags.c_contiguous
-            and result[2].dtype == uint8
-            and result[2].flags.c_contiguous
-            and visited.dtype == uint8
-            and rng_state.dtype == int64
-        )
+    float32 = np.float32
 
     def search(
         query_points, tree_query_points, query_inv_norms, result, k, epsilon,
         visited, query_is_normalized, rng_state,
     ):
-        # The entry point does not check argument types; anything unexpected
-        # goes through the dispatcher, which converts or raises as usual.
-        if entry_point is not None and _checked(
-            query_points, tree_query_points, result, visited, rng_state
-        ):
-            return entry_point(
-                query_points, tree_query_points, result, k, epsilon, visited,
-                bool(query_is_normalized), rng_state, *bound,
-            )
         return dispatcher(
+            index,
             np.ascontiguousarray(query_points, dtype=float32),
             np.ascontiguousarray(tree_query_points, dtype=float32),
+            np.ascontiguousarray(query_inv_norms, dtype=float32),
             result, k, epsilon, visited, bool(query_is_normalized), rng_state,
-            *bound,
         )
 
     return search

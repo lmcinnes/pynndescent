@@ -1191,14 +1191,23 @@ def test_cached_search_matches_closure(nn_data, metric, kwargs):
         nn_data[:600], metric=metric, n_neighbors=10, random_state=42, **kwargs
     )
     index.prepare()
-    assert index._search_function.__name__ == "search"  # cached path in use
+    assert index._uses_cached_search  # cached path in use
     cached_indices, cached_dists = index.query(nn_data[600:700], k=8, epsilon=0.1)
 
     # Build the closure for the same index and compare
     index._init_cached_search_function = lambda: False
     index._init_search_function()
-    assert index._search_function.__name__ == "search_closure"
+    assert not index._uses_cached_search
     closure_indices, closure_dists = index.query(nn_data[600:700], k=8, epsilon=0.1)
 
     np.testing.assert_array_equal(cached_indices, closure_indices)
     np.testing.assert_allclose(cached_dists, closure_dists, rtol=1e-6)
+
+
+def test_query_rejects_wrong_shape(nn_data):
+    index = NNDescent(nn_data[:300], n_neighbors=10, random_state=42)
+    index.prepare()
+    with pytest.raises(ValueError):
+        index.query(nn_data[0], k=5)  # 1-D
+    with pytest.raises(ValueError):
+        index.query(nn_data[:5, :-1], k=5)  # wrong number of features

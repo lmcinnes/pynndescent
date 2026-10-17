@@ -1557,6 +1557,7 @@ class NNDescent:
             kernel,
             self.parallel_batch_queries,
         )
+        self._uses_cached_search = True
         self._deheap_function = (
             deheap_sort_parallel if self.parallel_batch_queries else deheap_sort_serial
         )
@@ -1589,6 +1590,7 @@ class NNDescent:
 
         if self._init_cached_search_function():
             return
+        self._uses_cached_search = False
 
         if self.tree_init:
             n_search_trees = len(self._search_forest)
@@ -2602,6 +2604,15 @@ class NNDescent:
                 query_data = np.asarray(query_data).astype(np.uint8, order="C")
             else:
                 query_data = np.asarray(query_data).astype(np.float32, order="C")
+                if (
+                    query_data.ndim != 2
+                    or query_data.shape[1] != self._raw_data.shape[1]
+                ):
+                    raise ValueError(
+                        "query_data must be a 2-D array with "
+                        f"{self._raw_data.shape[1]} features, got shape "
+                        f"{query_data.shape}"
+                    )
 
             if normalized_data and not pre_normalized:
                 query_data = normalize(query_data, norm="l2", copy=False)
