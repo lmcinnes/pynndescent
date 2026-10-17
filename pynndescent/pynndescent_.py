@@ -55,6 +55,7 @@ from pynndescent.kernels import (
 )
 from pynndescent.hybrid_forest import make_hybrid_leaf_array
 from pynndescent.hub_tree import make_hub_search_tree
+from pynndescent.search_graph import build_search_graph, permute_graph, permute_rows
 from pynndescent.rp_trees import (
     make_forest,
     rptree_leaf_array,
@@ -603,48 +604,6 @@ def diversify_degree_aware(
     return indices, distances
 
 
-@numba.njit(parallel=True)
-def diversify_csr(
-    graph_indptr,
-    graph_indices,
-    graph_data,
-    source_data,
-    dist,
-    rng_state,
-    prune_probability=1.0,
-):
-    n_nodes = graph_indptr.shape[0] - 1
-
-    for i in numba.prange(n_nodes):
-
-        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
-        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
-
-        order = np.argsort(current_data)
-        retained = np.ones(order.shape[0], dtype=np.int8)
-
-        for idx in range(1, order.shape[0]):
-            j = order[idx]
-            for k in range(idx):
-                l = order[k]
-                if retained[l] == 1:
-
-                    d = dist(
-                        source_data[current_indices[j]], source_data[current_indices[k]]
-                    )
-                    if current_data[l] > FLOAT32_EPS and d < current_data[j]:
-                        if tau_rand(rng_state) < prune_probability:
-                            retained[j] = 0
-                            break
-
-        for idx in range(order.shape[0]):
-            j = order[idx]
-            if retained[j] == 0:
-                graph_data[graph_indptr[i] + j] = 0
-
-    return
-
-
 @numba.njit()
 def compute_degrees_csr(graph_indptr, graph_indices):
     """Compute the undirected degree of each node in a CSR graph.
@@ -677,144 +636,6 @@ def compute_degrees_csr(graph_indptr, graph_indices):
             degrees[graph_indices[i]] += 1
 
     return degrees
-
-
-@numba.njit(parallel=True)
-def diversify_csr_degree_aware(
-    graph_indptr,
-    graph_indices,
-    graph_data,
-    source_data,
-    dist,
-    rng_state,
-    max_degree,
-    aggressiveness=1.0,
-    prune_probability=1.0,
-):
-    """Perform degree-aware diversification on a CSR format graph.
-
-    This is the reverse diversification step, operating on the transposed graph.
-    Higher degree nodes (hubs) get more aggressive pruning.
-
-    Parameters
-    ----------
-    graph_indptr: array of int
-        CSR row pointer array
-    graph_indices: array of int
-        CSR column indices array
-    graph_data: array of float
-        CSR data array (distances)
-    source_data: array
-        The original data points
-    dist: callable
-        Distance function
-    rng_state: array
-        Random state for probabilistic pruning
-    max_degree: int
-        The maximum degree considered for scaling
-    aggressiveness: float (default 1.0)
-        Controls how aggressively high-degree nodes are pruned.
-        0.0 = standard diversification (no degree awareness)
-        Higher values = more aggressive pruning of hub nodes
-    prune_probability: float (default 1.0)
-        Probability of pruning an eligible edge
-
-    Returns
-    -------
-    None (modifies graph_data in place)
-    """
-    # Pre-compute degrees for all nodes (cannot be done in parallel section)
-    degrees = compute_degrees_csr(graph_indptr, graph_indices)
-
-    n_nodes = graph_indptr.shape[0] - 1
-
-    for i in numba.prange(n_nodes):
-        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
-        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
-
-        order = np.argsort(current_data)
-        retained = np.ones(order.shape[0], dtype=np.int8)
-
-        for idx in range(order.shape[0]):
-
-            j = order[idx]
-            if current_data[j] == 0:  # Already pruned or zero distance
-                continue
-
-            for k in range(idx):
-                compare_idx = order[k]
-
-                if retained[compare_idx] == 0:
-                    continue
-
-                d = dist(
-                    source_data[current_indices[compare_idx]],
-                    source_data[current_indices[j]],
-                )
-
-                # Compute degree-based threshold factor for node j
-                # High-degree nodes get a relaxed threshold (accept longer paths)
-                target_degree = 0
-                if current_indices[j] < n_nodes:
-                    target_degree = degrees[current_indices[j]]
-
-                degree_ratio = target_degree / max(max_degree, 1)
-                # Threshold increases with degree ratio, capped at 2x the base
-                threshold_factor = 1.0 + 0.04 * aggressiveness * min(
-                    degree_ratio - 1.0, 2.0
-                )
-                threshold_factor = max(threshold_factor, 1.0)  # Never go below 1.0
-
-                # Prune if there's a shorter path through a retained neighbor
-                if d * threshold_factor < current_data[j]:
-                    if (
-                        prune_probability >= 1.0
-                        or tau_rand(rng_state) < prune_probability
-                    ):
-                        retained[j] = 0
-                        break
-
-        for idx in range(order.shape[0]):
-            j = order[idx]
-            if retained[j] == 0:
-                graph_data[graph_indptr[i] + j] = 0
-
-    return
-
-
-@numba.njit(parallel=True)
-def degree_prune_internal(indptr, data, max_degree=20):
-    for i in numba.prange(indptr.shape[0] - 1):
-        row_data = data[indptr[i] : indptr[i + 1]]
-        if row_data.shape[0] > max_degree:
-            cut_value = np.sort(row_data)[max_degree]
-            for j in range(indptr[i], indptr[i + 1]):
-                if data[j] > cut_value:
-                    data[j] = 0.0
-
-    return
-
-
-def degree_prune(graph, max_degree=20):
-    """Prune the k-neighbors graph back so that nodes have a maximum
-    degree of ``max_degree``.
-
-    Parameters
-    ----------
-    graph: sparse matrix
-        The adjacency matrix of the graph
-
-    max_degree: int (optional, default 20)
-        The maximum degree of any node in the pruned graph
-
-    Returns
-    -------
-    result: sparse matrix
-        The pruned graph.
-    """
-    degree_prune_internal(graph.indptr, graph.data, max_degree)
-    graph.eliminate_zeros()
-    return graph
 
 
 def resort_tree_indices(tree, tree_order):
@@ -1619,104 +1440,23 @@ class NNDescent:
                         self.diversify_prob,
                     )
 
-        self._search_graph = coo_array(
-            (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
-        )
-
         # Preserve any distance 0 points
         diversified_data[diversified_data == 0.0] = FLOAT32_EPS
 
-        self._search_graph.row = np.repeat(
-            np.arange(diversified_rows.shape[0], dtype=np.int32),
-            diversified_rows.shape[1],
+        # Union of forward and reverse edges, without self loops, degree pruned.
+        # (The forward rows are already diversified; a further "reverse"
+        # diversification pass was effectively a no-op and has been dropped.)
+        max_degree = int(np.round(self.prune_degree_multiplier * self.n_neighbors))
+        graph_indptr, graph_indices, self._min_distance = build_search_graph(
+            diversified_rows, diversified_data, max_degree
         )
-        self._search_graph.col = diversified_rows.ravel()
-        self._search_graph.data = diversified_data.ravel()
-
-        # Get rid of any -1 index entries
-        self._search_graph = self._search_graph.tocsr()
-        self._search_graph.data[self._search_graph.indices == -1] = 0.0
-        self._search_graph.eliminate_zeros()
-
-        self._min_distance = np.min(self._search_graph.data)
 
         if self.verbose:
             print(
                 ts(),
-                "Forward diversification reduced edges from {} to {}".format(
-                    nnz_pre_diversify, self._search_graph.nnz
-                ),
-            )
-
-        # Reverse graph
-        pre_reverse_diversify_nnz = self._search_graph.nnz
-        reverse_graph = self._search_graph.transpose()
-        if self._is_sparse:
-            sparse.diversify_csr(
-                reverse_graph.indptr,
-                reverse_graph.indices,
-                reverse_graph.data,
-                self._raw_data.indptr,
-                self._raw_data.indices,
-                self._raw_data.data,
-                self._distance_func,
-                self.rng_state,
-                self.diversify_prob,
-            )
-        elif self.diversify_method == "degree_aware":
-            diversify_csr_degree_aware(
-                reverse_graph.indptr,
-                reverse_graph.indices,
-                reverse_graph.data,
-                self._raw_data,
-                self._distance_func,
-                self.rng_state,
-                self.n_neighbors,  # max_degree
-                self.degree_prune_aggressiveness,
-                self.diversify_prob,
-            )
-        else:
-            diversify_csr(
-                reverse_graph.indptr,
-                reverse_graph.indices,
-                reverse_graph.data,
-                self._raw_data,
-                self._distance_func,
-                self.rng_state,
-                self.diversify_prob,
-            )
-        reverse_graph.eliminate_zeros()
-
-        if self.verbose:
-            print(
-                ts(),
-                "Reverse diversification reduced edges from {} to {}".format(
-                    pre_reverse_diversify_nnz, reverse_graph.nnz
-                ),
-            )
-        reverse_graph = reverse_graph.tocsr()
-        reverse_graph.sort_indices()
-        self._search_graph = self._search_graph.tocsr()
-        self._search_graph.sort_indices()
-        self._search_graph = self._search_graph.maximum(reverse_graph).tocsr()
-
-        # Eliminate the diagonal
-        self._search_graph.setdiag(0.0)
-        self._search_graph.eliminate_zeros()
-
-        pre_prune_nnz = self._search_graph.nnz
-        self._search_graph = degree_prune(
-            self._search_graph,
-            int(np.round(self.prune_degree_multiplier * self.n_neighbors)),
-        )
-        self._search_graph.eliminate_zeros()
-        self._search_graph = (self._search_graph != 0).astype(np.uint8)
-
-        if self.verbose:
-            print(
-                ts(),
-                "Degree pruning reduced edges from {} to {}".format(
-                    pre_prune_nnz, self._search_graph.nnz
+                "Search graph has {} edges after symmetrisation and degree "
+                "pruning (from {} forward edges)".format(
+                    graph_indices.shape[0], nnz_pre_diversify
                 ),
             )
 
@@ -1730,20 +1470,17 @@ class NNDescent:
 
         if self.tree_init:
             self._vertex_order = self._search_forest[0].indices
-            row_ordered_graph = self._search_graph[self._vertex_order, :].tocsc()
-            self._search_graph = row_ordered_graph[:, self._vertex_order]
-            self._search_graph = self._search_graph.tocsr()
-            self._search_graph.sort_indices()
+            graph_indptr, graph_indices = permute_graph(
+                graph_indptr, graph_indices, self._vertex_order
+            )
 
             if self._is_sparse:
                 self._raw_data = self._raw_data[self._vertex_order, :]
             else:
-                self._raw_data = np.ascontiguousarray(
-                    self._raw_data[self._vertex_order, :]
-                )
+                self._raw_data = permute_rows(self._raw_data, self._vertex_order)
                 if hasattr(self, "_quantized_data"):
-                    self._quantized_data = np.ascontiguousarray(
-                        self._quantized_data[self._vertex_order, :]
+                    self._quantized_data = permute_rows(
+                        self._quantized_data, self._vertex_order
                     )
                 if hasattr(self, "_quantized_inv_norms"):
                     self._quantized_inv_norms = np.ascontiguousarray(
@@ -1757,6 +1494,17 @@ class NNDescent:
             )
         else:
             self._vertex_order = np.arange(self._raw_data.shape[0])
+
+        n_vertices = self._raw_data.shape[0]
+        self._search_graph = csr_array(
+            (
+                np.ones(graph_indices.shape[0], dtype=np.uint8),
+                graph_indices,
+                graph_indptr,
+            ),
+            shape=(n_vertices, n_vertices),
+        )
+        self._search_graph.has_sorted_indices = True
 
         if self.compressed:
             if self.verbose:

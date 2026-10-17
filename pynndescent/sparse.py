@@ -441,7 +441,6 @@ def _merge_sqrt_product(ind1, data1, ind2, data2):
     return result
 
 
-
 @numba.njit()
 def sparse_dot_accumulate(start, ind1, data1, ind2, data2):
     """Return ``start`` plus the dot product of two sorted sparse vectors.
@@ -1057,61 +1056,6 @@ def diversify(
                 distances[i, j] = np.inf
 
     return indices, distances
-
-
-@numba.njit(parallel=True, cache=False)
-def diversify_csr(
-    graph_indptr,
-    graph_indices,
-    graph_data,
-    data_indptr,
-    data_indices,
-    data_data,
-    dist,
-    rng_state,
-    prune_probability=1.0,
-):
-
-    n_nodes = graph_indptr.shape[0] - 1
-
-    for i in numba.prange(n_nodes):
-
-        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
-        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
-
-        order = np.argsort(current_data)
-        retained = np.ones(order.shape[0], dtype=np.int8)
-
-        for idx in range(1, order.shape[0]):
-
-            j = order[idx]
-
-            for k in range(idx):
-
-                l = order[k]
-
-                if retained[l] == 1:
-                    p = current_indices[j]
-                    q = current_indices[l]
-
-                    from_inds = data_indices[data_indptr[p] : data_indptr[p + 1]]
-                    from_data = data_data[data_indptr[p] : data_indptr[p + 1]]
-
-                    to_inds = data_indices[data_indptr[q] : data_indptr[q + 1]]
-                    to_data = data_data[data_indptr[q] : data_indptr[q + 1]]
-                    d = dist(from_inds, from_data, to_inds, to_data)
-
-                    if current_data[l] > FLOAT32_EPS and d < current_data[j]:
-                        if tau_rand(rng_state) < prune_probability:
-                            retained[j] = 0
-                            break
-
-        for idx in range(order.shape[0]):
-            j = order[idx]
-            if retained[j] == 0:
-                graph_data[graph_indptr[i] + j] = 0
-
-    return
 
 
 sparse_named_distances = {
