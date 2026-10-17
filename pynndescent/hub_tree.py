@@ -1219,26 +1219,15 @@ def _materialise(
         hyperplanes = np.zeros((n_nodes, 2 * bdata.shape[1]), dtype=np.uint8)
         hyperplanes[internal_pre] = bplanes
     else:
-        nnz = np.diff(sptr)
-        width = max(1, int(nnz.max()) if nnz.shape[0] > 0 else 1)
-        hyperplanes = np.zeros((n_nodes, 2, width), dtype=np.float32)
-        hyperplanes[:, 0, :] = -1
-        _fill_sparse_planes(hyperplanes, internal_pre, pairs, sptr, sinds, svals)
+        # Ragged (ptr, indices, values) in pre-order; leaves and random splits
+        # have empty hyperplanes. Planes were built in ascending pre-order of the
+        # internal nodes, so their storage is already in the right order.
+        sizes = np.zeros(n_nodes, dtype=np.int64)
+        sizes[internal_pre] = np.diff(sptr)
+        ptr = np.zeros(n_nodes + 1, dtype=np.int64)
+        np.cumsum(sizes, out=ptr[1:])
+        hyperplanes = (ptr, sinds, svals)
 
     leaf_sizes = rec_end[order[~internal]] - rec_start[order[~internal]]
     max_leaf = max(leaf_size, int(leaf_sizes.max()) if leaf_sizes.shape[0] else 0)
     return FlatTree(hyperplanes, offsets, children, perm.copy(), max_leaf)
-
-
-@numba.njit(parallel=True, cache=True)
-def _fill_sparse_planes(hyperplanes, internal_pre, pairs, sptr, sinds, svals):
-    for k in numba.prange(internal_pre.shape[0]):
-        p = internal_pre[k]
-        if pairs[k, 0] < 0:
-            # Random split: the serial builders store a [[-1], [-1]] hyperplane
-            hyperplanes[p, 0, 0] = -1.0
-            hyperplanes[p, 1, 0] = -1.0
-            continue
-        for j in range(sptr[k + 1] - sptr[k]):
-            hyperplanes[p, 0, j] = sinds[sptr[k] + j]
-            hyperplanes[p, 1, j] = svals[sptr[k] + j]

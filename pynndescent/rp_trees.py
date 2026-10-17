@@ -2895,6 +2895,50 @@ def search_flat_bit_tree(point, hyperplanes, offsets, children, indices, rng_sta
 
 
 @numba.njit(fastmath=True, cache=True)
+def sparse_select_side_ragged(
+    hyperplane_inds, hyperplane_data, offset, point_inds, point_data, rng_state
+):
+    """Side of a sparse point for a hyperplane stored as (indices, values)."""
+    margin = offset
+    margin += sparse_dot_product(
+        hyperplane_inds, hyperplane_data, point_inds, point_data
+    )
+
+    if abs(margin) < EPS:
+        side = tau_rand_int(rng_state) % 2
+        if side == 0:
+            return 0
+        else:
+            return 1
+    elif margin > 0:
+        return 0
+    else:
+        return 1
+
+
+def sparse_hyperplanes_to_ragged(hyperplanes):
+    """Convert padded (n_nodes, 2, width) sparse hyperplanes to (ptr, inds, vals).
+
+    Padded hyperplanes store indices in row 0 and values in row 1, padded with
+    negative indices; this is the format produced by ``convert_tree_format``.
+    """
+    if isinstance(hyperplanes, tuple):
+        return hyperplanes
+    valid = hyperplanes[:, 0, :] >= 0
+    # Entries are left-aligned, so padding is a suffix; mirror the trailing
+    # trim in sparse_select_side.
+    sizes = np.where(
+        valid.any(axis=1), hyperplanes.shape[2] - np.argmax(valid[:, ::-1], axis=1), 0
+    )
+    ptr = np.zeros(hyperplanes.shape[0] + 1, dtype=np.int64)
+    np.cumsum(sizes, out=ptr[1:])
+    keep = np.arange(hyperplanes.shape[2])[None, :] < sizes[:, None]
+    inds = hyperplanes[:, 0, :][keep].astype(np.int32)
+    vals = np.ascontiguousarray(hyperplanes[:, 1, :][keep], dtype=np.float32)
+    return ptr, inds, vals
+
+
+@numba.njit(fastmath=True, cache=True)
 def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
     margin = offset
 

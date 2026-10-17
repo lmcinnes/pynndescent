@@ -64,7 +64,8 @@ from pynndescent.rp_trees import (
     renumbaify_tree,
     select_side,
     select_side_bit,
-    sparse_select_side,
+    sparse_select_side_ragged,
+    sparse_hyperplanes_to_ragged,
     score_linked_tree,
 )
 
@@ -2290,7 +2291,14 @@ class NNDescent:
             print(ts(), "Building and compiling sparse search function")
 
         if self.tree_init:
-            tree_hyperplanes = self._search_forest[0].hyperplanes
+            # Older indexes (and convert_tree_format) store padded hyperplanes
+            tree = self._search_forest[0]
+            if not isinstance(tree.hyperplanes, tuple):
+                tree = tree._replace(
+                    hyperplanes=sparse_hyperplanes_to_ragged(tree.hyperplanes)
+                )
+                self._search_forest = (tree,) + tuple(self._search_forest[1:])
+            plane_ptr, plane_inds, plane_vals = tree.hyperplanes
             tree_offsets = self._search_forest[0].offsets
             tree_indices = self._search_forest[0].indices
             tree_children = self._search_forest[0].children
@@ -2308,8 +2316,9 @@ class NNDescent:
             def sparse_tree_search_closure(point_inds, point_data, rng_state):
                 node = 0
                 while tree_children[node, 0] > 0:
-                    side = sparse_select_side(
-                        tree_hyperplanes[node],
+                    side = sparse_select_side_ragged(
+                        plane_inds[plane_ptr[node] : plane_ptr[node + 1]],
+                        plane_vals[plane_ptr[node] : plane_ptr[node + 1]],
                         tree_offsets[node],
                         point_inds,
                         point_data,

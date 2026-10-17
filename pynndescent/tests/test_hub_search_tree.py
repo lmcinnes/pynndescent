@@ -22,6 +22,7 @@ from pynndescent.rp_trees import (
     make_bit_hub_tree,
     make_hub_tree,
     make_sparse_hub_tree,
+    sparse_hyperplanes_to_ragged,
 )
 
 @numba.njit()
@@ -74,8 +75,16 @@ def _serial_tree(data, graph, angular, leaf_size=30):
 
 
 def _assert_same_tree(a, b):
-    for name in ("children", "indices", "offsets", "hyperplanes"):
+    for name in ("children", "indices", "offsets"):
         np.testing.assert_array_equal(getattr(a, name), getattr(b, name), err_msg=name)
+    if isinstance(a.hyperplanes, tuple) or isinstance(b.hyperplanes, tuple):
+        # Sparse: compare in the ragged (ptr, indices, values) layout
+        ragged_a = sparse_hyperplanes_to_ragged(a.hyperplanes)
+        ragged_b = sparse_hyperplanes_to_ragged(b.hyperplanes)
+        for x, y in zip(ragged_a, ragged_b):
+            np.testing.assert_array_equal(x, y, err_msg="hyperplanes")
+    else:
+        np.testing.assert_array_equal(a.hyperplanes, b.hyperplanes)
     assert a.leaf_size == b.leaf_size
 
 

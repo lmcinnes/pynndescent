@@ -142,17 +142,23 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
 
 
 @pytest.mark.parametrize("metric", ["euclidean", "cosine"])
-def test_sparse_search_tree_hyperplanes_are_compact(sparse_nn_data, metric):
+def test_sparse_search_tree_hyperplanes_are_ragged(sparse_nn_data, metric):
     index = NNDescent(sparse_nn_data, metric, n_neighbors=20, random_state=42)
     index.prepare()
-    hyperplanes = index._search_forest[0].hyperplanes
-    internal = index._search_forest[0].children[:, 0] > 0
+    tree = index._search_forest[0]
+    ptr, inds, vals = tree.hyperplanes
+    sizes = np.diff(ptr)
+    is_leaf = tree.children[:, 0] <= 0
 
-    # Hyperplanes are padded to the largest hyperplane in the tree, not to the
-    # number of rows (which made sparse indexes allocate GiBs of padding).
-    widest = (hyperplanes[internal, 0, :] >= 0).sum(axis=1).max()
-    assert hyperplanes.shape[2] == widest
-    assert hyperplanes.shape[2] <= sparse_nn_data.shape[1]
+    # Hyperplanes are stored without padding: leaves have none, internal nodes
+    # exactly their non-zeros (padding used to make sparse trees GiBs large)
+    assert ptr.shape[0] == tree.children.shape[0] + 1
+    assert np.all(sizes[is_leaf] == 0)
+    assert np.all(sizes[~is_leaf] > 0)
+    assert inds.shape == vals.shape == (ptr[-1],)
+    assert np.all((inds >= 0) & (inds < sparse_nn_data.shape[1]))
+    for node in np.flatnonzero(~is_leaf):
+        assert np.all(np.diff(inds[ptr[node] : ptr[node + 1]]) > 0)
 
 
 @pytest.mark.skipif(
@@ -774,6 +780,34 @@ def test_sparse_pickle_unpickle(sparse_nn_data, metric):
     index2 = pickle.loads(pickle.dumps(index1))
     neighbors2, distances2 = index2.query(sparse_nn_data[:20], k=5)
 
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_allclose(distances1, distances2, atol=1.0e-6)
+
+
+def test_padded_sparse_search_tree_from_older_pickles(sparse_nn_data):
+    from pynndescent.rp_trees import FlatTree
+
+    index = NNDescent(sparse_nn_data, "cosine", n_neighbors=10, random_state=42)
+    neighbors1, distances1 = index.query(sparse_nn_data[:20], k=5)
+
+    # Older indexes stored sparse hyperplanes as (n_nodes, 2, width) arrays of
+    # (indices, values) padded with -1
+    ptr, inds, vals = index._search_forest[0].hyperplanes
+    width = max(1, int(np.diff(ptr).max()))
+    padded = np.zeros((ptr.shape[0] - 1, 2, width), dtype=np.float32)
+    padded[:, 0, :] = -1
+    for node in range(ptr.shape[0] - 1):
+        size = ptr[node + 1] - ptr[node]
+        padded[node, 0, :size] = inds[ptr[node] : ptr[node + 1]]
+        padded[node, 1, :size] = vals[ptr[node] : ptr[node + 1]]
+    state = index.__getstate__()
+    old_tree = state["_search_forest"][0]
+    state["_search_forest"] = (FlatTree(padded, *old_tree[1:]),)
+
+    restored = NNDescent.__new__(NNDescent)
+    restored.__setstate__(state)
+    neighbors2, distances2 = restored.query(sparse_nn_data[:20], k=5)
+    assert isinstance(restored._search_forest[0].hyperplanes, tuple)
     np.testing.assert_equal(neighbors1, neighbors2)
     np.testing.assert_allclose(distances1, distances2, atol=1.0e-6)
 
