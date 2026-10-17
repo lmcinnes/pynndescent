@@ -141,6 +141,20 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     ), "Sparse NN-descent did not get 95% accuracy on nearest neighbors"
 
 
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_sparse_search_tree_hyperplanes_are_compact(sparse_nn_data, metric):
+    index = NNDescent(sparse_nn_data, metric, n_neighbors=20, random_state=42)
+    index.prepare()
+    hyperplanes = index._search_forest[0].hyperplanes
+    internal = index._search_forest[0].children[:, 0] > 0
+
+    # Hyperplanes are padded to the largest hyperplane in the tree, not to the
+    # number of rows (which made sparse indexes allocate GiBs of padding).
+    widest = (hyperplanes[internal, 0, :] >= 0).sum(axis=1).max()
+    assert hyperplanes.shape[2] == widest
+    assert hyperplanes.shape[2] <= sparse_nn_data.shape[1]
+
+
 @pytest.mark.skipif(
     list(map(int, scipy.version.version.split("."))) < [1, 3, 0],
     reason="requires scipy >= 1.3.0",

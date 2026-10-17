@@ -2899,7 +2899,7 @@ def sparse_select_side(hyperplane, offset, point_inds, point_data, rng_state):
     margin = offset
 
     hyperplane_size = hyperplane.shape[1]
-    while hyperplane[0, hyperplane_size - 1] < 0.0:
+    while hyperplane_size > 0 and hyperplane[0, hyperplane_size - 1] < 0.0:
         hyperplane_size -= 1
 
     hyperplane_inds = hyperplane[0, :hyperplane_size].astype(np.int32)
@@ -3155,9 +3155,10 @@ def convert_tree_format(tree, data_size, data_dim):
             (n_nodes, hyperplane_dim), dtype=tree.hyperplanes[0].dtype
         )
     else:
-        # sparse hyperplanes
+        # sparse hyperplanes, stored as (indices, values) rows padded with -1 to the
+        # largest hyperplane in the tree (not to the data dimension)
         is_sparse = True
-        hyperplane_dim = data_dim
+        hyperplane_dim = max(1, max(h.shape[1] for h in tree.hyperplanes))
         hyperplanes = np.zeros((n_nodes, 2, hyperplane_dim), dtype=np.float32)
         hyperplanes[:, 0, :] = -1
 
