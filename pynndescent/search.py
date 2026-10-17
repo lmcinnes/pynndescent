@@ -34,6 +34,7 @@ from pynndescent.utils import (
     make_heap,
     mark_visited,
     simple_heap_push,
+    siftdown,
     tau_rand_int,
 )
 
@@ -400,6 +401,21 @@ def search_dense_parallel(
     return result
 
 
+@numba.njit(cache=True)
+def _new_search_index(
+    data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
+    tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
+    normalize_query, tree_normalize_query, kernel,
+):
+    # Constructing the structref in a cached function avoids compiling its
+    # constructor in every process.
+    return SearchIndex(
+        data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
+        tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
+        normalize_query, tree_normalize_query, kernel,
+    )
+
+
 def _readonly(array, dtype):
     view = np.ascontiguousarray(array, dtype=dtype).view()
     view.flags.writeable = False
@@ -445,7 +461,7 @@ def make_cached_search_function(
     hyperplanes, offsets, children, tree_indices = stack_search_forest(
         search_forest, data.shape[0]
     )
-    index = SearchIndex(
+    index = _new_search_index(
         _readonly(data, np.float32),
         _readonly(indptr, np.int32),
         _readonly(indices, np.int32),
@@ -507,9 +523,23 @@ def make_cached_search_function(
     return search
 
 
-# deheap_sort variants, created once per process. Building them per index (as a
-# fresh numba.njit of deheap_sort.py_func) recompiled them in every prepare().
-from pynndescent.utils import deheap_sort as _deheap_sort
+# deheap_sort variants with on-disk caching (utils.deheap_sort is always
+# parallel and not cached, so it would otherwise compile in every process).
+@numba.njit(cache=True)
+def deheap_sort_serial(indices, distances):
+    for i in range(indices.shape[0]):
+        for j in range(indices.shape[1] - 1, 0, -1):
+            indices[i, 0], indices[i, j] = indices[i, j], indices[i, 0]
+            distances[i, 0], distances[i, j] = distances[i, j], distances[i, 0]
+            siftdown(distances[i, :j], indices[i, :j], 0)
+    return indices, distances
 
-deheap_sort_serial = numba.njit()(_deheap_sort.py_func)
-deheap_sort_parallel = numba.njit(parallel=True)(_deheap_sort.py_func)
+
+@numba.njit(parallel=True, cache=True)
+def deheap_sort_parallel(indices, distances):
+    for i in numba.prange(indices.shape[0]):
+        for j in range(indices.shape[1] - 1, 0, -1):
+            indices[i, 0], indices[i, j] = indices[i, j], indices[i, 0]
+            distances[i, 0], distances[i, j] = distances[i, j], distances[i, 0]
+            siftdown(distances[i, :j], indices[i, :j], 0)
+    return indices, distances

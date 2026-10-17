@@ -50,6 +50,8 @@ from pynndescent.utils import (
 )
 
 from pynndescent.kernels import (
+    KERNEL_ALT_DOT,
+    KERNEL_SQEUCLIDEAN,
     select_kernel,
     generate_graph_update_array_batched,
     four_distances,
@@ -473,6 +475,26 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
             distances[i, j] = np.inf
 
     return indices, distances
+
+
+# Disk-cached diversify for the two dense distances with batched kernels. A
+# function that takes the distance as an argument cannot be reused from the
+# on-disk cache (its argument type differs between processes), so these fix the
+# distance at compile time; other distances compile diversify per process.
+@numba.njit(cache=True)
+def diversify_squared_euclidean(indices, distances, data, rng_state, prune_probability):
+    return diversify(
+        indices, distances, data, pynnd_dist.squared_euclidean, rng_state,
+        prune_probability,
+    )
+
+
+@numba.njit(cache=True)
+def diversify_alternative_dot(indices, distances, data, rng_state, prune_probability):
+    return diversify(
+        indices, distances, data, pynnd_dist.alternative_dot, rng_state,
+        prune_probability,
+    )
 
 
 @numba.njit()
@@ -1425,18 +1447,23 @@ class NNDescent:
             else:
                 # Standard diversification
                 if self.compressed:
-                    diversified_rows, diversified_data = diversify(
-                        self._neighbor_graph[0],
-                        self._neighbor_graph[1],
-                        self._raw_data,
-                        self._distance_func,
-                        self.rng_state,
-                        self.diversify_prob,
+                    rows, dists = self._neighbor_graph
+                else:
+                    rows = self._neighbor_graph[0].copy()
+                    dists = self._neighbor_graph[1].copy()
+                kernel = select_kernel(self._distance_func, self._raw_data)
+                if kernel == KERNEL_SQEUCLIDEAN:
+                    diversified_rows, diversified_data = diversify_squared_euclidean(
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                    )
+                elif kernel == KERNEL_ALT_DOT:
+                    diversified_rows, diversified_data = diversify_alternative_dot(
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
                     )
                 else:
                     diversified_rows, diversified_data = diversify(
-                        self._neighbor_graph[0].copy(),
-                        self._neighbor_graph[1].copy(),
+                        rows,
+                        dists,
                         self._raw_data,
                         self._distance_func,
                         self.rng_state,
