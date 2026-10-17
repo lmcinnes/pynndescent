@@ -24,6 +24,7 @@ import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as pynnd_dist
 
 from pynndescent.utils import (
+    hash_uniform,
     int32_bits_as_float32,
     float32_bits_as_int32,
     tau_rand_int,
@@ -424,39 +425,47 @@ def nn_descent(
     return deheap_sort(current_graph[0], current_graph[1])
 
 
+@numba.njit(inline="always")
+def _prune_edge(prune_probability, seed, i, j, m):
+    if prune_probability >= 1.0:
+        return True
+    return hash_uniform(seed, i, j, m) < prune_probability
+
+
 @numba.njit(parallel=True)
 def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
+    """Relative-neighbourhood pruning of each row of a k-NN graph, in place.
 
-    for i in numba.prange(indices.shape[0]):
-
-        new_indices = [indices[i, 0]]
-        new_distances = [distances[i, 0]]
-        for j in range(1, indices.shape[1]):
-            if indices[i, j] < 0:
+    Each row is scanned in order of increasing distance; a candidate u is dropped
+    if some already retained neighbour c (other than an exact duplicate of the
+    row's point) is closer to u than the row's point is, with probability
+    ``prune_probability`` per such c. Retained neighbours keep their order and
+    the row is padded with (-1, inf).
+    """
+    n, k = indices.shape
+    seed = rng_state[0]
+    for i in numba.prange(n):
+        # Retained neighbours are compacted into the front of the row
+        n_retained = 1
+        for j in range(1, k):
+            u = indices[i, j]
+            if u < 0:
                 break
-
-            flag = True
-            for k in range(len(new_indices)):
-
-                c = new_indices[k]
-
-                d = dist(data[indices[i, j]], data[c])
-                if new_distances[k] > FLOAT32_EPS and d < distances[i, j]:
-                    if tau_rand(rng_state) < prune_probability:
-                        flag = False
-                        break
-
-            if flag:
-                new_indices.append(indices[i, j])
-                new_distances.append(distances[i, j])
-
-        for j in range(indices.shape[1]):
-            if j < len(new_indices):
-                indices[i, j] = new_indices[j]
-                distances[i, j] = new_distances[j]
-            else:
-                indices[i, j] = -1
-                distances[i, j] = np.inf
+            d_iu = distances[i, j]
+            keep = True
+            for m in range(n_retained):
+                if distances[i, m] > FLOAT32_EPS:
+                    if dist(data[u], data[indices[i, m]]) < d_iu:
+                        if _prune_edge(prune_probability, seed, i, j, m):
+                            keep = False
+                            break
+            if keep:
+                indices[i, n_retained] = u
+                distances[i, n_retained] = d_iu
+                n_retained += 1
+        for j in range(n_retained, k):
+            indices[i, j] = -1
+            distances[i, j] = np.inf
 
     return indices, distances
 
@@ -544,14 +553,12 @@ def diversify_degree_aware(
     base_rate = np.float32(0.04) * clamped_aggressiveness
 
     for i in numba.prange(n):
-        new_indices = [indices[i, 0]]
-        new_distances = [distances[i, 0]]
-
+        # Retained neighbours are compacted into the front of the row
+        n_retained = 1
         for j in range(1, k):
-            if indices[i, j] < 0:
-                break
-
             u = indices[i, j]
+            if u < 0:
+                break
             d_iu = distances[i, j]
 
             # Compute threshold factor based on target degree and aggressiveness
@@ -560,8 +567,6 @@ def diversify_degree_aware(
 
             if tgt_degree_ratio > 1.0:
                 # High degree node - adjust threshold based on aggressiveness
-                # Positive aggressiveness: threshold > 1.0 (prune more)
-                # Negative aggressiveness: threshold < 1.0 (prune less)
                 excess_ratio = min(tgt_degree_ratio - 1.0, np.float32(2.0))
                 threshold_factor = np.float32(1.0) + base_rate * excess_ratio
                 # Clamp to reasonable range [0.8, 1.2] to avoid extreme behavior
@@ -572,34 +577,24 @@ def diversify_degree_aware(
                 # Normal/low degree - standard threshold
                 threshold_factor = np.float32(1.0)
 
-            # Check if there's an alternative path through any retained neighbor
-            flag = True
-            for m in range(len(new_indices)):
-                c = new_indices[m]
+            # Prune if there's an acceptable alternative path through any
+            # retained neighbour
+            keep = True
+            for m in range(n_retained):
+                if distances[i, m] > FLOAT32_EPS:
+                    d_cu = dist(data[u], data[indices[i, m]])
+                    if d_cu < d_iu * threshold_factor * alpha:
+                        keep = False
+                        break
 
-                # Compute distance from candidate neighbor c to u
-                d_cu = dist(data[u], data[c])
+            if keep:
+                indices[i, n_retained] = u
+                distances[i, n_retained] = d_iu
+                n_retained += 1
 
-                # Prune if alternative path is acceptable
-                if (
-                    new_distances[m] > FLOAT32_EPS
-                    and d_cu < d_iu * threshold_factor * alpha
-                ):
-                    flag = False
-                    break
-
-            if flag:
-                new_indices.append(u)
-                new_distances.append(d_iu)
-
-        # Write back the retained edges
-        for j in range(k):
-            if j < len(new_indices):
-                indices[i, j] = new_indices[j]
-                distances[i, j] = new_distances[j]
-            else:
-                indices[i, j] = -1
-                distances[i, j] = np.inf
+        for j in range(n_retained, k):
+            indices[i, j] = -1
+            distances[i, j] = np.inf
 
     return indices, distances
 

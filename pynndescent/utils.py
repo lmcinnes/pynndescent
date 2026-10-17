@@ -78,6 +78,28 @@ def tau_rand_int(state):
     return state[0] ^ state[1] ^ state[2]
 
 
+@numba.njit(inline="always", cache=True)
+def _splitmix64(x, v):
+    x = x ^ np.uint64(v)
+    x = x + np.uint64(0x9E3779B97F4A7C15)
+    x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+    x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    return x ^ (x >> np.uint64(31))
+
+
+@numba.njit(inline="always", cache=True)
+def hash_uniform(seed, a, b, c):
+    """A stateless uniform float in [0, 1) derived from (seed, a, b, c).
+
+    Unlike tau_rand there is no shared state, so it can be used from parallel
+    loops and gives the same result for any number of threads.
+    """
+    x = _splitmix64(np.uint64(seed), a)
+    x = _splitmix64(x, b)
+    x = _splitmix64(x, c)
+    return np.float64(x >> np.uint64(11)) * (1.0 / 9007199254740992.0)
+
+
 @numba.njit("f4(i8[:])", cache=True)
 def tau_rand(state):
     """A fast (pseudo)-random number generator for floats in the range [0,1]

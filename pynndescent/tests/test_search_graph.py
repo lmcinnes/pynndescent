@@ -64,3 +64,105 @@ def test_permute_rows():
     data = np.random.default_rng(0).normal(size=(100, 7)).astype(np.float32)
     order = np.random.default_rng(1).permutation(100)
     np.testing.assert_array_equal(permute_rows(data, order), data[order])
+
+
+def _reference_diversify(rows, dists, distance):
+    """Plain prune-with-probability-1 relative neighbourhood pruning."""
+    eps = np.finfo(np.float32).eps
+    out_rows = np.full_like(rows, -1)
+    out_dists = np.full_like(dists, np.inf)
+    for i in range(rows.shape[0]):
+        kept = [(rows[i, 0], dists[i, 0])]
+        for j in range(1, rows.shape[1]):
+            u = rows[i, j]
+            if u < 0:
+                break
+            if not any(dc > eps and distance(u, c) < dists[i, j] for c, dc in kept):
+                kept.append((u, dists[i, j]))
+        for m, (c, dc) in enumerate(kept):
+            out_rows[i, m] = c
+            out_dists[i, m] = dc
+    return out_rows, out_dists
+
+
+def _knn_rows(data_dense, k):
+    from sklearn.neighbors import NearestNeighbors
+
+    dists, rows = NearestNeighbors(n_neighbors=k).fit(data_dense).kneighbors(data_dense)
+    rows = rows.astype(np.int32)
+    dists = (dists**2).astype(np.float32)  # squared euclidean, as used internally
+    rows[::7, -3:] = -1  # some short rows
+    dists[::7, -3:] = np.inf
+    return rows, dists
+
+
+def test_diversify_matches_reference():
+    from pynndescent.distances import squared_euclidean
+    from pynndescent.pynndescent_ import diversify
+
+    data = np.random.default_rng(0).normal(size=(400, 6)).astype(np.float32)
+    rows, dists = _knn_rows(data, 15)
+    expected = _reference_diversify(
+        rows, dists, lambda a, b: squared_euclidean(data[a], data[b])
+    )
+    rng_state = np.array([1, 2, 3], dtype=np.int64)
+    result = diversify(rows.copy(), dists.copy(), data, squared_euclidean, rng_state, 1.0)
+    np.testing.assert_array_equal(result[0], expected[0])
+    np.testing.assert_array_equal(result[1], expected[1])
+
+
+def test_sparse_diversify_matches_reference():
+    from scipy.sparse import csr_matrix
+
+    from pynndescent.sparse import diversify, sparse_squared_euclidean
+
+    rng = np.random.default_rng(1)
+    dense = rng.normal(size=(400, 20)).astype(np.float32)
+    dense[rng.random(dense.shape) < 0.6] = 0.0
+    data = csr_matrix(dense)
+    data.sort_indices()
+    rows, dists = _knn_rows(dense, 15)
+
+    def row(a):
+        return (
+            data.indices[data.indptr[a] : data.indptr[a + 1]],
+            data.data[data.indptr[a] : data.indptr[a + 1]],
+        )
+
+    expected = _reference_diversify(
+        rows, dists, lambda a, b: sparse_squared_euclidean(*row(a), *row(b))
+    )
+    rng_state = np.array([1, 2, 3], dtype=np.int64)
+    result = diversify(
+        rows.copy(), dists.copy(), data.indices, data.indptr, data.data,
+        sparse_squared_euclidean, rng_state, 1.0,
+    )
+    np.testing.assert_array_equal(result[0], expected[0])
+    np.testing.assert_array_equal(result[1], expected[1])
+
+
+def test_partial_diversify_is_deterministic():
+    from pynndescent.distances import squared_euclidean
+    from pynndescent.pynndescent_ import diversify
+
+    data = np.random.default_rng(2).normal(size=(2000, 6)).astype(np.float32)
+    rows, dists = _knn_rows(data, 20)
+    rng_state = np.array([5, 6, 7], dtype=np.int64)
+
+    def run(p):
+        return diversify(rows.copy(), dists.copy(), data, squared_euclidean, rng_state, p)
+
+    original_threads = numba.get_num_threads()
+    try:
+        numba.set_num_threads(1)
+        single = run(0.5)
+        numba.set_num_threads(original_threads)
+        multi = run(0.5)
+    finally:
+        numba.set_num_threads(original_threads)
+    np.testing.assert_array_equal(single[0], multi[0])
+
+    n_full = (run(1.0)[0] >= 0).sum()
+    n_half = (single[0] >= 0).sum()
+    n_none = (run(0.0)[0] >= 0).sum()
+    assert n_full < n_half < n_none == (rows >= 0).sum()

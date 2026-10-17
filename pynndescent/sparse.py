@@ -6,7 +6,7 @@ from __future__ import print_function
 import numpy as np
 import numba
 
-from pynndescent.utils import norm, tau_rand
+from pynndescent.utils import norm, hash_uniform
 from pynndescent.distances import (
     kantorovich,
     jensen_shannon_divergence,
@@ -1014,46 +1014,37 @@ def diversify(
     rng_state,
     prune_probability=1.0,
 ):
-
-    for i in numba.prange(indices.shape[0]):
-
-        new_indices = [indices[i, 0]]
-        new_distances = [distances[i, 0]]
-        for j in range(1, indices.shape[1]):
-            if indices[i, j] < 0:
+    """Sparse version of :func:`pynndescent.pynndescent_.diversify`."""
+    n, k = indices.shape
+    seed = rng_state[0]
+    for i in numba.prange(n):
+        n_retained = 1
+        for j in range(1, k):
+            u = indices[i, j]
+            if u < 0:
                 break
-
-            flag = True
-            for k in range(len(new_indices)):
-                c = new_indices[k]
-
-                from_ind = data_indices[
-                    data_indptr[indices[i, j]] : data_indptr[indices[i, j] + 1]
-                ]
-                from_data = data_data[
-                    data_indptr[indices[i, j]] : data_indptr[indices[i, j] + 1]
-                ]
-
-                to_ind = data_indices[data_indptr[c] : data_indptr[c + 1]]
-                to_data = data_data[data_indptr[c] : data_indptr[c + 1]]
-
-                d = dist(from_ind, from_data, to_ind, to_data)
-                if new_distances[k] > FLOAT32_EPS and d < distances[i, j]:
-                    if tau_rand(rng_state) < prune_probability:
-                        flag = False
-                        break
-
-            if flag:
-                new_indices.append(indices[i, j])
-                new_distances.append(distances[i, j])
-
-        for j in range(indices.shape[1]):
-            if j < len(new_indices):
-                indices[i, j] = new_indices[j]
-                distances[i, j] = new_distances[j]
-            else:
-                indices[i, j] = -1
-                distances[i, j] = np.inf
+            d_iu = distances[i, j]
+            from_ind = data_indices[data_indptr[u] : data_indptr[u + 1]]
+            from_data = data_data[data_indptr[u] : data_indptr[u + 1]]
+            keep = True
+            for m in range(n_retained):
+                if distances[i, m] > FLOAT32_EPS:
+                    c = indices[i, m]
+                    to_ind = data_indices[data_indptr[c] : data_indptr[c + 1]]
+                    to_data = data_data[data_indptr[c] : data_indptr[c + 1]]
+                    if dist(from_ind, from_data, to_ind, to_data) < d_iu:
+                        if prune_probability >= 1.0 or (
+                            hash_uniform(seed, i, j, m) < prune_probability
+                        ):
+                            keep = False
+                            break
+            if keep:
+                indices[i, n_retained] = u
+                distances[i, n_retained] = d_iu
+                n_retained += 1
+        for j in range(n_retained, k):
+            indices[i, j] = -1
+            distances[i, j] = np.inf
 
     return indices, distances
 
