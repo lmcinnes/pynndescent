@@ -632,6 +632,71 @@ def _segment_copy_back(perm, perm_out, seg_node, seg_start, seg_end, action):
                 perm[pos] = perm_out[pos]
 
 
+# Sparse margins via a dense per-thread scatter of the node's planes: a margin then
+# costs O(nnz(row)) instead of a merge over O(nnz(plane) + nnz(row)). The same
+# float32 products are added in the same (ascending index) order as
+# sparse_dot_accumulate, so margins are identical; these helpers deliberately do
+# not use fastmath, matching sparse_dot_accumulate.
+
+SPARSE_SCATTER_BUDGET_BYTES = 256 << 20
+
+
+@numba.njit(cache=True)
+def _load_planes(ws, sptr, sinds, svals, slot0, n_cand):
+    for c in range(n_cand):
+        for j in range(sptr[slot0 + c], sptr[slot0 + c + 1]):
+            ws[c, sinds[j]] = svals[j]
+
+
+@numba.njit(cache=True)
+def _clear_planes(ws, sptr, sinds, slot0, n_cand):
+    for c in range(n_cand):
+        for j in range(sptr[slot0 + c], sptr[slot0 + c + 1]):
+            ws[c, sinds[j]] = 0.0
+
+
+@numba.njit(cache=True)
+def _scattered_margins(
+    ws, inds, indptr, spdata, offsets, slot0, n_cand, perm, pos_start, pos_end,
+    margins, col0,
+):
+    for pos in range(pos_start, pos_end):
+        point = perm[pos]
+        row_start = indptr[point]
+        row_end = indptr[point + 1]
+        for c in range(n_cand):
+            margin = offsets[slot0 + c]
+            for j in range(row_start, row_end):
+                margin += np.float32(ws[c, inds[j]] * spdata[j])
+            margins[c, pos - col0] = margin
+
+
+@numba.njit(parallel=True, cache=True)
+def _sparse_segment_margins(
+    inds, indptr, spdata, sptr, sinds, svals, offsets,
+    perm, seg_node, seg_start, seg_end, n_cand, margins, workspace,
+):
+    n_threads = workspace.shape[0]
+    n_segs = seg_start.shape[0]
+    per_thread = (n_segs + n_threads - 1) // n_threads
+    for t in numba.prange(n_threads):
+        ws = workspace[t]
+        current = -1
+        for s in range(t * per_thread, min(n_segs, (t + 1) * per_thread)):
+            node = seg_node[s]
+            if node != current:
+                if current >= 0:
+                    _clear_planes(ws, sptr, sinds, current * 3, n_cand[current])
+                _load_planes(ws, sptr, sinds, svals, node * 3, n_cand[node])
+                current = node
+            _scattered_margins(
+                ws, inds, indptr, spdata, offsets, node * 3, n_cand[node], perm,
+                seg_start[s], seg_end[s], margins, 0,
+            )
+        if current >= 0:
+            _clear_planes(ws, sptr, sinds, current * 3, n_cand[current])
+
+
 # ------------------------------------------------------------ local subtrees
 
 
@@ -643,10 +708,14 @@ def _local_subtrees(
     rec_leaf, rec_hub_l, rec_hub_r, rec_offset, rec_shift,
     rec_left, rec_right, rec_start, rec_end,
     leaf_size, max_depth, criterion, min_balance, fallback, base_seed,
+    thread_ptr, thread_items, workspace, use_scatter,
 ):
     need_cuts = criterion == CRITERION_EDGE_CUT
     stack_size = max_depth + 4
-    for t in numba.prange(d_rec.shape[0]):
+    for thread in numba.prange(thread_ptr.shape[0] - 1):
+      ws = workspace[thread]
+      for item in range(thread_ptr[thread], thread_ptr[thread + 1]):
+        t = thread_items[item]
         st_rec = np.empty(stack_size, dtype=np.int64)
         st_start = np.empty(stack_size, dtype=np.int64)
         st_end = np.empty(stack_size, dtype=np.int64)
@@ -685,13 +754,21 @@ def _local_subtrees(
                 kind, angular, ddata, inds, indptr, spdata, bdata, pairs
             )
             margins = np.empty((3, size), dtype=np.float64)
-            for pos in range(start, end):
-                point = perm[pos]
-                for c in range(n_cand):
-                    margins[c, pos - start] = _margin(
-                        kind, angular, ddata, inds, indptr, spdata, bdata,
-                        dplanes, sptr, sinds, svals, bplanes, offsets, c, point,
-                    )
+            if kind == KIND_SPARSE and use_scatter:
+                _load_planes(ws, sptr, sinds, svals, 0, n_cand)
+                _scattered_margins(
+                    ws, inds, indptr, spdata, offsets, 0, n_cand, perm, start, end,
+                    margins, start,
+                )
+                _clear_planes(ws, sptr, sinds, 0, n_cand)
+            else:
+                for pos in range(start, end):
+                    point = perm[pos]
+                    for c in range(n_cand):
+                        margins[c, pos - start] = _margin(
+                            kind, angular, ddata, inds, indptr, spdata, bdata,
+                            dplanes, sptr, sinds, svals, bplanes, offsets, c, point,
+                        )
             n_left = np.zeros(3, dtype=np.int64)
             cuts = np.zeros(3, dtype=np.int64)
             _count_and_cut(
@@ -927,6 +1004,16 @@ def make_hub_search_tree(
     neighbor_indices = np.ascontiguousarray(neighbor_indices, dtype=np.int32)
     degrees = compute_global_degrees(neighbor_indices)
 
+    n_threads = numba.get_num_threads()
+    use_scatter = (
+        kind == KIND_SPARSE
+        and n_threads * 3 * data.shape[1] * 4 <= SPARSE_SCATTER_BUDGET_BYTES
+    )
+    if use_scatter:
+        workspace = np.zeros((n_threads, 3, data.shape[1]), dtype=np.float32)
+    else:
+        workspace = np.zeros((n_threads, 1, 1), dtype=np.float32)
+
     perm = np.arange(n, dtype=np.int32)
     pos_of = np.arange(n, dtype=np.int32)
     capacity = 2 * n + 2
@@ -987,11 +1074,17 @@ def make_hub_search_tree(
         dplanes, sptr, sinds, svals, bplanes, offsets = _build_planes(
             kind, angular, ddata, inds, indptr, spdata, bdata, pairs
         )
-        _segment_margins(
-            kind, angular, ddata, inds, indptr, spdata, bdata,
-            dplanes, sptr, sinds, svals, bplanes, offsets,
-            perm, seg_node, seg_start, seg_end, n_cand, margins,
-        )
+        if use_scatter:
+            _sparse_segment_margins(
+                inds, indptr, spdata, sptr, sinds, svals, offsets,
+                perm, seg_node, seg_start, seg_end, n_cand, margins, workspace,
+            )
+        else:
+            _segment_margins(
+                kind, angular, ddata, inds, indptr, spdata, bdata,
+                dplanes, sptr, sinds, svals, bplanes, offsets,
+                perm, seg_node, seg_start, seg_end, n_cand, margins,
+            )
         seg_left = np.empty((n_seg_total, 3), dtype=np.int64)
         seg_cuts = np.empty((n_seg_total, 3), dtype=np.int64)
         _segment_counts(
@@ -1050,6 +1143,7 @@ def make_hub_search_tree(
         reserve = 2 * (d_end - d_start) - 2
         d_next_rec = n_records + np.cumsum(reserve) - reserve
         n_records += int(reserve.sum())
+        thread_ptr, thread_items = _assign_to_threads(d_end - d_start, n_threads)
         _local_subtrees(
             kind, angular, ddata, inds, indptr, spdata, bdata,
             perm, pos_of, degrees, neighbor_indices,
@@ -1057,6 +1151,7 @@ def make_hub_search_tree(
             rec_leaf, rec_hub_l, rec_hub_r, rec_offset, rec_shift,
             rec_left, rec_right, rec_start, rec_end,
             leaf_size, max_depth, criterion, min_balance, fallback, base_seed,
+            thread_ptr, thread_items, workspace, use_scatter,
         )
 
     pre_of, order = _preorder(rec_leaf, rec_left, rec_right, n_records)
@@ -1068,6 +1163,20 @@ def make_hub_search_tree(
         rec_hub_l, rec_hub_r, rec_offset, rec_shift, children, perm, leaf_size,
         rec_start, rec_end,
     )
+
+
+def _assign_to_threads(sizes, n_threads):
+    """Deal subtrees to threads largest first, alternating direction (snake order)."""
+    order = np.argsort(-sizes, kind="stable")
+    rank = np.arange(order.shape[0])
+    lap, offset = np.divmod(rank, n_threads)
+    thread = np.where(lap % 2 == 0, offset, n_threads - 1 - offset)
+    by_thread = np.argsort(thread, kind="stable")
+    thread_items = order[by_thread].astype(np.int64)
+    counts = np.bincount(thread, minlength=n_threads)
+    thread_ptr = np.zeros(n_threads + 1, dtype=np.int64)
+    np.cumsum(counts, out=thread_ptr[1:])
+    return thread_ptr, thread_items
 
 
 def _materialise(
