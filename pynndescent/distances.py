@@ -1980,7 +1980,6 @@ def quantized_uint4_alternative_dot(x, y, quantized_values):
         "norm_y": numba.types.int32,
         "product": numba.types.int16,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2032,7 +2031,6 @@ def quantized_int8_alternative_cosine(x, y):
         "norm_y": numba.types.int32,
         "product": numba.types.int16,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2072,7 +2070,6 @@ def quantized_int8_alternative_dot(x, y):
         "dot": numba.types.int32,
         "product": numba.types.int16,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2108,7 +2105,6 @@ def quantized_int8_alternative_cosine_with_norms(x, y, inv_norm_x, inv_norm_y):
         "norm_y": numba.types.int32,
         "product": numba.types.int16,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2143,7 +2139,6 @@ def quantized_int8_direct_cosine(x, y):
         "dot": numba.types.int32,
         "product": numba.types.int16,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
@@ -2176,7 +2171,6 @@ def quantized_int8_direct_cosine_with_norms(x, y, inv_norm_x, inv_norm_y):
         "dot": numba.types.int32,
         "product": numba.types.int16,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
     cache=True,
 )
