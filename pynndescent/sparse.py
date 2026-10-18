@@ -237,6 +237,12 @@ def sparse_dot_product(ind1, data1, ind2, data2):
 
     result = 0.0
 
+    # The merge below reads the first index of each vector before checking
+    # bounds, so an empty vector (an empty CSR row, or an empty hyperplane)
+    # must be handled first.
+    if dim1 == 0 or dim2 == 0:
+        return result
+
     i1 = 0
     i2 = 0
     j1 = ind1[i1]

@@ -526,3 +526,18 @@ def test_sparse_correlation_with_zero_centred_shared_entry():
     )
     expected = pairwise_distances(x[None, :], y[None, :], metric="correlation")[0, 0]
     assert_array_almost_equal(result, expected, decimal=6)
+
+
+@pytest.mark.parametrize("empty_first", [True, False])
+def test_sparse_dot_product_with_empty_vector(empty_first):
+    # Empty vectors are usually slices of larger arrays (an empty CSR row, or
+    # an empty search-tree hyperplane), so the memory just past them holds
+    # real indices and values that must not be read.
+    full_inds = np.array([5], dtype=np.int32)
+    full_data = np.array([3.0], dtype=np.float32)
+    empty = (full_inds[0:0], full_data[0:0])
+    other = (np.array([5], dtype=np.int32), np.array([2.0], dtype=np.float32))
+    args = empty + other if empty_first else other + empty
+
+    assert spdist.sparse_dot_product(*args) == 0.0
+    assert spdist.sparse_dot(*args) == 1.0
