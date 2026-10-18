@@ -143,7 +143,10 @@ def test_independent_of_threads_and_code_path(kind, criterion, fallback):
     )
     original_threads = numba.get_num_threads()
     try:
-        for threads in sorted({1, 2, original_threads}):
+        # numba cannot use more threads than NUMBA_NUM_THREADS (often only 2
+        # on CI machines), so only try counts the machine allows
+        max_threads = numba.config.NUMBA_NUM_THREADS
+        for threads in sorted({t for t in (1, 2, original_threads) if t <= max_threads}):
             numba.set_num_threads(threads)
             for local_bytes in (0, None):
                 kw = dict(kwargs)

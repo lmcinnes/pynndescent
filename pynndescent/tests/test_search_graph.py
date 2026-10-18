@@ -49,7 +49,10 @@ def test_search_graph_matches_scipy_pipeline(seed, max_degree):
     )
     original_threads = numba.get_num_threads()
     try:
-        for threads in sorted({1, 3, original_threads}):
+        # numba cannot use more threads than NUMBA_NUM_THREADS (often only 2
+        # on CI machines), so only try counts the machine allows
+        max_threads = numba.config.NUMBA_NUM_THREADS
+        for threads in sorted({t for t in (1, 3, original_threads) if t <= max_threads}):
             numba.set_num_threads(threads)
             indptr, indices, min_distance = build_search_graph(rows, dists, max_degree)
             indptr, indices = permute_graph(indptr, indices, order)
