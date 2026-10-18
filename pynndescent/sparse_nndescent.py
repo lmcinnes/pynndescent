@@ -7,6 +7,8 @@ import numpy as np
 import numba
 
 from pynndescent.utils import (
+    int32_bits_as_float32,
+    float32_bits_as_int32,
     tau_rand_int,
     make_heap,
     new_build_candidates,
@@ -25,7 +27,7 @@ def generate_leaf_updates(
     updates,
     n_updates_per_thread,
     leaf_block,
-    dist_thresholds,
+    current_graph,
     inds,
     indptr,
     data,
@@ -33,6 +35,7 @@ def generate_leaf_updates(
     n_threads,
 ):
     """Generate leaf updates into pre-allocated arrays for parallel efficiency."""
+    heap_distances = current_graph[1]
     n_leaves = leaf_block.shape[0]
     leaves_per_thread = (n_leaves + n_threads - 1) // n_threads
 
@@ -64,10 +67,10 @@ def generate_leaf_updates(
                     to_data = data[indptr[q] : indptr[q + 1]]
                     d = dist(from_inds, from_data, to_inds, to_data)
 
-                    if d < dist_thresholds[p] or d < dist_thresholds[q]:
+                    if d < heap_distances[p, 0] or d < heap_distances[q, 0]:
                         if count < max_updates:
-                            updates[t, count, 0] = np.float32(p)
-                            updates[t, count, 1] = np.float32(q)
+                            updates[t, count, 0] = int32_bits_as_float32(p)
+                            updates[t, count, 1] = int32_bits_as_float32(q)
                             updates[t, count, 2] = d
                             count += 1
 
@@ -101,13 +104,12 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array, n_threads=
         block_end = min(n_leaves, (i + 1) * block_size)
 
         leaf_block = leaf_array[block_start:block_end]
-        dist_thresholds = current_graph[1][:, 0]
 
         generate_leaf_updates(
             updates,
             n_updates_per_thread,
             leaf_block,
-            dist_thresholds,
+            current_graph,
             inds,
             indptr,
             data,
@@ -121,8 +123,8 @@ def init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array, n_threads=
 
             for j in range(n_threads):
                 for k in range(n_updates_per_thread[j]):
-                    p = np.int32(updates[j, k, 0])
-                    q = np.int32(updates[j, k, 1])
+                    p = float32_bits_as_int32(updates[j, k, 0])
+                    q = float32_bits_as_int32(updates[j, k, 1])
                     d = updates[j, k, 2]
 
                     if p >= v_block_start and p < v_block_end:
@@ -156,6 +158,9 @@ def init_random(n_neighbors, inds, indptr, data, heap, dist, rng_state):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % n_samples
+                if n_samples > 1:
+                    while idx == i:
+                        idx = np.abs(tau_rand_int(rng_state)) % n_samples
 
                 from_inds = inds[indptr[idx] : indptr[idx + 1]]
                 from_data = data[indptr[idx] : indptr[idx + 1]]
@@ -196,14 +201,12 @@ def sparse_process_candidates(
         new_candidate_block = new_candidate_neighbors[block_start:block_end]
         old_candidate_block = old_candidate_neighbors[block_start:block_end]
 
-        dist_thresholds = current_graph[1][:, 0]
-
         sparse_generate_graph_update_array(
             update_array,
             n_updates_per_thread,
             new_candidate_block,
             old_candidate_block,
-            dist_thresholds,
+            current_graph,
             inds,
             indptr,
             data,
@@ -302,7 +305,7 @@ def nn_descent(
         current_graph = make_heap(n_samples, n_neighbors)
 
         if rp_tree_init:
-            init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array)
+            init_rp_tree(inds, indptr, data, dist, current_graph, leaf_array, n_threads=numba.get_num_threads())
 
         init_random(n_neighbors, inds, indptr, data, current_graph, dist, rng_state)
     elif init_graph[0].shape[0] == n_samples and init_graph[0].shape[1] == n_neighbors:

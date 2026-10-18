@@ -9,17 +9,29 @@ import numpy as np
 from sklearn.neighbors import KDTree
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
+from sklearn.metrics.pairwise import cosine_distances
 import pickle
 import joblib
 import scipy
 
 from pynndescent import NNDescent, PyNNDescentTransformer
+from pynndescent.distances import (
+    alternative_dot,
+    quantized_int8_alternative_cosine,
+    quantized_int8_alternative_dot,
+    quantized_int8_alternative_cosine_with_norms,
+    quantized_int8_alternative_dot_with_norms,
+    quantized_int8_direct_cosine,
+    quantized_int8_direct_cosine_with_norms,
+)
+from pynndescent.pynndescent_ import _int8_code_inv_norms, _quantize_int8_rows
+from pynndescent.kernels import select_kernel
 
 
 def test_nn_descent_neighbor_accuracy(nn_data, seed):
     knn_indices, _ = NNDescent(
         nn_data, "euclidean", {}, 10, random_state=np.random.RandomState(seed)
-    )._neighbor_graph
+    ).neighbor_graph
 
     tree = KDTree(nn_data)
     true_indices = tree.query(nn_data, 10, return_distance=False)
@@ -34,10 +46,32 @@ def test_nn_descent_neighbor_accuracy(nn_data, seed):
     ), "NN-descent did not get 99% accuracy on nearest neighbors"
 
 
+@pytest.mark.parametrize("metric", ["euclidean", "cosine", "manhattan"])
+@pytest.mark.parametrize("use_init_graph", [False, True])
+def test_neighbor_graph_has_single_self_loop(nn_data, seed, metric, use_init_graph):
+    data = nn_data[:-2]  # drop the duplicated all-zero rows
+    init_graph = None
+    if use_init_graph:
+        init_graph = NNDescent(
+            data, metric=metric, n_neighbors=10, random_state=seed
+        ).neighbor_graph[0]
+    knn_indices, _ = NNDescent(
+        data,
+        metric=metric,
+        n_neighbors=10,
+        init_graph=init_graph,
+        random_state=np.random.RandomState(seed),
+    ).neighbor_graph
+
+    assert np.all(knn_indices[:, 0] == np.arange(data.shape[0]))
+    for row in knn_indices:
+        assert np.unique(row).shape[0] == row.shape[0]
+
+
 def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
     knn_indices, _ = NNDescent(
         nn_data, "cosine", {}, 10, random_state=np.random.RandomState(seed)
-    )._neighbor_graph
+    ).neighbor_graph
 
     angular_data = normalize(nn_data, norm="l2")
     tree = KDTree(angular_data)
@@ -64,7 +98,7 @@ def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
 
     knn_indices, _ = NNDescent(
         bitpacked_data, "bit_jaccard", {}, 10, random_state=np.random.RandomState(seed)
-    )._neighbor_graph
+    ).neighbor_graph
 
     nn_finder = NearestNeighbors(n_neighbors=10, metric="jaccard").fit(unpacked_data)
     true_indices = nn_finder.kneighbors(unpacked_data, 10, return_distance=False)
@@ -92,7 +126,7 @@ def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
 def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "euclidean", n_neighbors=20, random_state=None
-    )._neighbor_graph
+    ).neighbor_graph
 
     tree = KDTree(sparse_nn_data.toarray())
     true_indices = tree.query(sparse_nn_data.toarray(), 10, return_distance=False)
@@ -107,6 +141,26 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
     ), "Sparse NN-descent did not get 95% accuracy on nearest neighbors"
 
 
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_sparse_search_tree_hyperplanes_are_ragged(sparse_nn_data, metric):
+    index = NNDescent(sparse_nn_data, metric, n_neighbors=20, random_state=42)
+    index.prepare()
+    tree = index._search_forest[0]
+    ptr, inds, vals = tree.hyperplanes
+    sizes = np.diff(ptr)
+    is_leaf = tree.children[:, 0] <= 0
+
+    # Hyperplanes are stored without padding: leaves have none, internal nodes
+    # exactly their non-zeros (padding used to make sparse trees GiBs large)
+    assert ptr.shape[0] == tree.children.shape[0] + 1
+    assert np.all(sizes[is_leaf] == 0)
+    assert np.all(sizes[~is_leaf] > 0)
+    assert inds.shape == vals.shape == (ptr[-1],)
+    assert np.all((inds >= 0) & (inds < sparse_nn_data.shape[1]))
+    for node in np.flatnonzero(~is_leaf):
+        assert np.all(np.diff(inds[ptr[node] : ptr[node + 1]]) > 0)
+
+
 @pytest.mark.skipif(
     list(map(int, scipy.version.version.split("."))) < [1, 3, 0],
     reason="requires scipy >= 1.3.0",
@@ -114,7 +168,7 @@ def test_sparse_nn_descent_neighbor_accuracy(sparse_nn_data, seed):
 def test_sparse_angular_nn_descent_neighbor_accuracy(sparse_nn_data):
     knn_indices, _ = NNDescent(
         sparse_nn_data, "cosine", {}, 20, random_state=None
-    )._neighbor_graph
+    ).neighbor_graph
 
     angular_data = normalize(sparse_nn_data, norm="l2").toarray()
     tree = KDTree(angular_data)
@@ -162,6 +216,249 @@ def test_nn_descent_query_accuracy_angular(nn_data):
     assert (
         percent_correct >= 0.95
     ), "NN-descent query did not get 95% accuracy on nearest neighbors"
+
+
+def test_dense_query_workspace_reuses_buffers_without_mutating_results(nn_data):
+    index = NNDescent(nn_data[200:], "euclidean", n_neighbors=20, random_state=42)
+    first_indices, first_distances = index.query(nn_data[:10], k=10, epsilon=0.2)
+    expected_indices = first_indices.copy()
+    expected_distances = first_distances.copy()
+    workspace = index._query_workspace
+
+    index.query(nn_data[10:20], k=10, epsilon=0.2)
+
+    assert workspace is index._query_workspace
+    np.testing.assert_array_equal(first_indices, expected_indices)
+    np.testing.assert_allclose(first_distances, expected_distances)
+
+
+def test_spill_tree_leaf_budget_dense_query(nn_data):
+    index = NNDescent(
+        nn_data[200:],
+        "cosine",
+        n_neighbors=20,
+        search_tree_leaf_budget=2,
+        random_state=42,
+    )
+    indices, distances = index.query(nn_data[:20], k=10, epsilon=0.2)
+
+    assert indices.shape == (20, 10)
+    assert distances.shape == (20, 10)
+    assert np.all(indices >= 0)
+
+
+def test_direct_cosine_and_indices_only_query(nn_data):
+    index = NNDescent(nn_data[200:], "direct_cosine", n_neighbors=20, random_state=42)
+    indices, distances = index.query(nn_data[:20], k=10, epsilon=0.2)
+    indices_only = index.query_indices(nn_data[:20], k=10, epsilon=0.2)
+
+    np.testing.assert_array_equal(indices_only, indices)
+    assert np.all((distances >= 0.0) & (distances <= 1.0))
+
+    normalized_queries = normalize(nn_data[:20], norm="l2")
+    fast_indices, fast_distances = index.query(
+        normalized_queries, k=10, epsilon=0.2, pre_normalized=True
+    )
+    np.testing.assert_array_equal(fast_indices, indices)
+    np.testing.assert_allclose(fast_distances, distances, atol=3.0e-7)
+
+    with pytest.raises(ValueError, match="pre_normalized"):
+        NNDescent(nn_data[200:], "euclidean", n_neighbors=20, random_state=42).query(
+            normalized_queries, k=10, pre_normalized=True
+        )
+
+
+def test_cosine_uses_normalized_dot_product(nn_data):
+    train = nn_data[200:].astype(np.float32)
+    original_train = train.copy()
+    queries = nn_data[:20]
+    index = NNDescent(train, "cosine", n_neighbors=20, random_state=42)
+
+    assert index._distance_func is alternative_dot
+    assert select_kernel(index._distance_func, index._raw_data) != 0
+    np.testing.assert_array_equal(train, original_train)
+
+    indices, distances = index.query(queries, k=10, epsilon=0.2)
+    expected = cosine_distances(queries, train)
+    np.testing.assert_allclose(
+        distances, np.take_along_axis(expected, indices, 1), atol=1.0e-5
+    )
+
+    fast_indices, fast_distances = index.query(
+        normalize(queries, norm="l2"), k=10, epsilon=0.2, pre_normalized=True
+    )
+    np.testing.assert_array_equal(fast_indices, indices)
+    np.testing.assert_allclose(fast_distances, distances, atol=1.0e-6)
+
+    graph_indices, graph_distances = index.neighbor_graph
+    expected_graph = cosine_distances(train)
+    nonzero_rows = np.linalg.norm(train, axis=1) > 0
+    np.testing.assert_allclose(
+        graph_distances[nonzero_rows],
+        np.take_along_axis(expected_graph, graph_indices, 1)[nonzero_rows],
+        atol=1.0e-5,
+    )
+
+
+def test_n_search_trees_is_deprecated(nn_data):
+    with pytest.warns(FutureWarning, match="n_search_trees"):
+        NNDescent(nn_data[:100], n_neighbors=5, n_search_trees=2)
+
+
+@pytest.mark.parametrize("metric", ["cosine", "dot"])
+def test_zero_angular_query_is_not_searched(nn_data, metric):
+    index = NNDescent(nn_data[200:], metric, n_neighbors=20, random_state=42)
+    index.query(nn_data[:10], k=10, epsilon=0.2)
+
+    queries = nn_data[10:20].copy()
+    queries[0] = 0.0
+    indices, distances = index.query(queries, k=10, epsilon=0.2)
+
+    # Row 0 must be empty (corrected infinite distance), not a stale result
+    # left over in the reused workspace from the previous query.
+    np.testing.assert_array_equal(distances[0], 1.0)
+    assert np.all(distances[1:] < 1.0)
+
+
+def test_int8_quantized_distance_self_similarity():
+    codes = _quantize_int8_rows(
+        np.array([[1.0, -2.0, 3.0], [0.0, 0.0, 0.0]], dtype=np.float32)
+    )
+
+    assert codes.dtype == np.int8
+    assert quantized_int8_alternative_cosine(codes[0], codes[0]) == 0.0
+    assert quantized_int8_alternative_dot(codes[0], codes[0]) == 0.0
+    assert np.all(codes[1] == 0)
+
+
+def test_int8_quantized_distances_use_precomputed_norms():
+    codes = _quantize_int8_rows(
+        np.array([[1.0, -2.0, 3.0], [4.0, 1.5, -2.0]], dtype=np.float32)
+    )
+    inv_norms = _int8_code_inv_norms(codes)
+
+    np.testing.assert_allclose(
+        quantized_int8_alternative_cosine(codes[0], codes[1]),
+        quantized_int8_alternative_cosine_with_norms(
+            codes[0], codes[1], inv_norms[0], inv_norms[1]
+        ),
+    )
+    np.testing.assert_allclose(
+        quantized_int8_alternative_dot(codes[0], codes[1]),
+        quantized_int8_alternative_dot_with_norms(
+            codes[0], codes[1], inv_norms[0], inv_norms[1]
+        ),
+    )
+    similarity = np.dot(codes[0].astype(np.float32), codes[1].astype(np.float32))
+    similarity *= inv_norms[0] * inv_norms[1]
+    expected_direct_cosine = 1.0 if similarity <= 0.0 else 1.0 - similarity
+    np.testing.assert_allclose(
+        quantized_int8_direct_cosine_with_norms(
+            codes[0], codes[1], inv_norms[0], inv_norms[1]
+        ),
+        expected_direct_cosine,
+    )
+    np.testing.assert_allclose(
+        quantized_int8_direct_cosine(codes[0], codes[1]),
+        expected_direct_cosine,
+    )
+
+    max_codes = np.full(784, 127, dtype=np.int8)
+    max_inv_norm = np.float32(1.0 / np.sqrt(784 * 127 * 127))
+    assert (
+        abs(
+            quantized_int8_alternative_dot_with_norms(
+                max_codes, max_codes, max_inv_norm, max_inv_norm
+            )
+        )
+        < 1.0e-5
+    )
+
+
+def test_int8_quantized_query_and_width_controls(nn_data):
+    train = nn_data[200:]
+    queries = nn_data[:50]
+    index = NNDescent(
+        train,
+        "cosine",
+        n_neighbors=30,
+        random_state=42,
+        quantization="int8",
+    )
+
+    indices, distances = index.query(
+        queries, k=10, epsilon=0.2, candidate_width=40, rerank_width=20
+    )
+    proxy_indices, proxy_distances = index.query(
+        queries, k=10, epsilon=0.2, candidate_width=40, rerank_width=0
+    )
+
+    assert indices.shape == (queries.shape[0], 10)
+    assert distances.shape == (queries.shape[0], 10)
+    assert proxy_indices.shape == (queries.shape[0], 10)
+    assert proxy_distances.shape == (queries.shape[0], 10)
+    assert np.all(indices >= 0)
+    assert np.all(proxy_indices >= 0)
+
+    with pytest.raises(ValueError, match="candidate_width"):
+        index.query(queries, k=10, candidate_width=9)
+    with pytest.raises(ValueError, match="rerank_width"):
+        index.query(queries, k=10, candidate_width=20, rerank_width=5)
+
+    index.query(queries, k=10)
+    assert index._query_workspace[0].shape[1] == int(1.66 * 10)
+    index.query(queries, k=10, proxy_beam_size=4)
+    assert index._query_workspace[0].shape[1] == 40
+
+
+def test_proxy_only_results_survive_later_queries(nn_data):
+    index = NNDescent(
+        nn_data[200:],
+        "direct_cosine",
+        n_neighbors=30,
+        random_state=42,
+        quantization="int8",
+    )
+    indices, distances = index.query(
+        nn_data[:50], k=10, epsilon=0.2, candidate_width=20, rerank_width=0
+    )
+    expected_indices = indices.copy()
+    expected_distances = distances.copy()
+
+    index.query(nn_data[50:100], k=10, epsilon=0.2, candidate_width=20, rerank_width=0)
+
+    np.testing.assert_array_equal(indices, expected_indices)
+    np.testing.assert_array_equal(distances, expected_distances)
+
+
+def test_direct_cosine_int8_quantized_query(nn_data):
+    train = nn_data[200:]
+    queries = nn_data[:50]
+    normalized_train = normalize(train.copy(), norm="l2")
+    index = NNDescent(
+        train,
+        "direct_cosine",
+        n_neighbors=30,
+        random_state=42,
+        quantization="int8",
+    )
+
+    indices, distances = index.query(
+        queries, k=10, epsilon=0.2, candidate_width=40, rerank_width=20
+    )
+    proxy_indices, proxy_distances = index.query(
+        queries, k=10, epsilon=0.2, candidate_width=40, rerank_width=0
+    )
+
+    assert indices.shape == (queries.shape[0], 10)
+    assert proxy_indices.shape == (queries.shape[0], 10)
+    assert np.all((distances >= 0.0) & (distances <= 1.0))
+    assert np.all((proxy_distances >= 0.0) & (proxy_distances <= 1.0))
+    normalized_queries = normalize(queries, norm="l2")
+    expected_distances = 1.0 - np.einsum(
+        "ij,ikj->ik", normalized_queries, normalized_train[indices]
+    )
+    np.testing.assert_allclose(distances, expected_distances, rtol=1.0e-5, atol=3.0e-7)
 
 
 def test_sparse_nn_descent_query_accuracy(sparse_nn_data):
@@ -261,7 +558,7 @@ def test_transformer_equivalence(nn_data):
 def test_random_state_none(nn_data, spatial_data):
     knn_indices, _ = NNDescent(
         nn_data, "euclidean", {}, 10, random_state=None
-    )._neighbor_graph
+    ).neighbor_graph
 
     tree = KDTree(nn_data)
     true_indices = tree.query(nn_data, 10, return_distance=False)
@@ -306,7 +603,7 @@ def test_rp_trees_should_not_stack_overflow_with_duplicate_data(seed, cosine_han
         n_neighbors,
         random_state=np.random.RandomState(seed),
         n_trees=20,
-    )._neighbor_graph
+    ).neighbor_graph
 
     for i in range(cosine_hang_data.shape[0]):
         assert len(knn_indices[i]) == len(
@@ -328,7 +625,7 @@ def test_deduplicated_data_behaves_normally(seed, cosine_hang_data):
         n_neighbors,
         random_state=np.random.RandomState(seed),
         n_trees=20,
-    )._neighbor_graph
+    ).neighbor_graph
 
     for i in range(data.shape[0]):
         assert len(knn_indices[i]) == len(
@@ -361,7 +658,7 @@ def test_rp_trees_should_not_stack_overflow_with_near_duplicate_data(
         n_neighbors,
         random_state=np.random.RandomState(seed),
         n_trees=20,
-    )._neighbor_graph
+    ).neighbor_graph
 
     for i in range(cosine_near_duplicates_data.shape[0]):
         assert len(knn_indices[i]) == len(
@@ -457,6 +754,62 @@ def test_pickle_unpickle():
 
     np.testing.assert_equal(neighbors1, neighbors2)
     np.testing.assert_equal(distances1, distances2)
+
+
+@pytest.mark.parametrize("quantization", [None, "int8"])
+def test_cosine_pickle_unpickle(quantization):
+    seed = np.random.RandomState(42)
+    x1 = seed.normal(0, 1, (1000, 32))
+    x2 = seed.normal(0, 1, (100, 32))
+
+    index1 = NNDescent(
+        x1, "cosine", n_neighbors=15, quantization=quantization, random_state=1
+    )
+    neighbors1, distances1 = index1.query(x2)
+    index2 = pickle.loads(pickle.dumps(index1))
+    neighbors2, distances2 = index2.query(x2)
+
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_allclose(distances1, distances2, atol=1.0e-6)
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine", "correlation"])
+def test_sparse_pickle_unpickle(sparse_nn_data, metric):
+    index1 = NNDescent(sparse_nn_data, metric, n_neighbors=10, random_state=42)
+    neighbors1, distances1 = index1.query(sparse_nn_data[:20], k=5)
+    index2 = pickle.loads(pickle.dumps(index1))
+    neighbors2, distances2 = index2.query(sparse_nn_data[:20], k=5)
+
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_allclose(distances1, distances2, atol=1.0e-6)
+
+
+def test_padded_sparse_search_tree_from_older_pickles(sparse_nn_data):
+    from pynndescent.rp_trees import FlatTree
+
+    index = NNDescent(sparse_nn_data, "cosine", n_neighbors=10, random_state=42)
+    neighbors1, distances1 = index.query(sparse_nn_data[:20], k=5)
+
+    # Older indexes stored sparse hyperplanes as (n_nodes, 2, width) arrays of
+    # (indices, values) padded with -1
+    ptr, inds, vals = index._search_forest[0].hyperplanes
+    width = max(1, int(np.diff(ptr).max()))
+    padded = np.zeros((ptr.shape[0] - 1, 2, width), dtype=np.float32)
+    padded[:, 0, :] = -1
+    for node in range(ptr.shape[0] - 1):
+        size = ptr[node + 1] - ptr[node]
+        padded[node, 0, :size] = inds[ptr[node] : ptr[node + 1]]
+        padded[node, 1, :size] = vals[ptr[node] : ptr[node + 1]]
+    state = index.__getstate__()
+    old_tree = state["_search_forest"][0]
+    state["_search_forest"] = (FlatTree(padded, *old_tree[1:]),)
+
+    restored = NNDescent.__new__(NNDescent)
+    restored.__setstate__(state)
+    neighbors2, distances2 = restored.query(sparse_nn_data[:20], k=5)
+    assert isinstance(restored._search_forest[0].hyperplanes, tuple)
+    np.testing.assert_equal(neighbors1, neighbors2)
+    np.testing.assert_allclose(distances1, distances2, atol=1.0e-6)
 
 
 def test_compressed_pickle_unpickle():
@@ -642,6 +995,72 @@ def test_update_with_changed_data(update_data, case, metric):
         evaluate(index, xs, xs_updated)
 
 
+def test_graph_update_ids_survive_float32_buffers():
+    import numba
+    from pynndescent.utils import (
+        int32_bits_as_float32,
+        float32_bits_as_int32,
+        sort_updates_by_block,
+    )
+
+    # Ids above 2**24 are not exactly representable as float32 values.
+    ids = np.array(
+        [0, 1, 2**23 - 1, 2**24, 2**24 + 1, 2**25 + 7, 2**31 - 2], dtype=np.int32
+    )
+
+    @numba.njit()
+    def encode(ids, buf):
+        for j in range(ids.shape[0]):
+            buf[0, j, 0] = int32_bits_as_float32(ids[j])
+            buf[0, j, 1] = int32_bits_as_float32(ids[(j + 1) % ids.shape[0]])
+            buf[0, j, 2] = np.float32(j)
+
+    @numba.njit()
+    def decode(buf, n, out):
+        for j in range(n):
+            out[j, 0] = float32_bits_as_int32(buf[0, j, 0])
+            out[j, 1] = float32_bits_as_int32(buf[0, j, 1])
+
+    n = ids.shape[0]
+    expected = set(zip(ids, np.roll(ids, -1)))
+    updates = np.zeros((1, n, 3), dtype=np.float32)
+    encode(ids, updates)
+
+    decoded = np.zeros((n, 2), dtype=np.int32)
+    decode(updates, n, decoded)
+    assert set(map(tuple, decoded)) == expected
+
+    sorted_updates = np.zeros((1, 2 * n, 3), dtype=np.float32)
+    block_offsets = np.zeros((1, 2), dtype=np.int64)
+    sort_updates_by_block(
+        updates, np.array([n], dtype=np.int32), sorted_updates, block_offsets, 2**31 - 1, 1
+    )
+    decode(sorted_updates, n, decoded)
+    assert set(map(tuple, decoded)) == expected
+
+
+def test_init_forest_respects_n_jobs_and_is_used_by_update(nn_data, monkeypatch):
+    import numba
+    import pynndescent.pynndescent_ as nnd_module
+
+    thread_counts = []
+    original = nnd_module.make_hybrid_leaf_array
+
+    def spy(*args, **kwargs):
+        thread_counts.append(numba.get_num_threads())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(nnd_module, "make_hybrid_leaf_array", spy)
+    threads_before = numba.get_num_threads()
+
+    index = NNDescent(nn_data[:600], n_neighbors=10, n_jobs=1, random_state=42)
+    assert thread_counts == [1]
+    assert numba.get_num_threads() == threads_before
+
+    index.update(xs_fresh=nn_data[600:])
+    assert len(thread_counts) == 2
+
+
 @pytest.mark.parametrize("n_trees", [1, 2, 3, 10])
 def test_tree_numbers_after_multiple_updates(n_trees):
     trees_after_update = max(2, int(np.round(n_trees / 3)))
@@ -754,3 +1173,70 @@ def test_bad_data():
     test_data_dir = pathlib.Path(__file__).parent / "test_data"
     data = np.sqrt(np.load(test_data_dir / "pynndescent_bug_np.npz")["arr_0"])
     index = NNDescent(data, metric="cosine")
+
+
+@pytest.mark.parametrize(
+    "metric,kwargs",
+    [
+        ("euclidean", {}),
+        ("cosine", {}),
+        ("euclidean", {"search_tree_leaf_budget": 4}),
+        ("euclidean", {"parallel_batch_queries": True}),
+    ],
+)
+def test_cached_search_matches_closure(nn_data, metric, kwargs):
+    # The disk-cached dense search function must return exactly what the
+    # per-index search closure returns.
+    index = NNDescent(
+        nn_data[:600], metric=metric, n_neighbors=10, random_state=42, **kwargs
+    )
+    index.prepare(compile_search=False)
+    assert index._uses_cached_search  # cached path in use
+    cached_indices, cached_dists = index.query(nn_data[600:700], k=8, epsilon=0.1)
+
+    # Build the closure for the same index and compare
+    index._init_cached_search_function = lambda: False
+    index._init_search_function()
+    assert not index._uses_cached_search
+    closure_indices, closure_dists = index.query(nn_data[600:700], k=8, epsilon=0.1)
+
+    np.testing.assert_array_equal(cached_indices, closure_indices)
+    np.testing.assert_allclose(cached_dists, closure_dists, rtol=1e-6)
+
+
+def test_query_rejects_wrong_shape(nn_data):
+    index = NNDescent(nn_data[:300], n_neighbors=10, random_state=42)
+    index.prepare()
+    with pytest.raises(ValueError):
+        index.query(nn_data[0], k=5)  # 1-D
+    with pytest.raises(ValueError):
+        index.query(nn_data[:5, :-1], k=5)  # wrong number of features
+
+
+def test_prepare_compile_search_option(nn_data):
+    index = NNDescent(nn_data[:600], n_neighbors=10, random_state=42)
+    index.prepare(compile_search=True)
+    assert not index._uses_cached_search  # compiled, specialised on request
+    compiled_indices, compiled_dists = index.query(nn_data[600:650], k=8, epsilon=0.1)
+
+    # The shared, cached search function is the default
+    index.prepare()
+    assert index._uses_cached_search
+    cached_indices, cached_dists = index.query(nn_data[600:650], k=8, epsilon=0.1)
+    np.testing.assert_array_equal(cached_indices, compiled_indices)
+    np.testing.assert_allclose(cached_dists, compiled_dists, rtol=1e-6)
+
+    # The choice survives pickling
+    restored = pickle.loads(pickle.dumps(index))
+    assert restored._uses_cached_search
+    restored_indices, _ = restored.query(nn_data[600:650], k=8, epsilon=0.1)
+    np.testing.assert_array_equal(restored_indices, cached_indices)
+
+    # Querying before prepare() also uses the cached search function
+    fresh = NNDescent(nn_data[:600], n_neighbors=10, random_state=42)
+    fresh.query(nn_data[600:610], k=8)
+    assert fresh._uses_cached_search
+
+    # And switching back
+    index.prepare(compile_search=True)
+    assert not index._uses_cached_search

@@ -6,7 +6,7 @@ from __future__ import print_function
 import numpy as np
 import numba
 
-from pynndescent.utils import norm, tau_rand
+from pynndescent.utils import norm, hash_uniform
 from pynndescent.distances import (
     kantorovich,
     jensen_shannon_divergence,
@@ -237,6 +237,12 @@ def sparse_dot_product(ind1, data1, ind2, data2):
 
     result = 0.0
 
+    # The merge below reads the first index of each vector before checking
+    # bounds, so an empty vector (an empty CSR row, or an empty hyperplane)
+    # must be handled first.
+    if dim1 == 0 or dim2 == 0:
+        return result
+
     i1 = 0
     i2 = 0
     j1 = ind1[i1]
@@ -328,13 +334,149 @@ def dense_union(ind1, data1, ind2, data2):
     return result_data1, result_data2
 
 
+# ---------------------------------------------------------------------------
+# Allocation-free merges over two sorted sparse vectors. These replace building
+# temporary difference/product vectors with sparse_diff / sparse_mul inside
+# distance functions, which are called millions of times during construction
+# and search.
+# ---------------------------------------------------------------------------
+
+
+@numba.njit(fastmath=True, inline="always")
+def _merge_sq_diff(ind1, data1, ind2, data2):
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = np.float32(0.0)
+    while i1 < n1 and i2 < n2:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+        if j1 == j2:
+            v = data1[i1] - data2[i2]
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            v = data1[i1]
+            i1 += 1
+        else:
+            v = data2[i2]
+            i2 += 1
+        result += v * v
+    while i1 < n1:
+        v = data1[i1]
+        result += v * v
+        i1 += 1
+    while i2 < n2:
+        v = data2[i2]
+        result += v * v
+        i2 += 1
+    return result
+
+
+@numba.njit(fastmath=True, inline="always")
+def _merge_abs_diff_reduce(ind1, data1, ind2, data2, mode, p):
+    """Reduce |x_j - y_j| over the union support.
+
+    mode 0: sum, 1: max, 2: sum of |.|**p
+    """
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = 0.0
+    while i1 < n1 or i2 < n2:
+        if i2 >= n2 or (i1 < n1 and ind1[i1] < ind2[i2]):
+            v = abs(data1[i1])
+            i1 += 1
+        elif i1 >= n1 or ind2[i2] < ind1[i1]:
+            v = abs(data2[i2])
+            i2 += 1
+        else:
+            v = abs(data1[i1] - data2[i2])
+            i1 += 1
+            i2 += 1
+        if mode == 0:
+            result += v
+        elif mode == 1:
+            result = max(result, v)
+        else:
+            result += v**p
+    return result
+
+
+@numba.njit(fastmath=True, inline="always")
+def _merge_dot(ind1, data1, ind2, data2):
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = np.float32(0.0)
+    while i1 < n1 and i2 < n2:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+        if j1 == j2:
+            result += data1[i1] * data2[i2]
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            i1 += 1
+        else:
+            i2 += 1
+    return result
+
+
+@numba.njit(fastmath=True, inline="always")
+def _merge_sqrt_product(ind1, data1, ind2, data2):
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = 0.0
+    while i1 < n1 and i2 < n2:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+        if j1 == j2:
+            result += np.sqrt(data1[i1] * data2[i2])
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            i1 += 1
+        else:
+            i2 += 1
+    return result
+
+
+@numba.njit()
+def sparse_dot_accumulate(start, ind1, data1, ind2, data2):
+    """Return ``start`` plus the dot product of two sorted sparse vectors.
+
+    The float32 products are added to ``start`` one at a time in index order,
+    which is exactly what summing the output of :func:`sparse_mul` onto
+    ``start`` computes, without allocating the product vector.
+    """
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    result = start
+    while i1 < n1 and i2 < n2:
+        j1 = ind1[i1]
+        j2 = ind2[i2]
+        if j1 == j2:
+            result += np.float32(data1[i1] * data2[i2])
+            i1 += 1
+            i2 += 1
+        elif j1 < j2:
+            i1 += 1
+        else:
+            i2 += 1
+    return result
+
+
 @numba.njit(fastmath=True)
 def sparse_euclidean(ind1, data1, ind2, data2):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    for i in range(aux_data.shape[0]):
-        result += aux_data[i] ** 2
-    return np.sqrt(result)
+    return np.sqrt(_merge_sq_diff(ind1, data1, ind2, data2))
 
 
 @numba.njit(
@@ -348,38 +490,22 @@ def sparse_euclidean(ind1, data1, ind2, data2):
     },
 )
 def sparse_squared_euclidean(ind1, data1, ind2, data2):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    dim = len(aux_data)
-    for i in range(dim):
-        result += aux_data[i] * aux_data[i]
-    return result
+    return _merge_sq_diff(ind1, data1, ind2, data2)
 
 
 @numba.njit()
 def sparse_manhattan(ind1, data1, ind2, data2):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    for i in range(aux_data.shape[0]):
-        result += np.abs(aux_data[i])
-    return result
+    return _merge_abs_diff_reduce(ind1, data1, ind2, data2, 0, 1.0)
 
 
 @numba.njit()
 def sparse_chebyshev(ind1, data1, ind2, data2):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    for i in range(aux_data.shape[0]):
-        result = max(result, np.abs(aux_data[i]))
-    return result
+    return _merge_abs_diff_reduce(ind1, data1, ind2, data2, 1, 1.0)
 
 
 @numba.njit()
 def sparse_minkowski(ind1, data1, ind2, data2, p=2.0):
-    _, aux_data = sparse_diff(ind1, data1, ind2, data2)
-    result = 0.0
-    for i in range(aux_data.shape[0]):
-        result += np.abs(aux_data[i]) ** p
+    result = _merge_abs_diff_reduce(ind1, data1, ind2, data2, 2, p)
     return result ** (1.0 / p)
 
 
@@ -391,45 +517,69 @@ def sparse_hamming(ind1, data1, ind2, data2, n_features):
 
 @numba.njit()
 def sparse_canberra(ind1, data1, ind2, data2):
-    abs_data1 = np.abs(data1)
-    abs_data2 = np.abs(data2)
-    denom_inds, denom_data = sparse_sum(ind1, abs_data1, ind2, abs_data2)
-    denom_data = (1.0 / denom_data).astype(np.float32)
-    numer_inds, numer_data = sparse_diff(ind1, data1, ind2, data2)
-    numer_data = np.abs(numer_data)
-
-    _, val_data = sparse_mul(numer_inds, numer_data, denom_inds, denom_data)
+    # sum over the union support of |x - y| / (|x| + |y|), as a single merge
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
     result = 0.0
-    for val in val_data:
-        result += val
-
+    while i1 < n1 or i2 < n2:
+        if i2 >= n2 or (i1 < n1 and ind1[i1] < ind2[i2]):
+            a = data1[i1]
+            b = np.float32(0.0)
+            i1 += 1
+        elif i1 >= n1 or ind2[i2] < ind1[i1]:
+            a = np.float32(0.0)
+            b = data2[i2]
+            i2 += 1
+        else:
+            a = data1[i1]
+            b = data2[i2]
+            i1 += 1
+            i2 += 1
+        denominator = np.float32(abs(a) + abs(b))
+        numerator = np.float32(abs(a - b))
+        if denominator != 0 and numerator != 0:
+            result += numerator * np.float32(1.0 / denominator)
     return result
 
 
 @numba.njit(
     fastmath=True,
+    cache=True,
 )
 def sparse_bray_curtis(ind1, data1, ind2, data2):  # pragma: no cover
-    _, denom_data = sparse_sum(ind1, data1, ind2, data2)
-    denom_data = np.abs(denom_data)
-
-    if denom_data.shape[0] == 0:
-        return np.float32(0.0)
-
-    denominator = np.sum(denom_data)
+    # sum |x - y| / sum |x + y| over the union support, as a single merge
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    numerator = np.float32(0.0)
+    denominator = np.float32(0.0)
+    while i1 < n1 or i2 < n2:
+        if i2 >= n2 or (i1 < n1 and ind1[i1] < ind2[i2]):
+            a = data1[i1]
+            b = np.float32(0.0)
+            i1 += 1
+        elif i1 >= n1 or ind2[i2] < ind1[i1]:
+            a = np.float32(0.0)
+            b = data2[i2]
+            i2 += 1
+        else:
+            a = data1[i1]
+            b = data2[i2]
+            i1 += 1
+            i2 += 1
+        denominator += abs(a + b)
+        numerator += abs(a - b)
 
     if denominator == 0.0:
         return np.float32(0.0)
 
-    _, numer_data = sparse_diff(ind1, data1, ind2, data2)
-    numer_data = np.abs(numer_data)
-
-    numerator = np.sum(numer_data)
-
     return np.float32(float(numerator) / denominator)
 
 
-@numba.njit()
+@numba.njit(cache=True, fastmath=True)
 def sparse_jaccard(ind1, data1, ind2, data2):
     num_equal = fast_intersection_size(ind1, ind2)
     num_non_zero = ind1.shape[0] + ind2.shape[0] - num_equal
@@ -442,6 +592,7 @@ def sparse_jaccard(ind1, data1, ind2, data2):
 
 @numba.njit(
     fastmath=True,
+    cache=True,
     locals={"num_non_zero": numba.types.intp, "num_equal": numba.types.intp},
 )
 def sparse_alternative_jaccard(ind1, data1, ind2, data2):
@@ -457,13 +608,13 @@ def sparse_alternative_jaccard(ind1, data1, ind2, data2):
         # return (num_non_zero - num_equal) / num_equal
 
 
-@numba.vectorize(fastmath=True)
+@numba.vectorize(fastmath=True, cache=True)
 def correct_alternative_jaccard(v):
     return 1.0 - pow(2.0, -v)
     # return v / (v + 1)
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_matching(ind1, data1, ind2, data2, n_features):
     num_true_true = fast_intersection_size(ind1, ind2)
     num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
@@ -472,7 +623,7 @@ def sparse_matching(ind1, data1, ind2, data2, n_features):
     return float(num_not_equal) / n_features
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_dice(ind1, data1, ind2, data2):
     num_true_true = fast_intersection_size(ind1, ind2)
     num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
@@ -484,7 +635,7 @@ def sparse_dice(ind1, data1, ind2, data2):
         return num_not_equal / (2.0 * num_true_true + num_not_equal)
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_kulsinski(ind1, data1, ind2, data2, n_features):
     num_true_true = fast_intersection_size(ind1, ind2)
     num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
@@ -498,7 +649,7 @@ def sparse_kulsinski(ind1, data1, ind2, data2, n_features):
         )
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_rogers_tanimoto(ind1, data1, ind2, data2, n_features):
     num_true_true = fast_intersection_size(ind1, ind2)
     num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
@@ -507,7 +658,7 @@ def sparse_rogers_tanimoto(ind1, data1, ind2, data2, n_features):
     return (2.0 * num_not_equal) / (n_features + num_not_equal)
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_russellrao(ind1, data1, ind2, data2, n_features):
     if ind1.shape[0] == ind2.shape[0] and np.all(ind1 == ind2):
         return 0.0
@@ -520,7 +671,7 @@ def sparse_russellrao(ind1, data1, ind2, data2, n_features):
         return float(n_features - num_true_true) / (n_features)
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_sokal_michener(ind1, data1, ind2, data2, n_features):
     num_true_true = fast_intersection_size(ind1, ind2)
     num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
@@ -529,7 +680,7 @@ def sparse_sokal_michener(ind1, data1, ind2, data2, n_features):
     return (2.0 * num_not_equal) / (n_features + num_not_equal)
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_sokal_sneath(ind1, data1, ind2, data2):
     num_true_true = fast_intersection_size(ind1, ind2)
     num_non_zero = ind1.shape[0] + ind2.shape[0] - num_true_true
@@ -541,15 +692,11 @@ def sparse_sokal_sneath(ind1, data1, ind2, data2):
         return num_not_equal / (0.5 * num_true_true + num_not_equal)
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_cosine(ind1, data1, ind2, data2):
-    _, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = _merge_dot(ind1, data1, ind2, data2)
     norm1 = norm(data1)
     norm2 = norm(data2)
-
-    for val in aux_data:
-        result += val
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0
@@ -569,15 +716,12 @@ def sparse_cosine(ind1, data1, ind2, data2):
         "dim": numba.types.intp,
         "i": numba.types.uint16,
     },
+    cache=True,
 )
 def sparse_alternative_cosine(ind1, data1, ind2, data2):
-    _, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = _merge_dot(ind1, data1, ind2, data2)
     norm_x = norm(data1)
     norm_y = norm(data2)
-    dim = len(aux_data)
-    for i in range(dim):
-        result += aux_data[i]
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
     elif norm_x == 0.0 or norm_y == 0.0:
@@ -597,7 +741,7 @@ def sparse_correct_alternative_cosine(d):
         return 1.0 - pow(2.0, -d)
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_dot(ind1, data1, ind2, data2):
     result = sparse_dot_product(ind1, data1, ind2, data2)
 
@@ -610,6 +754,7 @@ def sparse_dot(ind1, data1, ind2, data2):
     locals={
         "result": numba.types.float32,
     },
+    cache=True,
 )
 def sparse_alternative_dot(ind1, data1, ind2, data2):
     result = sparse_dot_product(ind1, data1, ind2, data2)
@@ -620,12 +765,11 @@ def sparse_alternative_dot(ind1, data1, ind2, data2):
         return -np.log2(result)
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_correlation(ind1, data1, ind2, data2, n_features):
 
     mu_x = 0.0
     mu_y = 0.0
-    dot_product = 0.0
 
     if ind1.shape[0] == 0 and ind2.shape[0] == 0:
         return 0.0
@@ -640,38 +784,42 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
     mu_x /= n_features
     mu_y /= n_features
 
-    shifted_data1 = np.empty(data1.shape[0], dtype=np.float32)
-    shifted_data2 = np.empty(data2.shape[0], dtype=np.float32)
-
+    # Norms of the centred vectors: stored entries plus the implicit zeros.
+    sq1 = 0.0
     for i in range(data1.shape[0]):
-        shifted_data1[i] = data1[i] - mu_x
+        v = np.float32(data1[i] - mu_x)
+        sq1 += v * v
+    sq2 = 0.0
     for i in range(data2.shape[0]):
-        shifted_data2[i] = data2[i] - mu_y
+        v = np.float32(data2[i] - mu_y)
+        sq2 += v * v
+    norm1 = np.sqrt(sq1 + (n_features - ind1.shape[0]) * (mu_x**2))
+    norm2 = np.sqrt(sq2 + (n_features - ind2.shape[0]) * (mu_y**2))
 
-    norm1 = np.sqrt(
-        (norm(shifted_data1) ** 2) + (n_features - ind1.shape[0]) * (mu_x**2)
-    )
-    norm2 = np.sqrt(
-        (norm(shifted_data2) ** 2) + (n_features - ind2.shape[0]) * (mu_y**2)
-    )
+    # Centred dot product in one merge over the union support; positions
+    # stored in neither vector contribute mu_x * mu_y each.
+    dot_product = 0.0
+    n_union = 0
+    i1 = 0
+    i2 = 0
+    n1 = ind1.shape[0]
+    n2 = ind2.shape[0]
+    while i1 < n1 or i2 < n2:
+        if i2 >= n2 or (i1 < n1 and ind1[i1] < ind2[i2]):
+            dot_product -= np.float32(data1[i1] - mu_x) * mu_y
+            i1 += 1
+        elif i1 >= n1 or ind2[i2] < ind1[i1]:
+            dot_product -= np.float32(data2[i2] - mu_y) * mu_x
+            i2 += 1
+        else:
+            dot_product += np.float32(data1[i1] - mu_x) * np.float32(
+                data2[i2] - mu_y
+            )
+            i1 += 1
+            i2 += 1
+        n_union += 1
 
-    dot_prod_inds, dot_prod_data = sparse_mul(ind1, shifted_data1, ind2, shifted_data2)
-
-    common_indices = set(dot_prod_inds)
-
-    for val in dot_prod_data:
-        dot_product += val
-
-    for i in range(ind1.shape[0]):
-        if ind1[i] not in common_indices:
-            dot_product -= shifted_data1[i] * (mu_y)
-
-    for i in range(ind2.shape[0]):
-        if ind2[i] not in common_indices:
-            dot_product -= shifted_data2[i] * (mu_x)
-
-    all_indices = arr_union(ind1, ind2)
-    dot_product += mu_x * mu_y * (n_features - all_indices.shape[0])
+    dot_product += mu_x * mu_y * (n_features - n_union)
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0
@@ -681,16 +829,12 @@ def sparse_correlation(ind1, data1, ind2, data2, n_features):
         return 1.0 - (dot_product / (norm1 * norm2))
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def sparse_hellinger(ind1, data1, ind2, data2):
-    aux_inds, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = _merge_sqrt_product(ind1, data1, ind2, data2)
     norm1 = np.sum(data1)
     norm2 = np.sum(data2)
     sqrt_norm_prod = np.sqrt(norm1 * norm2)
-
-    for val in aux_data:
-        result += np.sqrt(val)
 
     if norm1 == 0.0 and norm2 == 0.0:
         return 0.0
@@ -714,14 +858,9 @@ def sparse_hellinger(ind1, data1, ind2, data2):
     },
 )
 def sparse_alternative_hellinger(ind1, data1, ind2, data2):
-    aux_inds, aux_data = sparse_mul(ind1, data1, ind2, data2)
-    result = 0.0
+    result = _merge_sqrt_product(ind1, data1, ind2, data2)
     l1_norm_x = np.sum(data1)
     l1_norm_y = np.sum(data2)
-    dim = len(aux_data)
-
-    for i in range(dim):
-        result += np.sqrt(aux_data[i])
 
     if l1_norm_x == 0 and l1_norm_y == 0:
         return 0.0
@@ -881,103 +1020,39 @@ def diversify(
     rng_state,
     prune_probability=1.0,
 ):
-
-    for i in numba.prange(indices.shape[0]):
-
-        new_indices = [indices[i, 0]]
-        new_distances = [distances[i, 0]]
-        for j in range(1, indices.shape[1]):
-            if indices[i, j] < 0:
+    """Sparse version of :func:`pynndescent.pynndescent_.diversify`."""
+    n, k = indices.shape
+    seed = rng_state[0]
+    for i in numba.prange(n):
+        n_retained = 1
+        for j in range(1, k):
+            u = indices[i, j]
+            if u < 0:
                 break
-
-            flag = True
-            for k in range(len(new_indices)):
-                c = new_indices[k]
-
-                from_ind = data_indices[
-                    data_indptr[indices[i, j]] : data_indptr[indices[i, j] + 1]
-                ]
-                from_data = data_data[
-                    data_indptr[indices[i, j]] : data_indptr[indices[i, j] + 1]
-                ]
-
-                to_ind = data_indices[data_indptr[c] : data_indptr[c + 1]]
-                to_data = data_data[data_indptr[c] : data_indptr[c + 1]]
-
-                d = dist(from_ind, from_data, to_ind, to_data)
-                if new_distances[k] > FLOAT32_EPS and d < distances[i, j]:
-                    if tau_rand(rng_state) < prune_probability:
-                        flag = False
-                        break
-
-            if flag:
-                new_indices.append(indices[i, j])
-                new_distances.append(distances[i, j])
-
-        for j in range(indices.shape[1]):
-            if j < len(new_indices):
-                indices[i, j] = new_indices[j]
-                distances[i, j] = new_distances[j]
-            else:
-                indices[i, j] = -1
-                distances[i, j] = np.inf
+            d_iu = distances[i, j]
+            from_ind = data_indices[data_indptr[u] : data_indptr[u + 1]]
+            from_data = data_data[data_indptr[u] : data_indptr[u + 1]]
+            keep = True
+            for m in range(n_retained):
+                if distances[i, m] > FLOAT32_EPS:
+                    c = indices[i, m]
+                    to_ind = data_indices[data_indptr[c] : data_indptr[c + 1]]
+                    to_data = data_data[data_indptr[c] : data_indptr[c + 1]]
+                    if dist(from_ind, from_data, to_ind, to_data) < d_iu:
+                        if prune_probability >= 1.0 or (
+                            hash_uniform(seed, i, j, m) < prune_probability
+                        ):
+                            keep = False
+                            break
+            if keep:
+                indices[i, n_retained] = u
+                distances[i, n_retained] = d_iu
+                n_retained += 1
+        for j in range(n_retained, k):
+            indices[i, j] = -1
+            distances[i, j] = np.inf
 
     return indices, distances
-
-
-@numba.njit(parallel=True, cache=False)
-def diversify_csr(
-    graph_indptr,
-    graph_indices,
-    graph_data,
-    data_indptr,
-    data_indices,
-    data_data,
-    dist,
-    rng_state,
-    prune_probability=1.0,
-):
-
-    n_nodes = graph_indptr.shape[0] - 1
-
-    for i in numba.prange(n_nodes):
-
-        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
-        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
-
-        order = np.argsort(current_data)
-        retained = np.ones(order.shape[0], dtype=np.int8)
-
-        for idx in range(1, order.shape[0]):
-
-            j = order[idx]
-
-            for k in range(idx):
-
-                l = order[k]
-
-                if retained[l] == 1:
-                    p = current_indices[j]
-                    q = current_indices[l]
-
-                    from_inds = data_indices[data_indptr[p] : data_indptr[p + 1]]
-                    from_data = data_data[data_indptr[p] : data_indptr[p + 1]]
-
-                    to_inds = data_indices[data_indptr[q] : data_indptr[q + 1]]
-                    to_data = data_data[data_indptr[q] : data_indptr[q + 1]]
-                    d = dist(from_inds, from_data, to_inds, to_data)
-
-                    if current_data[l] > FLOAT32_EPS and d < current_data[j]:
-                        if tau_rand(rng_state) < prune_probability:
-                            retained[j] = 0
-                            break
-
-        for idx in range(order.shape[0]):
-            j = order[idx]
-            if retained[j] == 0:
-                graph_data[graph_indptr[i] + j] = 0
-
-    return
 
 
 sparse_named_distances = {

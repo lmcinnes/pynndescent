@@ -78,6 +78,7 @@ supporting a wide variety of distance metrics by default:
 **Angular and correlation metrics**
 
 - cosine
+- direct_cosine
 - dot
 - inner_product
 - correlation
@@ -126,9 +127,10 @@ PyNNDescent is designed to be easy to install being a pure python module with
 relatively light requirements:
 
 * numpy
-* scipy
-* scikit-learn >= 0.22
-* numba >= 0.51
+* scipy >= 1.0
+* scikit-learn >= 0.18
+* numba >= 0.55
+* joblib >= 0.11
 
 all of which should be pip or conda installable. The easiest way to install should be
 via conda:
@@ -159,11 +161,17 @@ or via pip:
 
    how_pynndescent_works
    performance
+   performance_0_7
 
 .. toctree::
    :caption: API Reference:
 
    api
+
+.. toctree::
+   :caption: Project:
+
+   release_notes
 
 Indices and tables
 ==================
