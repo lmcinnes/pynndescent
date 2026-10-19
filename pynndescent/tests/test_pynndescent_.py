@@ -897,6 +897,41 @@ def test_joblib_dump():
     np.testing.assert_equal(distances1, distances2)
 
 
+@pytest.mark.parametrize(
+    "sparse_type", [scipy.sparse.csr_matrix, scipy.sparse.csr_array]
+)
+@pytest.mark.parametrize("prepared", [False, True])
+def test_sparse_update_failure_preserves_index(sparse_type, prepared):
+    random_state = np.random.RandomState(42)
+    data = np.arange(48, dtype=np.float32).reshape(12, 4) + 1
+    index = NNDescent(
+        sparse_type(data),
+        n_neighbors=4,
+        n_trees=0,
+        n_iters=1,
+        random_state=random_state,
+        n_jobs=1,
+    )
+    if prepared:
+        index.prepare()
+    saved_random_state = random_state.get_state()
+    raw_data = index._raw_data
+    saved_data = raw_data.copy()
+    saved_graph = tuple(array.copy() for array in index._neighbor_graph)
+    for _ in range(2):
+        with pytest.raises(NotImplementedError, match="Sparse update not complete yet"):
+            index.update(xs_fresh=sparse_type([[2, 3, 4, 5]], dtype=np.float32))
+        for current, saved in zip(random_state.get_state(), saved_random_state):
+            np.testing.assert_equal(current, saved)
+        assert index._raw_data is raw_data
+        np.testing.assert_array_equal(index._raw_data.toarray(), saved_data.toarray())
+        for current, saved in zip(index._neighbor_graph, saved_graph):
+            np.testing.assert_array_equal(current, saved)
+    indices, distances = index.query(sparse_type(data[:1]), k=1)
+    np.testing.assert_array_equal(indices, [[0]])
+    np.testing.assert_allclose(distances, [[0.0]], atol=1e-6)
+
+
 @pytest.mark.parametrize("metric", ["euclidean", "cosine"])
 def test_update_no_prepare_query_accuracy(nn_data, metric):
     nnd = NNDescent(nn_data[200:800], metric=metric, n_neighbors=10, random_state=None)
