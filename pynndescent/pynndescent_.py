@@ -24,6 +24,7 @@ import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as pynnd_dist
 
 from pynndescent.utils import (
+    finish_query_alternative_hellinger,
     finish_query_no_correction,
     finish_query_sqrt,
     finish_query_alternative_cosine,
@@ -2406,7 +2407,7 @@ class NNDescent:
             self.search_rng_state,
         )
         _ = self._deheap_function(inds, dists)
-        self._fast_plan = None  # sparse queries take the general path
+        self._build_fast_query_plan()
 
     @property
     def neighbor_graph(self):
@@ -2623,15 +2624,15 @@ class NNDescent:
         _init_search_function (from prepare(), and when pickling or
         unpickling). Stores and returns ``self._fast_plan``: None when query()
         must take the general path, or
-        ``(search_function, finish, search_normalizes, n_features, ones_1)``.
+        ``(is_sparse, search_function, finish, search_normalizes, n_features,
+        ones_1)``.
         ``finish`` is the compiled entry point of the finisher for this index's
         exact argument types (the query workspace and _vertex_order), skipping
         per-call type resolution; it is only ever called with those arrays.
         """
         search_function = self._search_function
         usable = (
-            not self._is_sparse
-            and self.metric not in ("bit_hamming", "bit_jaccard")
+            self.metric not in ("bit_hamming", "bit_jaccard")
             and self.quantization is None
             and not self._is_proxy_distance
             and not self.parallel_batch_queries
@@ -2652,6 +2653,7 @@ class NNDescent:
             except (AttributeError, KeyError, TypeError):
                 finish = finisher
             fast = (
+                bool(self._is_sparse),
                 search_function,
                 finish,
                 bool(self._uses_normalized_data()),
@@ -2673,6 +2675,18 @@ class NNDescent:
                 finisher = finish_query_sqrt
             elif correction is pynnd_dist.correct_alternative_cosine:
                 finisher = finish_query_alternative_cosine
+            elif (
+                correction is pynnd_dist.correct_alternative_jaccard
+                or correction is sparse.correct_alternative_jaccard
+            ):
+                # Same formula (1 - 2**-d) as correct_alternative_cosine
+                finisher = finish_query_alternative_cosine
+            elif correction is pynnd_dist.correct_alternative_hellinger:
+                finisher = finish_query_alternative_hellinger
+            elif correction is sparse.sparse_correct_alternative_cosine:
+                finisher = sparse.finish_query_sparse_alternative_cosine
+            elif correction is sparse.sparse_correct_alternative_hellinger:
+                finisher = sparse.finish_query_sparse_alternative_hellinger
             else:
                 finisher = None
             self._query_finisher_fn = finisher
@@ -2751,41 +2765,69 @@ class NNDescent:
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
 
-        # Fast path for plain dense queries (all per-index decisions cached).
+        # Fast path for plain dense and sparse queries; every per-index decision
+        # (including whether the index is sparse) is made once, in the plan.
         if proxy_beam_size is None and candidate_width is None and rerank_width is None:
             fast = getattr(self, "_fast_plan", None)
             if fast is not None:
-                search_function, finish, normalizes, n_features, ones_1 = fast
+                is_sparse, search_function, finish, normalizes, n_features, ones_1 = fast
                 if pre_normalized and not normalizes:
                     raise ValueError(
                         "pre_normalized is only supported for dense cosine, direct_cosine "
                         "and dot"
                     )
-                query_data = np.asarray(query_data).astype(np.float32, order="C")
-                if query_data.ndim != 2 or query_data.shape[1] != n_features:
-                    raise ValueError(
-                        "query_data must be a 2-D array with "
-                        f"{n_features} features, got shape {query_data.shape}"
+                if is_sparse:
+                    # CSR input with float32, finite data can be used directly;
+                    # anything else is converted and validated as before.
+                    if not (
+                        (isspmatrix_csr(query_data) or isinstance(query_data, csr_array))
+                        and query_data.dtype == np.float32
+                        and np.isfinite(query_data.data).all()
+                    ):
+                        query_data = check_array(
+                            query_data, accept_sparse="csr", dtype=np.float32
+                        )
+                        if not isspmatrix_csr(query_data) and not isinstance(
+                            query_data, csr_array
+                        ):
+                            query_data = csr_array(query_data, dtype=np.float32)
+                    if not query_data.has_sorted_indices:
+                        query_data.sort_indices()
+                    indices, dists, _ = search_function(
+                        query_data.indices,
+                        query_data.indptr,
+                        query_data.data,
+                        k,
+                        epsilon,
+                        self._visited,
+                        self.search_rng_state,
                     )
-                n_queries = query_data.shape[0]
-                workspace = getattr(self, "_query_workspace", None)
-                if workspace is None or workspace[0].shape != (n_queries, k):
-                    workspace = make_heap(n_queries, k)
-                    self._query_workspace = workspace
-                indices, dists, _ = search_function(
-                    query_data,
-                    query_data,
-                    ones_1 if n_queries == 1 else self._ones_for_queries(n_queries),
-                    workspace,
-                    k,
-                    epsilon,
-                    self._visited,
-                    # The search normalises the query itself unless the caller
-                    # says it already is (metrics without normalised data
-                    # neither normalise queries nor read this flag).
-                    pre_normalized,
-                    self.search_rng_state,
-                )
+                else:
+                    query_data = np.asarray(query_data).astype(np.float32, order="C")
+                    if query_data.ndim != 2 or query_data.shape[1] != n_features:
+                        raise ValueError(
+                            "query_data must be a 2-D array with "
+                            f"{n_features} features, got shape {query_data.shape}"
+                        )
+                    n_queries = query_data.shape[0]
+                    workspace = getattr(self, "_query_workspace", None)
+                    if workspace is None or workspace[0].shape != (n_queries, k):
+                        workspace = make_heap(n_queries, k)
+                        self._query_workspace = workspace
+                    indices, dists, _ = search_function(
+                        query_data,
+                        query_data,
+                        ones_1 if n_queries == 1 else self._ones_for_queries(n_queries),
+                        workspace,
+                        k,
+                        epsilon,
+                        self._visited,
+                        # The search normalises the query itself unless the
+                        # caller says it already is (metrics without normalised
+                        # data neither normalise queries nor read this flag).
+                        pre_normalized,
+                        self.search_rng_state,
+                    )
                 indices, dists = finish(indices, dists, self._vertex_order)
                 if not return_distances:
                     return indices

@@ -1295,3 +1295,18 @@ def l2_normalize_rows(X):
     norms = np.sqrt(np.einsum("ij,ij->i", X, X))
     norms[norms == 0.0] = 1.0
     return X / norms[:, np.newaxis]
+
+
+@numba.njit(cache=True, fastmath=True)
+def finish_query_alternative_hellinger(indices, distances, vertex_order):
+    """As finish_query_no_correction, with distances mapped by sqrt(1 - 2**-d)
+    (float64, as correct_alternative_hellinger returns)."""
+    _deheap_rows_inplace(indices, distances)
+    n, k = indices.shape
+    out_indices = np.empty((n, k), dtype=vertex_order.dtype)
+    out_distances = np.empty((n, k), dtype=np.float64)
+    for i in range(n):
+        for j in range(k):
+            out_indices[i, j] = vertex_order[indices[i, j]]
+            out_distances[i, j] = np.sqrt(1.0 - pow(2.0, -np.float64(distances[i, j])))
+    return out_indices, out_distances
