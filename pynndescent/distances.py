@@ -1622,7 +1622,7 @@ def circular_kantorovich(x, y, p=1):
         x_cdf[i] += x_cdf[i - 1]
         y_cdf[i] += y_cdf[i - 1]
 
-    mu = np.median((x_cdf - y_cdf) ** p)
+    mu = np.median(x_cdf - y_cdf)
 
     # Now we just want minkowski distance on the CDFs shifted by mu
     result = 0.0
