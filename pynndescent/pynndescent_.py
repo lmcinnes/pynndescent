@@ -2771,7 +2771,7 @@ class NNDescent:
             fast = getattr(self, "_fast_plan", None)
             if fast is not None:
                 is_sparse, search_function, finish, normalizes, n_features, ones_1 = fast
-                if pre_normalized and not normalizes:
+                if pre_normalized and (is_sparse or not normalizes):
                     raise ValueError(
                         "pre_normalized is only supported for dense cosine, direct_cosine "
                         "and dot"
