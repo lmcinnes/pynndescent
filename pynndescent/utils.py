@@ -1287,14 +1287,14 @@ def finish_query_alternative_cosine(indices, distances, vertex_order):
 
 
 def l2_normalize_rows(X):
-    """L2-normalise the rows of a 2-D float array (zero rows are left as zeros).
+    """L2-normalise writable dense floating-point rows in place.
 
-    Equivalent to sklearn.preprocessing.normalize(X, norm="l2") for dense input,
-    without its per-call validation overhead.
+    Zero rows are left as zeros. Returns X without per-call validation.
     """
     norms = np.sqrt(np.einsum("ij,ij->i", X, X))
     norms[norms == 0.0] = 1.0
-    return X / norms[:, np.newaxis]
+    X /= norms[:, np.newaxis]
+    return X
 
 
 @numba.njit(cache=True, fastmath=True)
