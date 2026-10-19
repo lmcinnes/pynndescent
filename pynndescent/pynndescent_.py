@@ -1653,6 +1653,7 @@ class NNDescent:
         # before this option existed.
         if not getattr(self, "_compile_search", False):
             if self._init_cached_search_function():
+                self._build_fast_query_plan()
                 return
         self._uses_cached_search = False
 
@@ -2165,6 +2166,7 @@ class NNDescent:
             self.search_rng_state,
         )
         _ = self._deheap_function(inds, dists)
+        self._build_fast_query_plan()
 
     def _init_sparse_search_function(self):
 
@@ -2404,6 +2406,7 @@ class NNDescent:
             self.search_rng_state,
         )
         _ = self._deheap_function(inds, dists)
+        self._fast_plan = None  # sparse queries take the general path
 
     @property
     def neighbor_graph(self):
@@ -2616,14 +2619,14 @@ class NNDescent:
     def _build_fast_query_plan(self):
         """Per-index decisions for the plain dense query path, made once.
 
-        Returns and caches ``(search_function, fast)``, where ``fast`` is None
-        when query() must take the general path, or
+        Called whenever the search function is (re)built, by
+        _init_search_function (from prepare(), and when pickling or
+        unpickling). Stores and returns ``self._fast_plan``: None when query()
+        must take the general path, or
         ``(search_function, finish, search_normalizes, n_features, ones_1)``.
         ``finish`` is the compiled entry point of the finisher for this index's
         exact argument types (the query workspace and _vertex_order), skipping
         per-call type resolution; it is only ever called with those arrays.
-        The plan is rebuilt whenever the search function changes (prepare,
-        update, unpickling).
         """
         search_function = self._search_function
         usable = (
@@ -2655,9 +2658,8 @@ class NNDescent:
                 int(self._raw_data.shape[1]),
                 np.ones(1, dtype=np.float32),
             )
-        plan = (search_function, fast)
-        self._fast_plan = plan
-        return plan
+        self._fast_plan = fast
+        return fast
 
     def _query_finisher(self):
         """Compiled function that sorts, maps and corrects dense query results in
@@ -2751,10 +2753,7 @@ class NNDescent:
 
         # Fast path for plain dense queries (all per-index decisions cached).
         if proxy_beam_size is None and candidate_width is None and rerank_width is None:
-            plan = getattr(self, "_fast_plan", None)
-            if plan is None or plan[0] is not self._search_function:
-                plan = self._build_fast_query_plan()
-            fast = plan[1]
+            fast = getattr(self, "_fast_plan", None)
             if fast is not None:
                 search_function, finish, normalizes, n_features, ones_1 = fast
                 if pre_normalized and not normalizes:
@@ -2781,7 +2780,10 @@ class NNDescent:
                     k,
                     epsilon,
                     self._visited,
-                    pre_normalized or not normalizes,
+                    # The search normalises the query itself unless the caller
+                    # says it already is (metrics without normalised data
+                    # neither normalise queries nor read this flag).
+                    pre_normalized,
                     self.search_rng_state,
                 )
                 indices, dists = finish(indices, dists, self._vertex_order)
@@ -2883,7 +2885,14 @@ class NNDescent:
                 search_k,
                 epsilon,
                 self._visited,
-                normalized_data and not search_normalizes,
+                # query_is_normalized: whether the query arrays passed here are
+                # already unit length. That is the caller's pre_normalized,
+                # or -- on quantised and proxy-distance paths, which normalise
+                # query_data in Python above -- normalized_data. It cannot be
+                # pre_normalized alone: there the search would renormalise its
+                # query_points, which are the proxy codes (e.g. packed bits for
+                # binary quantisation), not the float query.
+                pre_normalized or (normalized_data and not search_normalizes),
                 self.search_rng_state,
             )
             if plain_dense and not self.parallel_batch_queries:
