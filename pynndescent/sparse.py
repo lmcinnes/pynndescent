@@ -6,7 +6,7 @@ from __future__ import print_function
 import numpy as np
 import numba
 
-from pynndescent.utils import norm, hash_uniform
+from pynndescent.utils import norm, hash_uniform, _deheap_rows_inplace
 from pynndescent.distances import (
     kantorovich,
     jensen_shannon_divergence,
@@ -1136,3 +1136,44 @@ sparse_fast_distance_alternatives = {
         "correction": correct_alternative_jaccard,
     },
 }
+
+
+
+# Finishing a sparse query in one compiled call (see utils.finish_query_*):
+# sort the result heaps, map indices through vertex_order, and apply the
+# sparse distance corrections exactly as sparse_correct_alternative_cosine and
+# sparse_correct_alternative_hellinger do (including their zero handling).
+
+
+@numba.njit(cache=True, fastmath=True)
+def finish_query_sparse_alternative_cosine(indices, distances, vertex_order):
+    _deheap_rows_inplace(indices, distances)
+    n, k = indices.shape
+    out_indices = np.empty((n, k), dtype=vertex_order.dtype)
+    out_distances = np.empty((n, k), dtype=np.float64)
+    for i in range(n):
+        for j in range(k):
+            out_indices[i, j] = vertex_order[indices[i, j]]
+            d = np.float64(distances[i, j])
+            if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
+                out_distances[i, j] = 0.0
+            else:
+                out_distances[i, j] = 1.0 - pow(2.0, -d)
+    return out_indices, out_distances
+
+
+@numba.njit(cache=True, fastmath=True)
+def finish_query_sparse_alternative_hellinger(indices, distances, vertex_order):
+    _deheap_rows_inplace(indices, distances)
+    n, k = indices.shape
+    out_indices = np.empty((n, k), dtype=vertex_order.dtype)
+    out_distances = np.empty((n, k), dtype=np.float64)
+    for i in range(n):
+        for j in range(k):
+            out_indices[i, j] = vertex_order[indices[i, j]]
+            d = np.float64(distances[i, j])
+            if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
+                out_distances[i, j] = 0.0
+            else:
+                out_distances[i, j] = np.sqrt(1.0 - pow(2.0, -d))
+    return out_indices, out_distances

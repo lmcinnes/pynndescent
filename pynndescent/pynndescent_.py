@@ -24,6 +24,11 @@ import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as pynnd_dist
 
 from pynndescent.utils import (
+    finish_query_alternative_hellinger,
+    finish_query_no_correction,
+    finish_query_sqrt,
+    finish_query_alternative_cosine,
+    l2_normalize_rows,
     hash_uniform,
     int32_bits_as_float32,
     float32_bits_as_int32,
@@ -1331,6 +1336,9 @@ class NNDescent:
         # Rebuilt by __setstate__ (and not picklable when it wraps the cached
         # search function)
         result.pop("_search_function", None)
+        result.pop("_query_finisher_fn", None)
+        result.pop("_query_ones", None)
+        result.pop("_fast_plan", None)
         if "_query_workspace" in result:
             del result["_query_workspace"]
         result["_search_forest"] = tuple(
@@ -1646,6 +1654,7 @@ class NNDescent:
         # before this option existed.
         if not getattr(self, "_compile_search", False):
             if self._init_cached_search_function():
+                self._build_fast_query_plan()
                 return
         self._uses_cached_search = False
 
@@ -2158,6 +2167,7 @@ class NNDescent:
             self.search_rng_state,
         )
         _ = self._deheap_function(inds, dists)
+        self._build_fast_query_plan()
 
     def _init_sparse_search_function(self):
 
@@ -2397,6 +2407,7 @@ class NNDescent:
             self.search_rng_state,
         )
         _ = self._deheap_function(inds, dists)
+        self._build_fast_query_plan()
 
     @property
     def neighbor_graph(self):
@@ -2599,6 +2610,88 @@ class NNDescent:
                 self._init_search_function()
         return
 
+    def _ones_for_queries(self, n_queries):
+        ones = getattr(self, "_query_ones", None)
+        if ones is None or ones.shape[0] < n_queries:
+            ones = np.ones(max(n_queries, 1), dtype=np.float32)
+            self._query_ones = ones
+        return ones[:n_queries]
+
+    def _build_fast_query_plan(self):
+        """Per-index decisions for the plain dense query path, made once.
+
+        Called whenever the search function is (re)built, by
+        _init_search_function (from prepare(), and when pickling or
+        unpickling). Stores and returns ``self._fast_plan``: None when query()
+        must take the general path, or
+        ``(is_sparse, search_function, finish, search_normalizes, n_features,
+        ones_1)``.
+        ``finish`` is the compiled entry point of the finisher for this index's
+        exact argument types (the query workspace and _vertex_order), skipping
+        per-call type resolution; it is only ever called with those arrays.
+        """
+        search_function = self._search_function
+        usable = (
+            self.metric not in ("bit_hamming", "bit_jaccard")
+            and self.quantization is None
+            and not self._is_proxy_distance
+            and not self.parallel_batch_queries
+        )
+        finisher = self._query_finisher() if usable else None
+        fast = None
+        if finisher is not None:
+            heap_indices, heap_distances, _ = make_heap(1, 1)
+            finisher(heap_indices, heap_distances, self._vertex_order)  # compile
+            finish = finisher
+            try:
+                key = (
+                    numba.typeof(heap_indices),
+                    numba.typeof(heap_distances),
+                    numba.typeof(self._vertex_order),
+                )
+                finish = finisher.overloads[key].entry_point
+            except (AttributeError, KeyError, TypeError):
+                finish = finisher
+            fast = (
+                bool(self._is_sparse),
+                search_function,
+                finish,
+                bool(self._uses_normalized_data()),
+                int(self._raw_data.shape[1]),
+                np.ones(1, dtype=np.float32),
+            )
+        self._fast_plan = fast
+        return fast
+
+    def _query_finisher(self):
+        """Compiled function that sorts, maps and corrects dense query results in
+        one call, or None if this index's distance correction has no fused form."""
+        finisher = getattr(self, "_query_finisher_fn", False)
+        if finisher is False:
+            correction = self._distance_correction
+            if correction is None:
+                finisher = finish_query_no_correction
+            elif correction is np.sqrt:
+                finisher = finish_query_sqrt
+            elif correction is pynnd_dist.correct_alternative_cosine:
+                finisher = finish_query_alternative_cosine
+            elif (
+                correction is pynnd_dist.correct_alternative_jaccard
+                or correction is sparse.correct_alternative_jaccard
+            ):
+                # Same formula (1 - 2**-d) as correct_alternative_cosine
+                finisher = finish_query_alternative_cosine
+            elif correction is pynnd_dist.correct_alternative_hellinger:
+                finisher = finish_query_alternative_hellinger
+            elif correction is sparse.sparse_correct_alternative_cosine:
+                finisher = sparse.finish_query_sparse_alternative_cosine
+            elif correction is sparse.sparse_correct_alternative_hellinger:
+                finisher = sparse.finish_query_sparse_alternative_hellinger
+            else:
+                finisher = None
+            self._query_finisher_fn = finisher
+        return finisher
+
     def query(
         self,
         query_data,
@@ -2672,6 +2765,74 @@ class NNDescent:
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
 
+        # Fast path for plain dense and sparse queries; every per-index decision
+        # (including whether the index is sparse) is made once, in the plan.
+        if proxy_beam_size is None and candidate_width is None and rerank_width is None:
+            fast = getattr(self, "_fast_plan", None)
+            if fast is not None:
+                is_sparse, search_function, finish, normalizes, n_features, ones_1 = fast
+                if pre_normalized and (is_sparse or not normalizes):
+                    raise ValueError(
+                        "pre_normalized is only supported for dense cosine, direct_cosine "
+                        "and dot"
+                    )
+                if is_sparse:
+                    # CSR input with float32, finite data can be used directly;
+                    # anything else is converted and validated as before.
+                    if not (
+                        (isspmatrix_csr(query_data) or isinstance(query_data, csr_array))
+                        and query_data.dtype == np.float32
+                        and np.isfinite(query_data.data).all()
+                    ):
+                        query_data = check_array(
+                            query_data, accept_sparse="csr", dtype=np.float32
+                        )
+                        if not isspmatrix_csr(query_data) and not isinstance(
+                            query_data, csr_array
+                        ):
+                            query_data = csr_array(query_data, dtype=np.float32)
+                    if not query_data.has_sorted_indices:
+                        query_data.sort_indices()
+                    indices, dists, _ = search_function(
+                        query_data.indices,
+                        query_data.indptr,
+                        query_data.data,
+                        k,
+                        epsilon,
+                        self._visited,
+                        self.search_rng_state,
+                    )
+                else:
+                    query_data = np.asarray(query_data).astype(np.float32, order="C")
+                    if query_data.ndim != 2 or query_data.shape[1] != n_features:
+                        raise ValueError(
+                            "query_data must be a 2-D array with "
+                            f"{n_features} features, got shape {query_data.shape}"
+                        )
+                    n_queries = query_data.shape[0]
+                    workspace = getattr(self, "_query_workspace", None)
+                    if workspace is None or workspace[0].shape != (n_queries, k):
+                        workspace = make_heap(n_queries, k)
+                        self._query_workspace = workspace
+                    indices, dists, _ = search_function(
+                        query_data,
+                        query_data,
+                        ones_1 if n_queries == 1 else self._ones_for_queries(n_queries),
+                        workspace,
+                        k,
+                        epsilon,
+                        self._visited,
+                        # The search normalises the query itself unless the
+                        # caller says it already is (metrics without normalised
+                        # data neither normalise queries nor read this flag).
+                        pre_normalized,
+                        self.search_rng_state,
+                    )
+                indices, dists = finish(indices, dists, self._vertex_order)
+                if not return_distances:
+                    return indices
+                return indices, dists
+
         normalized_data = self._uses_normalized_data()
         if pre_normalized and (self._is_sparse or not normalized_data):
             raise ValueError(
@@ -2721,8 +2882,13 @@ class NNDescent:
                         f"{query_data.shape}"
                     )
 
-            if normalized_data and not pre_normalized:
-                query_data = normalize(query_data, norm="l2", copy=False)
+            # On the plain dense path the compiled search normalises each query
+            # itself; quantised and proxy-distance searches need normalised
+            # query data here.
+            plain_dense = self.quantization is None and not self._is_proxy_distance
+            search_normalizes = normalized_data and not pre_normalized and plain_dense
+            if normalized_data and not pre_normalized and not search_normalizes:
+                query_data = l2_normalize_rows(query_data)
 
             if self.quantization is not None:
                 epsilon += 1e-32  # ensure epsilon > 0 for quantized searches
@@ -2743,7 +2909,8 @@ class NNDescent:
                 proxy_query_data = query_data
 
             if self.quantization != "int8":
-                query_inv_norms = np.ones(query_data.shape[0], dtype=np.float32)
+                # Only int8 searches read these; reuse one array of ones.
+                query_inv_norms = self._ones_for_queries(query_data.shape[0])
 
             workspace_shape = (query_data.shape[0], search_k)
             if (
@@ -2760,9 +2927,23 @@ class NNDescent:
                 search_k,
                 epsilon,
                 self._visited,
-                normalized_data,
+                # query_is_normalized: whether the query arrays passed here are
+                # already unit length. That is the caller's pre_normalized,
+                # or -- on quantised and proxy-distance paths, which normalise
+                # query_data in Python above -- normalized_data. It cannot be
+                # pre_normalized alone: there the search would renormalise its
+                # query_points, which are the proxy codes (e.g. packed bits for
+                # binary quantisation), not the float query.
+                pre_normalized or (normalized_data and not search_normalizes),
                 self.search_rng_state,
             )
+            if plain_dense and not self.parallel_batch_queries:
+                finisher = self._query_finisher()
+                if finisher is not None:
+                    indices, dists = finisher(indices, dists, self._vertex_order)
+                    if not return_distances:
+                        return indices
+                    return indices, dists
         else:
             # Sparse case
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)

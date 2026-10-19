@@ -1223,3 +1223,90 @@ def sparse_initalize_heap_from_graph_indices(
 # Generates a timestamp for use in logging messages when verbose=True
 def ts():
     return time.ctime(time.time())
+
+
+# ---------------------------------------------------------------------------
+# Finishing a dense query in one compiled call: sort each result heap (exactly
+# as deheap_sort does), map indices back to the original data order, and write
+# corrected distances into new arrays. This replaces three separately
+# dispatched steps (deheap, fancy indexing, a numba-vectorized or numpy
+# correction) and an extra copy on the per-query path.
+# ---------------------------------------------------------------------------
+
+
+@numba.njit(inline="always")
+def _deheap_rows_inplace(indices, distances):
+    for i in range(indices.shape[0]):
+        for j in range(indices.shape[1] - 1, 0, -1):
+            indices[i, 0], indices[i, j] = indices[i, j], indices[i, 0]
+            distances[i, 0], distances[i, j] = distances[i, j], distances[i, 0]
+            siftdown(distances[i, :j], indices[i, :j], 0)
+
+
+@numba.njit(cache=True)
+def finish_query_no_correction(indices, distances, vertex_order):
+    """deheap_sort, then vertex_order[indices] and a float32 copy of distances."""
+    _deheap_rows_inplace(indices, distances)
+    n, k = indices.shape
+    out_indices = np.empty((n, k), dtype=vertex_order.dtype)
+    out_distances = np.empty((n, k), dtype=np.float32)
+    for i in range(n):
+        for j in range(k):
+            out_indices[i, j] = vertex_order[indices[i, j]]
+            out_distances[i, j] = distances[i, j]
+    return out_indices, out_distances
+
+
+@numba.njit(cache=True)
+def finish_query_sqrt(indices, distances, vertex_order):
+    """As finish_query_no_correction, with distances square-rooted (float32)."""
+    _deheap_rows_inplace(indices, distances)
+    n, k = indices.shape
+    out_indices = np.empty((n, k), dtype=vertex_order.dtype)
+    out_distances = np.empty((n, k), dtype=np.float32)
+    for i in range(n):
+        for j in range(k):
+            out_indices[i, j] = vertex_order[indices[i, j]]
+            out_distances[i, j] = np.sqrt(distances[i, j])
+    return out_indices, out_distances
+
+
+@numba.njit(cache=True, fastmath=True)
+def finish_query_alternative_cosine(indices, distances, vertex_order):
+    """As finish_query_no_correction, with distances mapped by 1 - 2**-d (float64,
+    as correct_alternative_cosine returns)."""
+    _deheap_rows_inplace(indices, distances)
+    n, k = indices.shape
+    out_indices = np.empty((n, k), dtype=vertex_order.dtype)
+    out_distances = np.empty((n, k), dtype=np.float64)
+    for i in range(n):
+        for j in range(k):
+            out_indices[i, j] = vertex_order[indices[i, j]]
+            out_distances[i, j] = 1.0 - pow(2.0, -np.float64(distances[i, j]))
+    return out_indices, out_distances
+
+
+def l2_normalize_rows(X):
+    """L2-normalise writable dense floating-point rows in place.
+
+    Zero rows are left as zeros. Returns X without per-call validation.
+    """
+    norms = np.sqrt(np.einsum("ij,ij->i", X, X))
+    norms[norms == 0.0] = 1.0
+    X /= norms[:, np.newaxis]
+    return X
+
+
+@numba.njit(cache=True, fastmath=True)
+def finish_query_alternative_hellinger(indices, distances, vertex_order):
+    """As finish_query_no_correction, with distances mapped by sqrt(1 - 2**-d)
+    (float64, as correct_alternative_hellinger returns)."""
+    _deheap_rows_inplace(indices, distances)
+    n, k = indices.shape
+    out_indices = np.empty((n, k), dtype=vertex_order.dtype)
+    out_distances = np.empty((n, k), dtype=np.float64)
+    for i in range(n):
+        for j in range(k):
+            out_indices[i, j] = vertex_order[indices[i, j]]
+            out_distances[i, j] = np.sqrt(1.0 - pow(2.0, -np.float64(distances[i, j])))
+    return out_indices, out_distances
