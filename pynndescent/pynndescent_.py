@@ -3063,6 +3063,8 @@ class NNDescent:
             xs_updated = check_array(
                 xs_updated, dtype=self._input_dtype, accept_sparse="csr", order="C"
             )
+            if self.metric == "dot":
+                xs_updated = normalize(xs_updated, norm="l2", copy=True)
             if updated_indices is None:
                 raise ValueError(
                     "If xs_updated are provided, updated_indices must also be provided!"
@@ -3109,6 +3111,8 @@ class NNDescent:
             xs_fresh = check_array(
                 xs_fresh, dtype=self._input_dtype, accept_sparse="csr", order="C"
             )
+            if self.metric == "dot":
+                xs_fresh = normalize(xs_fresh, norm="l2", copy=True)
         # data preparation
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)

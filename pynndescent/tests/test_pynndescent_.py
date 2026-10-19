@@ -975,6 +975,46 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
     )
 
 
+@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize("mode", ["append", "replace", "both"])
+def test_dot_update_distances(mode, prepared):
+    rng = np.random.RandomState(42)
+    data = rng.lognormal(size=(80, 8)).astype(np.float32)
+    data[0] = 0
+    original = data.copy()
+    index = NNDescent(data[:48], metric="dot", n_neighbors=10, random_state=42)
+    if prepared:
+        index.prepare()
+
+    fresh = data[48:64] if mode != "replace" else None
+    updated = data[64:] if mode != "append" else None
+    positions = np.arange(0, 48, 3) if updated is not None else None
+    index.update(xs_fresh=fresh, xs_updated=updated, updated_indices=positions)
+    np.testing.assert_array_equal(data, original)
+
+    expected_data = data[:48].copy()
+    if updated is not None:
+        expected_data[positions] = updated
+    if fresh is not None:
+        expected_data = np.vstack((expected_data, fresh))
+
+    normalized = normalize(expected_data.astype(np.float64))
+    expected = 1 - np.maximum(normalized @ normalized.T, 0)
+    indices, distances = index.neighbor_graph
+    assert np.all(indices >= 0)
+    np.testing.assert_allclose(
+        distances, expected[np.arange(len(indices))[:, None], indices], atol=1e-6
+    )
+
+    indices, distances = index.query(data[16:32], k=5)
+    expected = 1 - np.maximum(
+        normalize(data[16:32].astype(np.float64)) @ normalized.T, 0
+    )
+    np.testing.assert_allclose(
+        distances, expected[np.arange(len(indices))[:, None], indices], atol=1e-6
+    )
+
+
 def evaluate_predictions(neighbors_true, neigbhors_computed, n_neighbors):
     n_correct = 0
     n_all = neighbors_true.shape[0] * n_neighbors
