@@ -1000,6 +1000,9 @@ def test_dot_update_distances(mode, prepared):
 
     normalized = normalize(expected_data.astype(np.float64))
     expected = 1 - np.maximum(normalized @ normalized.T, 0)
+    # neighbor_graph lists each point as its own first neighbor at distance 0,
+    # including the all-zero row (whose dot distance to everything else is 1)
+    np.fill_diagonal(expected, 0.0)
     indices, distances = index.neighbor_graph
     assert np.all(indices >= 0)
     np.testing.assert_allclose(
