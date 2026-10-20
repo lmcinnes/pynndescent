@@ -436,6 +436,35 @@ def test_wasserstein_1d(p):
             assert np.isclose(d1, d2)
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("p", [1, 2, 3])
+@pytest.mark.parametrize(
+    "x,y,centered_difference",
+    [
+        ([1, 0, 0, 0], [0, 0, 0, 1], [0, 0, 0, -1]),
+        (
+            [1, 3, 0, 2, 0],
+            [0, 1, 2, 0, 5],
+            [-1 / 8, 1 / 4, 0, 1 / 3, -7 / 24],
+        ),
+    ],
+)
+def test_circular_kantorovich_centering(dtype, p, x, y, centered_difference):
+    x = np.asarray(x, dtype=dtype)
+    y = np.asarray(y, dtype=dtype)
+    # Analytically centered CDF differences, independent of the implementation.
+    expected = np.linalg.norm(centered_difference, ord=p)
+    result = dist.circular_kantorovich(x, y, p)
+    assert result == pytest.approx(expected, abs=1e-6)
+    assert dist.circular_kantorovich(y, x, p) == pytest.approx(result, abs=1e-6)
+    for shift in range(1, x.size):
+        assert dist.circular_kantorovich(
+            np.roll(x, shift), np.roll(y, shift), p
+        ) == pytest.approx(result, abs=1e-6)
+    assert dist.circular_kantorovich(x, x, p) == pytest.approx(0.0, abs=1e-6)
+    assert dist.circular_kantorovich(3 * x, 5 * y, p) == pytest.approx(result, abs=1e-6)
+
+
 def test_bit_hamming():
     test_data = np.random.randint(0, 255, size=(10, 100), dtype=np.uint8)
     unpacked_data = np.zeros(
