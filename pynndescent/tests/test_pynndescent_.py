@@ -1240,6 +1240,14 @@ def test_bad_data():
     index = NNDescent(data, metric="cosine")
 
 
+def test_update_compressed_index_raises(nn_data):
+    # https://github.com/lmcinnes/pynndescent/issues/246
+    index = NNDescent(nn_data[:200], n_neighbors=10, random_state=42, compressed=True)
+    index.prepare()
+    with pytest.raises(ValueError, match="compressed"):
+        index.update(nn_data[200:300])
+        
+
 @pytest.mark.parametrize(
     "metric,kwargs",
     [
