@@ -315,6 +315,32 @@ def test_haversine(spatial_data):
     )
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("latitude", [-89.0, -85.0, 85.0, 89.0])
+def test_haversine_antipodal(dtype, latitude):
+    x = np.deg2rad(np.array([latitude, 15.0], dtype=dtype))
+    y = np.deg2rad(np.array([-latitude, -165.0], dtype=dtype))
+
+    assert dist.haversine(x, y) == pytest.approx(np.pi, abs=1e-6)
+    assert dist.haversine(y, x) == pytest.approx(np.pi, abs=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize(
+    "x, y, expected",
+    [
+        ([0.0, 0.0], [0.0, 0.0], 0.0),
+        ([0.0, 0.0], [0.0, 90.0], np.pi / 2),
+        ([0.0, 0.0], [90.0, 0.0], np.pi / 2),
+    ],
+)
+def test_haversine_regular_points(dtype, x, y, expected):
+    x = np.deg2rad(np.array(x, dtype=dtype))
+    y = np.deg2rad(np.array(y, dtype=dtype))
+
+    assert dist.haversine(x, y) == pytest.approx(expected, abs=1e-6)
+
+
 def test_spearmanr():
     x = np.random.randn(100)
     y = np.random.randn(100)
@@ -497,3 +523,47 @@ def test_lazy_kernel_return_types(kernel, args, return_type):
     # rather than an explicit signature; callers compare against float32 heaps.
     kernel.compile(args)
     assert kernel.overloads[args].signature.return_type == return_type
+
+
+def test_tsss_matches_definition():
+    # https://github.com/lmcinnes/pynndescent/issues/233
+    # TS-SS (Heidarian & Dinneen, 2016) is the product of the triangle area
+    # |x||y|sin(theta)/2 and the sector area pi*(ED + MD)^2*theta/360 with theta
+    # in degrees, i.e. (ED + MD)^2*theta/2 with theta in radians.
+    x = np.array([1.0, 2.0, 3.0])
+    y = np.array([2.0, 0.5, 1.0])
+    norm_x = np.linalg.norm(x)
+    norm_y = np.linalg.norm(y)
+    theta = np.arccos(x @ y / (norm_x * norm_y)) + np.radians(10)
+    triangle = norm_x * norm_y * np.sin(theta) / 2
+    sector = (np.linalg.norm(x - y) + abs(norm_x - norm_y)) ** 2 * theta / 2
+    assert dist.tsss(x, y) == pytest.approx(triangle * sector)
+
+
+def test_sparse_correlation_with_zero_centred_shared_entry():
+    # Index 1 is stored in both rows and x[1] equals mean(x), so its centred
+    # product is exactly zero; it must still be treated as a shared index.
+    x = np.array([3.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    y = np.array([1.0, 2.0, 0.0, 0.0], dtype=np.float32)
+    sx = csr_matrix(x[None, :])
+    sy = csr_matrix(y[None, :])
+    result = spdist.sparse_correlation(
+        sx.indices, sx.data, sy.indices, sy.data, x.shape[0]
+    )
+    expected = pairwise_distances(x[None, :], y[None, :], metric="correlation")[0, 0]
+    assert_array_almost_equal(result, expected, decimal=6)
+
+
+@pytest.mark.parametrize("empty_first", [True, False])
+def test_sparse_dot_product_with_empty_vector(empty_first):
+    # Empty vectors are usually slices of larger arrays (an empty CSR row, or
+    # an empty search-tree hyperplane), so the memory just past them holds
+    # real indices and values that must not be read.
+    full_inds = np.array([5], dtype=np.int32)
+    full_data = np.array([3.0], dtype=np.float32)
+    empty = (full_inds[0:0], full_data[0:0])
+    other = (np.array([5], dtype=np.int32), np.array([2.0], dtype=np.float32))
+    args = empty + other if empty_first else other + empty
+
+    assert spdist.sparse_dot_product(*args) == 0.0
+    assert spdist.sparse_dot(*args) == 1.0

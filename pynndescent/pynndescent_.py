@@ -24,11 +24,20 @@ import pynndescent.sparse_nndescent as sparse_nnd
 import pynndescent.distances as pynnd_dist
 
 from pynndescent.utils import (
+    finish_query_alternative_hellinger,
+    finish_query_no_correction,
+    finish_query_sqrt,
+    finish_query_alternative_cosine,
+    l2_normalize_rows,
+    hash_uniform,
+    int32_bits_as_float32,
+    float32_bits_as_int32,
     tau_rand_int,
     tau_rand,
     make_heap,
     deheap_sort,
     new_build_candidates,
+    build_candidates_owner,
     ts,
     simple_heap_push,
     checked_flagged_heap_push,
@@ -37,12 +46,29 @@ from pynndescent.utils import (
     check_and_mark_visited,
     generate_graph_update_array,
     apply_graph_update_array,
+    sort_updates_by_block,
+    apply_sorted_graph_update_array,
     initalize_heap_from_graph_indices,
     initalize_heap_from_graph_indices_and_distances,
     sparse_initalize_heap_from_graph_indices,
     EMPTY_GRAPH,
 )
 
+from pynndescent.kernels import (
+    KERNEL_ALT_DOT,
+    KERNEL_SQEUCLIDEAN,
+    select_kernel,
+    generate_graph_update_array_batched,
+    four_distances,
+)
+from pynndescent.hybrid_forest import make_hybrid_leaf_array
+from pynndescent.hub_tree import make_hub_search_tree
+from pynndescent.search_graph import build_search_graph, permute_graph, permute_rows
+from pynndescent.search import (
+    make_cached_search_function,
+    deheap_sort_serial,
+    deheap_sort_parallel,
+)
 from pynndescent.rp_trees import (
     make_forest,
     rptree_leaf_array,
@@ -52,11 +78,9 @@ from pynndescent.rp_trees import (
     renumbaify_tree,
     select_side,
     select_side_bit,
-    sparse_select_side,
+    sparse_select_side_ragged,
+    sparse_hyperplanes_to_ragged,
     score_linked_tree,
-    make_hub_tree,
-    make_sparse_hub_tree,
-    make_bit_hub_tree,
 )
 
 INT32_MIN = np.iinfo(np.int32).min + 1
@@ -72,11 +96,12 @@ def is_c_contiguous(array_like):
 
 @numba.njit(parallel=True, cache=False, fastmath=True)
 def generate_leaf_updates(
-    updates, n_updates_per_thread, leaf_block, dist_thresholds, data, dist, n_threads
+    updates, n_updates_per_thread, leaf_block, current_graph, data, dist, n_threads
 ):
     """Generate leaf updates into pre-allocated arrays for parallel efficiency."""
     n_leaves = leaf_block.shape[0]
     leaves_per_thread = (n_leaves // n_threads) + 1
+    heap_distances = current_graph[1]
 
     # Reset update counts
     for t in range(n_threads):
@@ -100,11 +125,11 @@ def generate_leaf_updates(
                         break
 
                     d = dist(data[p], data[q])
-                    max_threshold = max(dist_thresholds[p], dist_thresholds[q])
+                    max_threshold = max(heap_distances[p, 0], heap_distances[q, 0])
                     if d < max_threshold:
                         if count < max_updates:
-                            updates[t, count, 0] = np.float32(p)
-                            updates[t, count, 1] = np.float32(q)
+                            updates[t, count, 0] = int32_bits_as_float32(p)
+                            updates[t, count, 1] = int32_bits_as_float32(q)
                             updates[t, count, 2] = d
                             count += 1
 
@@ -130,59 +155,33 @@ def init_rp_tree(data, dist, current_graph, leaf_array, n_threads=8):
     )
     updates = np.zeros((n_threads, updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+    sorted_updates = np.empty((n_threads, 2 * updates_per_thread, 3), dtype=np.float32)
+    block_offsets = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
 
     n_vertices = current_graph[0].shape[0]
-    vertex_block_size = n_vertices // n_threads + 1
 
     for i in range(n_blocks + 1):
         block_start = i * block_size
         block_end = min(n_leaves, (i + 1) * block_size)
 
         leaf_block = leaf_array[block_start:block_end]
-        dist_thresholds = current_graph[1][:, 0]
 
         generate_leaf_updates(
             updates,
             n_updates_per_thread,
             leaf_block,
-            dist_thresholds,
+            current_graph,
             data,
             dist,
             n_threads,
         )
 
-        for t in numba.prange(n_threads):
-            v_block_start = t * vertex_block_size
-            v_block_end = min(v_block_start + vertex_block_size, n_vertices)
-
-            for j in range(n_threads):
-                for k in range(n_updates_per_thread[j]):
-                    p = np.int32(updates[j, k, 0])
-
-                    if p < 0:
-                        continue
-
-                    q = np.int32(updates[j, k, 1])
-                    d = updates[j, k, 2]
-
-                    if p >= v_block_start and p < v_block_end:
-                        checked_flagged_heap_push(
-                            current_graph[1][p],
-                            current_graph[0][p],
-                            current_graph[2][p],
-                            d,
-                            q,
-                            np.uint8(1),
-                        )
-                    if q >= v_block_start and q < v_block_end:
-                        checked_flagged_heap_push(
-                            current_graph[1][q],
-                            current_graph[0][q],
-                            current_graph[2][q],
-                            d,
-                            p,
-                            np.uint8(1),
-                        )
+        sort_updates_by_block(
+            updates, n_updates_per_thread, sorted_updates, block_offsets, n_vertices, n_threads
+        )
+        apply_sorted_graph_update_array(
+            current_graph, sorted_updates, block_offsets, n_threads
+        )
 
 
 @numba.njit(
@@ -195,6 +194,9 @@ def init_random(n_neighbors, data, heap, dist, rng_state):
         if heap[0][i, 0] < 0.0:
             for j in range(n_neighbors - np.sum(heap[0][i] >= 0.0)):
                 idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
+                if data.shape[0] > 1:
+                    while idx == i:
+                        idx = np.abs(tau_rand_int(rng_state)) % data.shape[0]
                 d = dist(data[idx], data[i])
                 checked_flagged_heap_push(
                     heap[1][i], heap[0][i], heap[2][i], d, idx, np.uint8(1)
@@ -226,6 +228,9 @@ def process_candidates(
     n_threads,
     update_array,
     n_updates_per_thread,
+    sorted_updates,
+    block_offsets,
+    kernel=0,
 ):
     """Process candidate neighbors using array-based update generation.
 
@@ -243,22 +248,47 @@ def process_candidates(
         new_candidate_block = new_candidate_neighbors[block_start:block_end]
         old_candidate_block = old_candidate_neighbors[block_start:block_end]
 
-        dist_thresholds = current_graph[1][:, 0]
+        if kernel != 0:
+            generate_graph_update_array_batched(
+                update_array,
+                n_updates_per_thread,
+                new_candidate_block,
+                old_candidate_block,
+                current_graph,
+                data,
+                kernel,
+                n_threads,
+            )
+        else:
+            generate_graph_update_array(
+                update_array,
+                n_updates_per_thread,
+                new_candidate_block,
+                old_candidate_block,
+                current_graph,
+                data,
+                dist,
+                n_threads,
+            )
 
-        generate_graph_update_array(
-            update_array,
-            n_updates_per_thread,
-            new_candidate_block,
-            old_candidate_block,
-            dist_thresholds,
-            data,
-            dist,
-            n_threads,
-        )
-
-        c += apply_graph_update_array(
-            current_graph, update_array, n_updates_per_thread, n_threads
-        )
+        if n_threads > 1:
+            # Bucket updates by destination block so each thread only reads the
+            # updates it will apply, instead of scanning every thread's updates.
+            sort_updates_by_block(
+                update_array,
+                n_updates_per_thread,
+                sorted_updates,
+                block_offsets,
+                n_vertices,
+                n_threads,
+            )
+            c += apply_sorted_graph_update_array(
+                current_graph, sorted_updates, block_offsets, n_threads
+            )
+        else:
+            c += apply_graph_update_array(
+                current_graph, update_array, n_updates_per_thread, n_threads
+            )
 
     return c
 
@@ -274,6 +304,7 @@ def nn_descent_internal(
     n_iters=10,
     delta=0.001,
     verbose=False,
+    kernel=0,
 ):
     n_vertices = data.shape[0]
     block_size = 16384
@@ -292,13 +323,48 @@ def nn_descent_internal(
     )
     update_array = np.empty((n_threads, max_updates_per_thread, 3), dtype=np.float32)
     n_updates_per_thread = np.zeros(n_threads, dtype=np.int32)
+    # Each update is written to at most two destination blocks.
+    if n_threads > 1:
+        sorted_updates = np.empty(
+            (n_threads, 2 * max_updates_per_thread, 3), dtype=np.float32
+        )
+    else:
+        sorted_updates = np.empty((1, 1, 3), dtype=np.float32)
+    block_offsets = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
+
+    # Candidate workspace, reused across iterations; build_candidates_owner only
+    # resets the rows it wrote on the previous iteration.
+    new_candidate_indices = np.full((n_vertices, max_candidates), -1, dtype=np.int32)
+    new_candidate_priority = np.full(
+        (n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    old_candidate_indices = np.full((n_vertices, max_candidates), -1, dtype=np.int32)
+    old_candidate_priority = np.full(
+        (n_vertices, max_candidates), np.inf, dtype=np.float32
+    )
+    active = np.ones(n_vertices, dtype=np.uint8)
+    # Cross-block reverse edges, bucketed by owning thread (at most one per edge).
+    reverse_dst = np.empty(n_vertices * n_neighbors, dtype=np.int32)
+    reverse_src = np.empty(n_vertices * n_neighbors, dtype=np.int32)
+    bucket_bounds = np.zeros((n_threads, n_threads + 1), dtype=np.int64)
 
     for n in range(n_iters):
         if verbose:
             print("\t", n + 1, " / ", n_iters)
 
-        new_candidate_neighbors, old_candidate_neighbors = new_build_candidates(
-            current_graph, max_candidates, rng_state, n_threads
+        new_candidate_neighbors, old_candidate_neighbors = build_candidates_owner(
+            current_graph,
+            max_candidates,
+            rng_state,
+            n_threads,
+            new_candidate_indices,
+            new_candidate_priority,
+            old_candidate_indices,
+            old_candidate_priority,
+            active,
+            reverse_dst,
+            reverse_src,
+            bucket_bounds,
         )
 
         c = process_candidates(
@@ -312,6 +378,9 @@ def nn_descent_internal(
             n_threads,
             update_array,
             n_updates_per_thread,
+            sorted_updates,
+            block_offsets,
+            kernel,
         )
 
         if c <= delta * n_neighbors * data.shape[0]:
@@ -334,13 +403,14 @@ def nn_descent(
     leaf_array=None,
     low_memory=True,
     verbose=False,
+    kernel=0,
 ):
 
     if init_graph[0].shape[0] == 1:  # EMPTY_GRAPH
         current_graph = make_heap(data.shape[0], n_neighbors)
 
         if rp_tree_init:
-            init_rp_tree(data, dist, current_graph, leaf_array)
+            init_rp_tree(data, dist, current_graph, leaf_array, n_threads=numba.get_num_threads())
 
         init_random(n_neighbors, data, current_graph, dist, rng_state)
     elif (
@@ -361,46 +431,75 @@ def nn_descent(
         n_iters=n_iters,
         delta=delta,
         verbose=verbose,
+        kernel=kernel,
     )
 
     return deheap_sort(current_graph[0], current_graph[1])
 
 
+@numba.njit(inline="always")
+def _prune_edge(prune_probability, seed, i, j, m):
+    if prune_probability >= 1.0:
+        return True
+    return hash_uniform(seed, i, j, m) < prune_probability
+
+
 @numba.njit(parallel=True)
 def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
+    """Relative-neighbourhood pruning of each row of a k-NN graph, in place.
 
-    for i in numba.prange(indices.shape[0]):
-
-        new_indices = [indices[i, 0]]
-        new_distances = [distances[i, 0]]
-        for j in range(1, indices.shape[1]):
-            if indices[i, j] < 0:
+    Each row is scanned in order of increasing distance; a candidate u is dropped
+    if some already retained neighbour c (other than an exact duplicate of the
+    row's point) is closer to u than the row's point is, with probability
+    ``prune_probability`` per such c. Retained neighbours keep their order and
+    the row is padded with (-1, inf).
+    """
+    n, k = indices.shape
+    seed = rng_state[0]
+    for i in numba.prange(n):
+        # Retained neighbours are compacted into the front of the row
+        n_retained = 1
+        for j in range(1, k):
+            u = indices[i, j]
+            if u < 0:
                 break
-
-            flag = True
-            for k in range(len(new_indices)):
-
-                c = new_indices[k]
-
-                d = dist(data[indices[i, j]], data[c])
-                if new_distances[k] > FLOAT32_EPS and d < distances[i, j]:
-                    if tau_rand(rng_state) < prune_probability:
-                        flag = False
-                        break
-
-            if flag:
-                new_indices.append(indices[i, j])
-                new_distances.append(distances[i, j])
-
-        for j in range(indices.shape[1]):
-            if j < len(new_indices):
-                indices[i, j] = new_indices[j]
-                distances[i, j] = new_distances[j]
-            else:
-                indices[i, j] = -1
-                distances[i, j] = np.inf
+            d_iu = distances[i, j]
+            keep = True
+            for m in range(n_retained):
+                if distances[i, m] > FLOAT32_EPS:
+                    if dist(data[u], data[indices[i, m]]) < d_iu:
+                        if _prune_edge(prune_probability, seed, i, j, m):
+                            keep = False
+                            break
+            if keep:
+                indices[i, n_retained] = u
+                distances[i, n_retained] = d_iu
+                n_retained += 1
+        for j in range(n_retained, k):
+            indices[i, j] = -1
+            distances[i, j] = np.inf
 
     return indices, distances
+
+
+# Disk-cached diversify for the two dense distances with batched kernels. A
+# function that takes the distance as an argument cannot be reused from the
+# on-disk cache (its argument type differs between processes), so these fix the
+# distance at compile time; other distances compile diversify per process.
+@numba.njit(cache=True)
+def diversify_squared_euclidean(indices, distances, data, rng_state, prune_probability):
+    return diversify(
+        indices, distances, data, pynnd_dist.squared_euclidean, rng_state,
+        prune_probability,
+    )
+
+
+@numba.njit(cache=True)
+def diversify_alternative_dot(indices, distances, data, rng_state, prune_probability):
+    return diversify(
+        indices, distances, data, pynnd_dist.alternative_dot, rng_state,
+        prune_probability,
+    )
 
 
 @numba.njit()
@@ -486,14 +585,12 @@ def diversify_degree_aware(
     base_rate = np.float32(0.04) * clamped_aggressiveness
 
     for i in numba.prange(n):
-        new_indices = [indices[i, 0]]
-        new_distances = [distances[i, 0]]
-
+        # Retained neighbours are compacted into the front of the row
+        n_retained = 1
         for j in range(1, k):
-            if indices[i, j] < 0:
-                break
-
             u = indices[i, j]
+            if u < 0:
+                break
             d_iu = distances[i, j]
 
             # Compute threshold factor based on target degree and aggressiveness
@@ -502,8 +599,6 @@ def diversify_degree_aware(
 
             if tgt_degree_ratio > 1.0:
                 # High degree node - adjust threshold based on aggressiveness
-                # Positive aggressiveness: threshold > 1.0 (prune more)
-                # Negative aggressiveness: threshold < 1.0 (prune less)
                 excess_ratio = min(tgt_degree_ratio - 1.0, np.float32(2.0))
                 threshold_factor = np.float32(1.0) + base_rate * excess_ratio
                 # Clamp to reasonable range [0.8, 1.2] to avoid extreme behavior
@@ -514,78 +609,26 @@ def diversify_degree_aware(
                 # Normal/low degree - standard threshold
                 threshold_factor = np.float32(1.0)
 
-            # Check if there's an alternative path through any retained neighbor
-            flag = True
-            for m in range(len(new_indices)):
-                c = new_indices[m]
+            # Prune if there's an acceptable alternative path through any
+            # retained neighbour
+            keep = True
+            for m in range(n_retained):
+                if distances[i, m] > FLOAT32_EPS:
+                    d_cu = dist(data[u], data[indices[i, m]])
+                    if d_cu < d_iu * threshold_factor * alpha:
+                        keep = False
+                        break
 
-                # Compute distance from candidate neighbor c to u
-                d_cu = dist(data[u], data[c])
+            if keep:
+                indices[i, n_retained] = u
+                distances[i, n_retained] = d_iu
+                n_retained += 1
 
-                # Prune if alternative path is acceptable
-                if (
-                    new_distances[m] > FLOAT32_EPS
-                    and d_cu < d_iu * threshold_factor * alpha
-                ):
-                    flag = False
-                    break
-
-            if flag:
-                new_indices.append(u)
-                new_distances.append(d_iu)
-
-        # Write back the retained edges
-        for j in range(k):
-            if j < len(new_indices):
-                indices[i, j] = new_indices[j]
-                distances[i, j] = new_distances[j]
-            else:
-                indices[i, j] = -1
-                distances[i, j] = np.inf
+        for j in range(n_retained, k):
+            indices[i, j] = -1
+            distances[i, j] = np.inf
 
     return indices, distances
-
-
-@numba.njit(parallel=True)
-def diversify_csr(
-    graph_indptr,
-    graph_indices,
-    graph_data,
-    source_data,
-    dist,
-    rng_state,
-    prune_probability=1.0,
-):
-    n_nodes = graph_indptr.shape[0] - 1
-
-    for i in numba.prange(n_nodes):
-
-        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
-        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
-
-        order = np.argsort(current_data)
-        retained = np.ones(order.shape[0], dtype=np.int8)
-
-        for idx in range(1, order.shape[0]):
-            j = order[idx]
-            for k in range(idx):
-                l = order[k]
-                if retained[l] == 1:
-
-                    d = dist(
-                        source_data[current_indices[j]], source_data[current_indices[k]]
-                    )
-                    if current_data[l] > FLOAT32_EPS and d < current_data[j]:
-                        if tau_rand(rng_state) < prune_probability:
-                            retained[j] = 0
-                            break
-
-        for idx in range(order.shape[0]):
-            j = order[idx]
-            if retained[j] == 0:
-                graph_data[graph_indptr[i] + j] = 0
-
-    return
 
 
 @numba.njit()
@@ -622,144 +665,6 @@ def compute_degrees_csr(graph_indptr, graph_indices):
     return degrees
 
 
-@numba.njit(parallel=True)
-def diversify_csr_degree_aware(
-    graph_indptr,
-    graph_indices,
-    graph_data,
-    source_data,
-    dist,
-    rng_state,
-    max_degree,
-    aggressiveness=1.0,
-    prune_probability=1.0,
-):
-    """Perform degree-aware diversification on a CSR format graph.
-
-    This is the reverse diversification step, operating on the transposed graph.
-    Higher degree nodes (hubs) get more aggressive pruning.
-
-    Parameters
-    ----------
-    graph_indptr: array of int
-        CSR row pointer array
-    graph_indices: array of int
-        CSR column indices array
-    graph_data: array of float
-        CSR data array (distances)
-    source_data: array
-        The original data points
-    dist: callable
-        Distance function
-    rng_state: array
-        Random state for probabilistic pruning
-    max_degree: int
-        The maximum degree considered for scaling
-    aggressiveness: float (default 1.0)
-        Controls how aggressively high-degree nodes are pruned.
-        0.0 = standard diversification (no degree awareness)
-        Higher values = more aggressive pruning of hub nodes
-    prune_probability: float (default 1.0)
-        Probability of pruning an eligible edge
-
-    Returns
-    -------
-    None (modifies graph_data in place)
-    """
-    # Pre-compute degrees for all nodes (cannot be done in parallel section)
-    degrees = compute_degrees_csr(graph_indptr, graph_indices)
-
-    n_nodes = graph_indptr.shape[0] - 1
-
-    for i in numba.prange(n_nodes):
-        current_indices = graph_indices[graph_indptr[i] : graph_indptr[i + 1]]
-        current_data = graph_data[graph_indptr[i] : graph_indptr[i + 1]]
-
-        order = np.argsort(current_data)
-        retained = np.ones(order.shape[0], dtype=np.int8)
-
-        for idx in range(order.shape[0]):
-
-            j = order[idx]
-            if current_data[j] == 0:  # Already pruned or zero distance
-                continue
-
-            for k in range(idx):
-                compare_idx = order[k]
-
-                if retained[compare_idx] == 0:
-                    continue
-
-                d = dist(
-                    source_data[current_indices[compare_idx]],
-                    source_data[current_indices[j]],
-                )
-
-                # Compute degree-based threshold factor for node j
-                # High-degree nodes get a relaxed threshold (accept longer paths)
-                target_degree = 0
-                if current_indices[j] < n_nodes:
-                    target_degree = degrees[current_indices[j]]
-
-                degree_ratio = target_degree / max(max_degree, 1)
-                # Threshold increases with degree ratio, capped at 2x the base
-                threshold_factor = 1.0 + 0.04 * aggressiveness * min(
-                    degree_ratio - 1.0, 2.0
-                )
-                threshold_factor = max(threshold_factor, 1.0)  # Never go below 1.0
-
-                # Prune if there's a shorter path through a retained neighbor
-                if d * threshold_factor < current_data[j]:
-                    if (
-                        prune_probability >= 1.0
-                        or tau_rand(rng_state) < prune_probability
-                    ):
-                        retained[j] = 0
-                        break
-
-        for idx in range(order.shape[0]):
-            j = order[idx]
-            if retained[j] == 0:
-                graph_data[graph_indptr[i] + j] = 0
-
-    return
-
-
-@numba.njit(parallel=True)
-def degree_prune_internal(indptr, data, max_degree=20):
-    for i in numba.prange(indptr.shape[0] - 1):
-        row_data = data[indptr[i] : indptr[i + 1]]
-        if row_data.shape[0] > max_degree:
-            cut_value = np.sort(row_data)[max_degree]
-            for j in range(indptr[i], indptr[i + 1]):
-                if data[j] > cut_value:
-                    data[j] = 0.0
-
-    return
-
-
-def degree_prune(graph, max_degree=20):
-    """Prune the k-neighbors graph back so that nodes have a maximum
-    degree of ``max_degree``.
-
-    Parameters
-    ----------
-    graph: sparse matrix
-        The adjacency matrix of the graph
-
-    max_degree: int (optional, default 20)
-        The maximum degree of any node in the pruned graph
-
-    Returns
-    -------
-    result: sparse matrix
-        The pruned graph.
-    """
-    degree_prune_internal(graph.indptr, graph.data, max_degree)
-    graph.eliminate_zeros()
-    return graph
-
-
 def resort_tree_indices(tree, tree_order):
     """Given a new data indexing, resort the tree indices to match"""
     new_tree = FlatTree(
@@ -789,6 +694,33 @@ def rerank(nn_inds, queries, data, dist, n_neighbors, deheap_sort_function):
     return result_nn_inds, result_nn_dists
 
 
+def _quantize_int8_rows(data):
+    """Encode dense rows with independent symmetric signed-int8 scales."""
+    max_abs = np.max(np.abs(data), axis=1, keepdims=True)
+    multipliers = np.divide(
+        np.float32(127.0),
+        max_abs,
+        out=np.zeros_like(max_abs, dtype=np.float32),
+        where=max_abs > 0.0,
+    )
+    return np.ascontiguousarray(
+        np.clip(np.rint(data * multipliers), -127.0, 127.0).astype(np.int8)
+    )
+
+
+def _int8_code_inv_norms(codes):
+    """Return reciprocal L2 norms for rows of signed-int8 codes."""
+    squared_norms = np.einsum(
+        "ij,ij->i", codes.astype(np.float32), codes.astype(np.float32)
+    )
+    return np.divide(
+        np.float32(1.0),
+        np.sqrt(squared_norms),
+        out=np.zeros(codes.shape[0], dtype=np.float32),
+        where=squared_norms > 0.0,
+    )
+
+
 class NNDescent:
     """NNDescent for fast approximate nearest neighbor queries. NNDescent is
     very flexible and supports a wide variety of distances, including
@@ -805,6 +737,7 @@ class NNDescent:
         The metric to use for computing nearest neighbors. If a callable is
         used it must be a numba njit compiled function. Supported metrics
         include:
+
             * euclidean
             * manhattan
             * chebyshev
@@ -815,6 +748,8 @@ class NNDescent:
             * wminkowski
             * seuclidean
             * cosine
+            * direct_cosine
+            * dot
             * correlation
             * haversine
             * hamming
@@ -828,6 +763,7 @@ class NNDescent:
             * yule
             * hellinger
             * wasserstein-1d
+
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
@@ -836,11 +772,6 @@ class NNDescent:
     metric_kwds: dict (optional, default {})
         Arguments to pass on to the metric, such as the ``p`` value for
         Minkowski distance.
-
-    bit_metric: bool (optional, default=False)
-        Whether ``metric`` assumes bit-packed data. Only to be used if ``metric`` is
-        a callable; if ``metric`` is a string referring to one of the available already
-        implemented metrics, this argument is ignored.
 
     n_neighbors: int (optional, default=30)
         The number of neighbors to use in k-neighbor graph graph_data structure
@@ -855,11 +786,6 @@ class NNDescent:
         of performance. The default of None means a value will be chosen based on the
         size of the data (typically 3-12 trees). Benchmarks show that 2-4 trees are
         usually sufficient for best recall.
-
-    angular_trees: bool (optional, default=False)
-        Whether angular trees should be used in initialization. Only to be used if
-        ``metric`` is a callable; if ``metric`` is a string referring to one of the
-        available already implemented metrics, this argument is ignored.
 
     leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the random projection trees.
@@ -880,11 +806,25 @@ class NNDescent:
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. A value of 1.0 will prune all edges that it can.
 
-    n_search_trees: int (optional, default=1)
-        The number of random projection trees to use in initializing searching or
-        querying.
+    diversify_method: string (optional, default="standard")
+        How the search graph is diversified. ``"standard"`` removes an edge
+        from a point to a neighbor whenever a closer, already retained neighbor
+        is nearer to that neighbor than the point is. ``"degree_aware"`` also
+        prunes edges to high-degree "hub" vertices more readily (see
+        ``degree_prune_aggressiveness``), giving a sparser search graph.
+
+    degree_prune_aggressiveness: float (optional, default=1.0)
+        Only used with ``diversify_method="degree_aware"``. Controls how much
+        more readily edges to high-degree vertices are pruned; 0.0 is equivalent
+        to standard diversification, and larger values prune more (1.0 removes
+        up to about 10% more edges than standard diversification, 3.0 up to
+        about 25%).
+
+    n_search_trees: int (optional, default=None)
+        No longer has any effect; a single search tree is always used.
 
         .. deprecated:: 0.5.5
+            This parameter will be removed in the next version.
 
     search_tree_leaf_size: int (optional, default=None)
         The maximum number of points in a leaf for the search tree (hub tree).
@@ -895,6 +835,20 @@ class NNDescent:
     max_search_tree_depth: int (optional, default=None)
         Maximum depth of the search tree. If None, uses max_rptree_depth.
         This allows independent tuning of search tree depth vs init tree depth.
+
+    quantization: string or None (optional, default=None)
+        Store a compressed copy of the data and search with it, then rerank the
+        best candidates with the exact distance (see ``query``). Options are:
+
+            * ``"binary"``: one bit per feature (sign); euclidean, l2, cosine,
+              dot, hamming and jaccard metrics.
+            * ``"uint8"`` / ``"uint4"``: per-feature quantile codes; euclidean,
+              l2, cosine and dot metrics.
+            * ``"int8"``: symmetric signed 8-bit codes with a per-row scale;
+              cosine, direct_cosine and dot metrics on dense data.
+
+        Quantization is applied when the index is prepared. The full precision
+        data is kept for reranking, so it does not reduce memory use.
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -914,13 +868,6 @@ class NNDescent:
         If RandomState instance, random_state is the random number generator;
         If None, the random number generator is the RandomState instance used
         by `np.random`.
-
-    algorithm: string (optional, default='standard')
-        This implementation provides an alternative algorithm for
-        construction of the k-neighbors graph used as a search index. The
-        alternative algorithm can be fast for large ``n_neighbors`` values.
-        The``'alternative'`` algorithm has been deprecated and is no longer
-        available.
 
     low_memory: boolean (optional, default=True)
         Whether to use a lower memory, but more computationally expensive
@@ -955,9 +902,10 @@ class NNDescent:
         what you're doing.
 
     n_jobs: int or None, optional (default=None)
-        The number of parallel jobs to run for neighbors index construction.
-        ``None`` means 1 unless in a :obj:`joblib.parallel_backend` context.
-        ``-1`` means using all processors.
+        The number of threads to use for index construction and preparation.
+        ``None`` or ``-1`` use numba's current number of threads (all cores
+        unless changed with ``numba.set_num_threads`` or the
+        ``NUMBA_NUM_THREADS`` environment variable).
 
     compressed: bool (optional, default=False)
         Whether to prune out data not needed for searching the index. This will
@@ -971,6 +919,21 @@ class NNDescent:
 
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
+
+    bit_metric: bool (optional, default=False)
+        Whether ``metric`` assumes bit-packed data. Only to be used if ``metric`` is
+        a callable; if ``metric`` is a string referring to one of the available already
+        implemented metrics, this argument is ignored.
+
+    angular_trees: bool (optional, default=False)
+        Whether angular trees should be used in initialization. Only to be used if
+        ``metric`` is a callable; if ``metric`` is a string referring to one of the
+        available already implemented metrics, this argument is ignored.
+
+    search_tree_leaf_budget: int (optional, default=1)
+        Number of dense search-tree leaves used to initialize each query. A value
+        of 1 preserves hard routing. Larger values enable best-first spill routing
+        through alternate branches ranked by their hyperplane margin.
     """
 
     def __init__(
@@ -978,16 +941,14 @@ class NNDescent:
         data,
         metric="euclidean",
         metric_kwds=None,
-        bit_metric=False,
         n_neighbors=30,
         n_trees=None,
-        angular_trees=False,
         leaf_size=None,
         pruning_degree_multiplier=1.5,
         diversify_prob=1.0,
         diversify_method="standard",
         degree_prune_aggressiveness=1.0,
-        n_search_trees=1,
+        n_search_trees=None,
         search_tree_leaf_size=None,
         max_search_tree_depth=None,
         quantization=None,
@@ -1004,6 +965,9 @@ class NNDescent:
         compressed=False,
         parallel_batch_queries=False,
         verbose=False,
+        bit_metric=False,
+        angular_trees=False,
+        search_tree_leaf_budget=1,
     ):
 
         if n_trees is None:
@@ -1023,8 +987,17 @@ class NNDescent:
         self.diversify_prob = diversify_prob
         self.diversify_method = diversify_method
         self.degree_prune_aggressiveness = degree_prune_aggressiveness
+        if n_search_trees is not None:
+            warn(
+                "n_search_trees no longer has any effect and will be removed in "
+                "the next version.",
+                FutureWarning,
+            )
         self.n_search_trees = n_search_trees
         self.search_tree_leaf_size = search_tree_leaf_size
+        if search_tree_leaf_budget < 1:
+            raise ValueError("search_tree_leaf_budget must be at least 1")
+        self.search_tree_leaf_budget = search_tree_leaf_budget
         self.max_search_tree_depth = max_search_tree_depth
         self.max_rptree_depth = max_rptree_depth
         self.max_candidates = max_candidates
@@ -1070,10 +1043,17 @@ class NNDescent:
 
         self._distance_correction = None
 
+        # Dense cosine is computed as a dot product on unit-normalized data, which
+        # lets it share the fast dot-product kernels.
+        self._normalized_data = metric in ("dot", "direct_cosine") or (
+            metric == "cosine" and not issparse(data)
+        )
+
         self._set_distance_func()
 
         if metric in (
             "cosine",
+            "direct_cosine",
             "dot",
             "correlation",
             "dice",
@@ -1098,7 +1078,7 @@ class NNDescent:
             else:
                 self._bit_trees = False
 
-        if metric == "dot":
+        if self._normalized_data:
             data = normalize(data, norm="l2", copy=copy_on_normalize)
             self._raw_data = data
 
@@ -1112,22 +1092,17 @@ class NNDescent:
         for i in range(10):
             _ = tau_rand_int(self.search_rng_state)
 
+        # Set threading constraints (the forest build is numba-parallel too)
+        self._original_num_threads = numba.get_num_threads()
+        if self.n_jobs != -1 and self.n_jobs is not None:
+            numba.set_num_threads(self.n_jobs)
+
         if self.tree_init:
             if verbose:
                 print(ts(), "Building RP forest with", str(n_trees), "trees")
-            self._rp_forest = make_forest(
-                data,
-                n_neighbors,
-                n_trees,
-                leaf_size,
-                self.rng_state,
-                current_random_state,
-                self.n_jobs,
-                self._angular_trees,
-                self._bit_trees,
-                max_depth=self.max_rptree_depth,
+            leaf_array = self._build_init_forest(
+                data, n_trees, self.rng_state, current_random_state
             )
-            leaf_array = rptree_leaf_array(self._rp_forest)
         else:
             self._rp_forest = None
             leaf_array = np.array([[-1]])
@@ -1137,11 +1112,6 @@ class NNDescent:
         else:
             effective_max_candidates = self.max_candidates
 
-        # Set threading constraints
-        self._original_num_threads = numba.get_num_threads()
-        if self.n_jobs != -1 and self.n_jobs is not None:
-            numba.set_num_threads(self.n_jobs)
-
         if isspmatrix_csr(self._raw_data) or isinstance(self._raw_data, csr_array):
 
             self._is_sparse = True
@@ -1149,39 +1119,10 @@ class NNDescent:
             if not self._raw_data.has_sorted_indices:
                 self._raw_data.sort_indices()
 
-            if metric in sparse.sparse_named_distances:
-                if metric in sparse.sparse_fast_distance_alternatives:
-                    _distance_func = sparse.sparse_fast_distance_alternatives[metric][
-                        "dist"
-                    ]
-                    self._distance_correction = (
-                        sparse.sparse_fast_distance_alternatives[metric]["correction"]
-                    )
-                else:
-                    _distance_func = sparse.sparse_named_distances[metric]
-            elif callable(metric):
-                _distance_func = metric
-            else:
-                raise ValueError(
-                    "Metric {} not supported for sparse data".format(metric)
-                )
-
             if metric in sparse.sparse_need_n_features:
                 metric_kwds["n_features"] = self._raw_data.shape[1]
             self._dist_args = tuple(metric_kwds.values())
-
-            # Create a partial function for distances with arguments
-            if len(self._dist_args) > 0:
-
-                dist_args = self._dist_args
-
-                @numba.njit()
-                def _partial_dist_func(ind1, data1, ind2, data2):
-                    return _distance_func(ind1, data1, ind2, data2, *dist_args)
-
-                self._distance_func = _partial_dist_func
-            else:
-                self._distance_func = _distance_func
+            self._set_sparse_distance_func()
 
             if init_graph is None:
                 _init_graph = EMPTY_GRAPH
@@ -1257,6 +1198,7 @@ class NNDescent:
                 init_graph=_init_graph,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
         if np.any(self._neighbor_graph[0] < 0):
@@ -1267,6 +1209,81 @@ class NNDescent:
             )
 
         numba.set_num_threads(self._original_num_threads)
+
+    def _build_init_forest(self, data, n_trees, rng_state, random_state):
+        """Build the NN-descent initialisation forest and return its leaf array."""
+        if self._bit_trees:
+            self._rp_forest = make_forest(
+                data,
+                self.n_neighbors,
+                n_trees,
+                self.leaf_size,
+                rng_state,
+                random_state,
+                self.n_jobs,
+                self._angular_trees,
+                self._bit_trees,
+                max_depth=self.max_rptree_depth,
+            )
+            return rptree_leaf_array(self._rp_forest)
+
+        # NN-descent only needs the forest's leaves, and the search tree is built
+        # separately in prepare(), so build a leaf-only forest breadth-first
+        # across all trees (parallel within each tree).
+        if hasattr(data, "indptr") and not data.has_sorted_indices:
+            data.sort_indices()
+        forest_leaf_size = (
+            self.leaf_size
+            if self.leaf_size is not None
+            else max(60, min(256, 5 * int(self.n_neighbors)))
+        )
+        leaf_array = make_hybrid_leaf_array(
+            data,
+            n_trees,
+            forest_leaf_size,
+            int(random_state.randint(0, 2**62, dtype=np.int64)),
+            angular=self._angular_trees,
+            max_depth=self.max_rptree_depth,
+        )
+        # Only the leaves are kept; prepare() checks for a construction forest
+        # before building its graph-informed search tree.
+        self._rp_forest = leaf_array
+        return leaf_array
+
+    def _set_sparse_distance_func(self):
+        metric = self.metric
+        if metric in sparse.sparse_named_distances:
+            if metric in sparse.sparse_fast_distance_alternatives:
+                _distance_func = sparse.sparse_fast_distance_alternatives[metric][
+                    "dist"
+                ]
+                self._distance_correction = sparse.sparse_fast_distance_alternatives[
+                    metric
+                ]["correction"]
+            else:
+                _distance_func = sparse.sparse_named_distances[metric]
+        elif callable(metric):
+            _distance_func = metric
+        else:
+            raise ValueError("Metric {} not supported for sparse data".format(metric))
+
+        # Create a partial function for distances with arguments
+        if len(self._dist_args) > 0:
+            dist_args = self._dist_args
+
+            @numba.njit()
+            def _partial_dist_func(ind1, data1, ind2, data2):
+                return _distance_func(ind1, data1, ind2, data2, *dist_args)
+
+            self._distance_func = _partial_dist_func
+        else:
+            self._distance_func = _distance_func
+
+    def _uses_normalized_data(self):
+        # Indexes pickled before this attribute existed only normalized dot data.
+        return getattr(
+            self, "_normalized_data", self.metric in ("dot", "direct_cosine")
+        )
 
     def _set_distance_func(self):
         self._is_proxy_distance = False
@@ -1288,6 +1305,8 @@ class NNDescent:
                 ]["correction"]
             else:
                 _distance_func = pynnd_dist.named_distances[self.metric]
+            if self.metric == "cosine" and self._uses_normalized_data():
+                _distance_func = pynnd_dist.alternative_dot
         else:
             raise ValueError("Metric is neither callable, " + "nor a recognised string")
 
@@ -1314,6 +1333,14 @@ class NNDescent:
         result = self.__dict__.copy()
         if hasattr(self, "_rp_forest"):
             del result["_rp_forest"]
+        # Rebuilt by __setstate__ (and not picklable when it wraps the cached
+        # search function)
+        result.pop("_search_function", None)
+        result.pop("_query_finisher_fn", None)
+        result.pop("_query_ones", None)
+        result.pop("_fast_plan", None)
+        if "_query_workspace" in result:
+            del result["_query_workspace"]
         result["_search_forest"] = tuple(
             [denumbaify_tree(tree) for tree in self._search_forest]
         )
@@ -1322,6 +1349,13 @@ class NNDescent:
     def __setstate__(self, d):
         self.__dict__ = d
         self._set_distance_func()
+        if self._is_sparse:
+            # _set_distance_func only knows the dense distances
+            self._set_sparse_distance_func()
+        if self.quantization is not None:
+            # _set_distance_func resets the proxy state that prepare() set up
+            self._is_proxy_distance = True
+            self._true_distance_func = self._distance_func
         self._search_forest = tuple(
             [renumbaify_tree(tree) for tree in d["_search_forest"]]
         )
@@ -1357,7 +1391,7 @@ class NNDescent:
                     rp_forest = make_forest(
                         self._raw_data,
                         self.n_neighbors,
-                        self.n_search_trees,
+                        1,
                         search_leaf_size,
                         self.rng_state,
                         current_random_state,
@@ -1374,79 +1408,26 @@ class NNDescent:
                 else:
                     self._search_forest = []
             else:
-                # Build a graph-informed hub tree that minimizes edge cuts
+                # Build the graph-informed hub search tree (in parallel)
                 if self.verbose:
                     print(ts(), "Building hub-based search tree")
 
-                if self._is_sparse:
-                    # Sparse data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_sparse_hub_tree(
-                        self._raw_data.indices,
-                        self._raw_data.indptr,
-                        self._raw_data.data,
-                        self._neighbor_graph[0],
-                        self.rng_state,
-                        leaf_size=search_leaf_size,
-                        angular=self._angular_trees,
-                        max_depth=search_tree_depth,
-                    )
-                    del self._rp_forest
-                    self._search_forest = [
-                        convert_tree_format(
-                            gi_tree,
-                            self._raw_data.shape[0],
-                            self._raw_data.indptr.shape[0] - 1,
-                        )
-                    ]
-                elif getattr(self, "_bit_trees", False):
-                    # Bit-packed data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_bit_hub_tree(
-                        self._raw_data,
-                        self._neighbor_graph[0],
-                        self.rng_state,
-                        leaf_size=search_leaf_size,
-                        max_depth=search_tree_depth,
-                    )
-                    del self._rp_forest
-                    self._search_forest = [
-                        convert_tree_format(
-                            gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
-                        )
-                    ]
-                elif self.quantization == "binary" and hasattr(self, "_quantized_data"):
-                    # Quantized binary data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_bit_hub_tree(
-                        self._quantized_data,
-                        self._neighbor_graph[0],
-                        self.rng_state,
-                        leaf_size=search_leaf_size,
-                        max_depth=search_tree_depth,
-                    )
-                    del self._rp_forest
-                    self._search_forest = [
-                        convert_tree_format(
-                            gi_tree,
-                            self._quantized_data.shape[0],
-                            self._quantized_data.shape[1],
-                        )
-                    ]
+                if self.quantization == "binary" and hasattr(self, "_quantized_data"):
+                    tree_data = self._quantized_data
                     self._bit_trees = True
                 else:
-                    # Dense data - use simplified hub tree (faster, better quality)
-                    gi_tree = make_hub_tree(
-                        self._raw_data,
+                    tree_data = self._raw_data
+                del self._rp_forest
+                self._search_forest = [
+                    make_hub_search_tree(
+                        tree_data,
                         self._neighbor_graph[0],
-                        self.rng_state,
                         leaf_size=search_leaf_size,
-                        angular=self._angular_trees,
                         max_depth=search_tree_depth,
+                        angular=self._angular_trees and not self._bit_trees,
+                        seed=int(self.rng_state[0]),
                     )
-                    del self._rp_forest
-                    self._search_forest = [
-                        convert_tree_format(
-                            gi_tree, self._raw_data.shape[0], self._raw_data.shape[1]
-                        )
-                    ]
+                ]
 
         nnz_pre_diversify = np.sum(self._neighbor_graph[0] >= 0)
         if self._is_sparse:
@@ -1499,122 +1480,46 @@ class NNDescent:
             else:
                 # Standard diversification
                 if self.compressed:
-                    diversified_rows, diversified_data = diversify(
-                        self._neighbor_graph[0],
-                        self._neighbor_graph[1],
-                        self._raw_data,
-                        self._distance_func,
-                        self.rng_state,
-                        self.diversify_prob,
+                    rows, dists = self._neighbor_graph
+                else:
+                    rows = self._neighbor_graph[0].copy()
+                    dists = self._neighbor_graph[1].copy()
+                kernel = select_kernel(self._distance_func, self._raw_data)
+                if kernel == KERNEL_SQEUCLIDEAN:
+                    diversified_rows, diversified_data = diversify_squared_euclidean(
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                    )
+                elif kernel == KERNEL_ALT_DOT:
+                    diversified_rows, diversified_data = diversify_alternative_dot(
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
                     )
                 else:
                     diversified_rows, diversified_data = diversify(
-                        self._neighbor_graph[0].copy(),
-                        self._neighbor_graph[1].copy(),
+                        rows,
+                        dists,
                         self._raw_data,
                         self._distance_func,
                         self.rng_state,
                         self.diversify_prob,
                     )
-
-        self._search_graph = coo_array(
-            (self._raw_data.shape[0], self._raw_data.shape[0]), dtype=np.float32
-        )
 
         # Preserve any distance 0 points
         diversified_data[diversified_data == 0.0] = FLOAT32_EPS
 
-        self._search_graph.row = np.repeat(
-            np.arange(diversified_rows.shape[0], dtype=np.int32),
-            diversified_rows.shape[1],
+        # Union of forward and reverse edges, without self loops, degree pruned.
+        # (The forward rows are already diversified; a further "reverse"
+        # diversification pass was effectively a no-op and has been dropped.)
+        max_degree = int(np.round(self.prune_degree_multiplier * self.n_neighbors))
+        graph_indptr, graph_indices, self._min_distance = build_search_graph(
+            diversified_rows, diversified_data, max_degree
         )
-        self._search_graph.col = diversified_rows.ravel()
-        self._search_graph.data = diversified_data.ravel()
-
-        # Get rid of any -1 index entries
-        self._search_graph = self._search_graph.tocsr()
-        self._search_graph.data[self._search_graph.indices == -1] = 0.0
-        self._search_graph.eliminate_zeros()
-
-        self._min_distance = np.min(self._search_graph.data)
 
         if self.verbose:
             print(
                 ts(),
-                "Forward diversification reduced edges from {} to {}".format(
-                    nnz_pre_diversify, self._search_graph.nnz
-                ),
-            )
-
-        # Reverse graph
-        pre_reverse_diversify_nnz = self._search_graph.nnz
-        reverse_graph = self._search_graph.transpose()
-        if self._is_sparse:
-            sparse.diversify_csr(
-                reverse_graph.indptr,
-                reverse_graph.indices,
-                reverse_graph.data,
-                self._raw_data.indptr,
-                self._raw_data.indices,
-                self._raw_data.data,
-                self._distance_func,
-                self.rng_state,
-                self.diversify_prob,
-            )
-        elif self.diversify_method == "degree_aware":
-            diversify_csr_degree_aware(
-                reverse_graph.indptr,
-                reverse_graph.indices,
-                reverse_graph.data,
-                self._raw_data,
-                self._distance_func,
-                self.rng_state,
-                self.n_neighbors,  # max_degree
-                self.degree_prune_aggressiveness,
-                self.diversify_prob,
-            )
-        else:
-            diversify_csr(
-                reverse_graph.indptr,
-                reverse_graph.indices,
-                reverse_graph.data,
-                self._raw_data,
-                self._distance_func,
-                self.rng_state,
-                self.diversify_prob,
-            )
-        reverse_graph.eliminate_zeros()
-
-        if self.verbose:
-            print(
-                ts(),
-                "Reverse diversification reduced edges from {} to {}".format(
-                    pre_reverse_diversify_nnz, reverse_graph.nnz
-                ),
-            )
-        reverse_graph = reverse_graph.tocsr()
-        reverse_graph.sort_indices()
-        self._search_graph = self._search_graph.tocsr()
-        self._search_graph.sort_indices()
-        self._search_graph = self._search_graph.maximum(reverse_graph).tocsr()
-
-        # Eliminate the diagonal
-        self._search_graph.setdiag(0.0)
-        self._search_graph.eliminate_zeros()
-
-        pre_prune_nnz = self._search_graph.nnz
-        self._search_graph = degree_prune(
-            self._search_graph,
-            int(np.round(self.prune_degree_multiplier * self.n_neighbors)),
-        )
-        self._search_graph.eliminate_zeros()
-        self._search_graph = (self._search_graph != 0).astype(np.uint8)
-
-        if self.verbose:
-            print(
-                ts(),
-                "Degree pruning reduced edges from {} to {}".format(
-                    pre_prune_nnz, self._search_graph.nnz
+                "Search graph has {} edges after symmetrisation and degree "
+                "pruning (from {} forward edges)".format(
+                    graph_indices.shape[0], nnz_pre_diversify
                 ),
             )
 
@@ -1628,29 +1533,41 @@ class NNDescent:
 
         if self.tree_init:
             self._vertex_order = self._search_forest[0].indices
-            row_ordered_graph = self._search_graph[self._vertex_order, :].tocsc()
-            self._search_graph = row_ordered_graph[:, self._vertex_order]
-            self._search_graph = self._search_graph.tocsr()
-            self._search_graph.sort_indices()
+            graph_indptr, graph_indices = permute_graph(
+                graph_indptr, graph_indices, self._vertex_order
+            )
 
             if self._is_sparse:
                 self._raw_data = self._raw_data[self._vertex_order, :]
             else:
-                self._raw_data = np.ascontiguousarray(
-                    self._raw_data[self._vertex_order, :]
-                )
+                self._raw_data = permute_rows(self._raw_data, self._vertex_order)
                 if hasattr(self, "_quantized_data"):
-                    self._quantized_data = np.ascontiguousarray(
-                        self._quantized_data[self._vertex_order, :]
+                    self._quantized_data = permute_rows(
+                        self._quantized_data, self._vertex_order
+                    )
+                if hasattr(self, "_quantized_inv_norms"):
+                    self._quantized_inv_norms = np.ascontiguousarray(
+                        self._quantized_inv_norms[self._vertex_order]
                     )
 
             tree_order = np.argsort(self._vertex_order)
             self._search_forest = tuple(
                 resort_tree_indices(tree, tree_order)
-                for tree in self._search_forest[: self.n_search_trees]
+                for tree in self._search_forest[:1]
             )
         else:
             self._vertex_order = np.arange(self._raw_data.shape[0])
+
+        n_vertices = self._raw_data.shape[0]
+        self._search_graph = csr_array(
+            (
+                np.ones(graph_indices.shape[0], dtype=np.uint8),
+                graph_indices,
+                graph_indptr,
+            ),
+            shape=(n_vertices, n_vertices),
+        )
+        self._search_graph.has_sorted_indices = True
 
         if self.compressed:
             if self.verbose:
@@ -1661,16 +1578,111 @@ class NNDescent:
 
         numba.set_num_threads(self._original_num_threads)
 
+    def _init_cached_search_function(self):
+        """Use the shared, disk-cached search function where it applies.
+
+        Returns True if the cached search function was installed, in which case
+        no per-index compilation is needed.
+        """
+        if (
+            self.quantization is not None
+            or not self.tree_init
+            or self._bit_trees
+            or self._is_sparse
+        ):
+            return False
+        data = self._raw_data
+        if not (
+            isinstance(data, np.ndarray)
+            and data.dtype == np.float32
+            and data.ndim == 2
+            and data.flags.c_contiguous
+        ):
+            return False
+        kernel = select_kernel(self._distance_func, data)
+        if kernel == 0:
+            return False
+
+        angular_query = self.metric in ("cosine", "direct_cosine", "dot")
+        self._search_function = make_cached_search_function(
+            data,
+            self._search_graph.indptr,
+            self._search_graph.indices,
+            self._search_forest,
+            self.search_tree_leaf_budget,
+            self.n_neighbors,
+            self._min_distance,
+            angular_query,
+            angular_query,
+            kernel,
+            self.parallel_batch_queries,
+        )
+        self._uses_cached_search = True
+        self._deheap_function = (
+            deheap_sort_parallel if self.parallel_batch_queries else deheap_sort_serial
+        )
+        if hasattr(rerank, "py_func"):
+            self._rerank_function = numba.njit(
+                parallel=self.parallel_batch_queries, fastmath=True
+            )(rerank.py_func)
+        else:
+            self._rerank_function = rerank
+
+        # Make sure everything is compiled (or loaded from cache) up front
+        inds, dists, _ = self._search_function(
+            data[:1],
+            data[:1],
+            np.ones(1, dtype=np.float32),
+            make_heap(1, 5),
+            5,
+            0.0,
+            self._visited,
+            False,
+            self.search_rng_state,
+        )
+        _ = self._deheap_function(inds, dists)
+        return True
+
     def _init_search_function(self):
 
         if self.verbose:
             print(ts(), "Building and compiling search function")
 
+        # The shared, disk-cached search function is used unless
+        # prepare(compile_search=True) asked for a specialised one; this also
+        # covers query() building the search function, and indexes pickled
+        # before this option existed.
+        if not getattr(self, "_compile_search", False):
+            if self._init_cached_search_function():
+                self._build_fast_query_plan()
+                return
+        self._uses_cached_search = False
+
         if self.tree_init:
-            tree_hyperplanes = self._search_forest[0].hyperplanes
-            tree_offsets = self._search_forest[0].offsets
-            tree_indices = self._search_forest[0].indices
-            tree_children = self._search_forest[0].children
+            n_search_trees = len(self._search_forest)
+            max_tree_nodes = max(tree.children.shape[0] for tree in self._search_forest)
+            tree_dimension = self._search_forest[0].hyperplanes.shape[1]
+            tree_hyperplanes = np.zeros(
+                (n_search_trees, max_tree_nodes, tree_dimension),
+                dtype=self._search_forest[0].hyperplanes.dtype,
+            )
+            tree_offsets = np.zeros(
+                (n_search_trees, max_tree_nodes),
+                dtype=self._search_forest[0].offsets.dtype,
+            )
+            tree_children = np.full(
+                (n_search_trees, max_tree_nodes, 2), -1, dtype=np.int32
+            )
+            tree_indices = np.empty(
+                (n_search_trees, self._raw_data.shape[0]), dtype=np.int32
+            )
+
+            for tree_num, tree in enumerate(self._search_forest):
+                n_nodes = tree.children.shape[0]
+                tree_hyperplanes[tree_num, :n_nodes] = tree.hyperplanes
+                tree_offsets[tree_num, :n_nodes] = tree.offsets
+                tree_children[tree_num, :n_nodes] = tree.children
+                tree_indices[tree_num] = tree.indices
 
             if self._bit_trees:
 
@@ -1678,6 +1690,7 @@ class NNDescent:
                     [
                         numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
                             numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
+                            numba.types.int32,
                             numba.types.Array(
                                 numba.types.int64, 1, "C", readonly=False
                             ),
@@ -1685,18 +1698,21 @@ class NNDescent:
                     ],
                     locals={"node": numba.types.uint32, "side": numba.types.boolean},
                 )
-                def tree_search_closure(point, rng_state):
+                def tree_search_closure(point, tree_num, rng_state):
                     node = 0
-                    while tree_children[node, 0] > 0:
+                    while tree_children[tree_num, node, 0] > 0:
                         side = select_side_bit(
-                            tree_hyperplanes[node], tree_offsets[node], point, rng_state
+                            tree_hyperplanes[tree_num, node],
+                            tree_offsets[tree_num, node],
+                            point,
+                            rng_state,
                         )
                         if side == 0:
-                            node = tree_children[node, 0]
+                            node = tree_children[tree_num, node, 0]
                         else:
-                            node = tree_children[node, 1]
+                            node = tree_children[tree_num, node, 1]
 
-                    return -tree_children[node]
+                    return -tree_children[tree_num, node]
 
             else:
 
@@ -1706,6 +1722,7 @@ class NNDescent:
                             numba.types.Array(
                                 numba.types.float32, 1, "C", readonly=True
                             ),
+                            numba.types.int32,
                             numba.types.Array(
                                 numba.types.int64, 1, "C", readonly=False
                             ),
@@ -1713,28 +1730,103 @@ class NNDescent:
                     ],
                     locals={"node": numba.types.uint32, "side": numba.types.boolean},
                 )
-                def tree_search_closure(point, rng_state):
+                def tree_search_closure(point, tree_num, rng_state):
                     node = 0
-                    while tree_children[node, 0] > 0:
+                    while tree_children[tree_num, node, 0] > 0:
                         side = select_side(
-                            tree_hyperplanes[node], tree_offsets[node], point, rng_state
+                            tree_hyperplanes[tree_num, node],
+                            tree_offsets[tree_num, node],
+                            point,
+                            rng_state,
                         )
                         if side == 0:
-                            node = tree_children[node, 0]
+                            node = tree_children[tree_num, node, 0]
                         else:
-                            node = tree_children[node, 1]
+                            node = tree_children[tree_num, node, 1]
 
-                    return -tree_children[node]
+                    return -tree_children[tree_num, node]
 
             self._tree_search = tree_search_closure
+
+            if self.search_tree_leaf_budget > 1 and self._bit_trees:
+                raise ValueError(
+                    "search_tree_leaf_budget > 1 is currently supported for dense "
+                    "floating-point search trees only"
+                )
+
+            tree_leaf_budget = self.search_tree_leaf_budget
+            max_tree_nodes = tree_children.shape[1]
+
+            @numba.njit(fastmath=True)
+            def tree_spill_search_closure(point, rng_state, leaves):
+                """Return up to ``tree_leaf_budget`` leaves by margin-ranked spill."""
+                frontier_priorities = np.empty(max_tree_nodes, dtype=np.float32)
+                frontier_nodes = np.empty(max_tree_nodes, dtype=np.int32)
+                frontier_size = 1
+                frontier_priorities[0] = 0.0
+                frontier_nodes[0] = 0
+                leaf_count = 0
+
+                while leaf_count < tree_leaf_budget and frontier_size > 0:
+                    best = 0
+                    for frontier_index in range(1, frontier_size):
+                        if (
+                            frontier_priorities[frontier_index]
+                            < frontier_priorities[best]
+                        ):
+                            best = frontier_index
+
+                    priority = frontier_priorities[best]
+                    node = frontier_nodes[best]
+                    frontier_size -= 1
+                    frontier_priorities[best] = frontier_priorities[frontier_size]
+                    frontier_nodes[best] = frontier_nodes[frontier_size]
+
+                    if tree_children[0, node, 0] <= 0:
+                        leaves[leaf_count, 0] = -tree_children[0, node, 0]
+                        leaves[leaf_count, 1] = -tree_children[0, node, 1]
+                        leaf_count += 1
+                        continue
+
+                    margin = tree_offsets[0, node]
+                    for dimension in range(point.shape[0]):
+                        margin += (
+                            tree_hyperplanes[0, node, dimension] * point[dimension]
+                        )
+
+                    if abs(margin) < 1.0e-8:
+                        primary_side = np.abs(tau_rand_int(rng_state)) % 2
+                    elif margin > 0.0:
+                        primary_side = 0
+                    else:
+                        primary_side = 1
+
+                    alternate_side = 1 - primary_side
+                    frontier_priorities[frontier_size] = priority
+                    frontier_nodes[frontier_size] = tree_children[0, node, primary_side]
+                    frontier_size += 1
+                    frontier_priorities[frontier_size] = max(priority, abs(margin))
+                    frontier_nodes[frontier_size] = tree_children[
+                        0, node, alternate_side
+                    ]
+                    frontier_size += 1
+
+                return leaf_count
+
         else:
 
             @numba.njit()
-            def tree_search_closure(point, rng_state):
+            def tree_search_closure(point, tree_num, rng_state):
                 return (0, 0)
 
             self._tree_search = tree_search_closure
-            tree_indices = np.zeros(1, dtype=np.int64)
+            tree_indices = np.zeros((1, 1), dtype=np.int32)
+            n_search_trees = 0
+            tree_leaf_budget = 1
+
+            @numba.njit
+            def tree_spill_search_closure(point, rng_state, leaves):
+                return 0
 
         if self.quantization is not None:
             data = self._quantized_data
@@ -1742,6 +1834,26 @@ class NNDescent:
         else:
             data = self._raw_data
             dist = self._distance_func
+
+        if self.quantization == "int8":
+            data_inv_norms = self._quantized_inv_norms
+            if self.metric == "cosine":
+                int8_dist = pynnd_dist.quantized_int8_alternative_cosine_with_norms
+            elif self.metric == "direct_cosine":
+                int8_dist = pynnd_dist.quantized_int8_direct_cosine_with_norms
+            else:
+                int8_dist = pynnd_dist.quantized_int8_alternative_dot_with_norms
+
+            @numba.njit(inline="always", fastmath=True)
+            def distance_func(a, b, inv_norm_a, inv_norm_b):
+                return int8_dist(a, b, inv_norm_a, inv_norm_b)
+
+        else:
+            data_inv_norms = np.ones(data.shape[0], dtype=np.float32)
+
+            @numba.njit(inline="always", fastmath=True)
+            def distance_func(a, b, inv_norm_a, inv_norm_b):
+                return dist(a, b)
 
         indptr = self._search_graph.indptr
         indices = self._search_graph.indices
@@ -1755,17 +1867,34 @@ class NNDescent:
         elif self.quantization == "uint8" or self.quantization == "uint4":
             data_type = numba.types.uint8[::1]
             query_data_type = numba.types.float32[::1]
+        elif self.quantization == "int8":
+            data_type = numba.types.int8[::1]
+            query_data_type = numba.types.int8[::1]
         else:
             data_type = numba.types.float32[::1]
             query_data_type = numba.types.float32[::1]
 
-        if self.metric in (
+        if self.quantization == "int8":
+            # The signed codes are scale-invariant under cosine correction.
+            # Normalizing them here would both be redundant and overflow int8.
+            normalize_query = False
+        elif self.metric in (
             "cosine",
+            "direct_cosine",
             "dot",
         ):
             normalize_query = True
         else:
             normalize_query = False
+
+        tree_normalize_query = self.metric in ("cosine", "direct_cosine", "dot")
+        bit_trees = self._bit_trees
+
+        # Batched 1x4 distances during graph traversal (dense float32 only).
+        if self.quantization is None:
+            search_kernel = select_kernel(dist, data)
+        else:
+            search_kernel = 0
 
         @numba.njit(
             fastmath=True,
@@ -1790,9 +1919,18 @@ class NNDescent:
             },
             parallel=self.parallel_batch_queries,
         )
-        def search_closure(query_points, k, epsilon, visited, rng_state):
+        def search_closure(
+            query_points,
+            tree_query_points,
+            query_inv_norms,
+            result,
+            k,
+            epsilon,
+            visited,
+            query_is_normalized,
+            rng_state,
+        ):
 
-            result = make_heap(query_points.shape[0], k)
             internal_rng_state = np.copy(rng_state)
 
             for i in numba.prange(query_points.shape[0]):
@@ -1803,7 +1941,12 @@ class NNDescent:
                     visited_nodes = visited
                     visited_nodes[:] = 0
 
-                if normalize_query:
+                heap_priorities = result[1][i]
+                heap_indices = result[0][i]
+                heap_priorities[:] = np.inf
+                heap_indices[:] = -1
+
+                if normalize_query and not query_is_normalized:
                     norm = np.sqrt((query_points[i] ** 2).sum())
                     if norm > 0.0:
                         current_query = query_points[i] / norm
@@ -1812,24 +1955,77 @@ class NNDescent:
                 else:
                     current_query = query_points[i]
 
-                heap_priorities = result[1][i]
-                heap_indices = result[0][i]
+                query_inv_norm = query_inv_norms[i]
+
+                if bit_trees:
+                    tree_current_query = current_query
+                elif tree_normalize_query:
+                    # Zero queries have no defined angle; searching with them
+                    # would visit the whole graph, so leave their row empty.
+                    tree_norm = np.sqrt((tree_query_points[i] ** 2).sum())
+                    if tree_norm == 0.0:
+                        continue
+                    if query_is_normalized:
+                        tree_current_query = tree_query_points[i]
+                    else:
+                        tree_current_query = tree_query_points[i] / tree_norm
+                else:
+                    tree_current_query = tree_query_points[i]
                 seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
                 # heapq.heapify(seed_set)
 
-                ############ Init from Tree ################
-                index_bounds = tree_search_closure(current_query, internal_rng_state)
-                candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
+                ############ Init from all retained trees ################
+                n_initial_points = 0
+                if tree_leaf_budget == 1:
+                    for tree_num in range(n_search_trees):
+                        index_bounds = tree_search_closure(
+                            tree_current_query, tree_num, internal_rng_state
+                        )
+                        candidate_indices = tree_indices[
+                            tree_num, index_bounds[0] : index_bounds[1]
+                        ]
 
-                n_initial_points = candidate_indices.shape[0]
-
-                for j in range(n_initial_points):
-                    candidate = candidate_indices[j]
-                    d = np.float32(dist(current_query, data[candidate]))
-                    # indices are guaranteed different
-                    simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
-                    mark_visited(visited_nodes, candidate)
+                        for j in range(candidate_indices.shape[0]):
+                            candidate = candidate_indices[j]
+                            if check_and_mark_visited(visited_nodes, candidate) == 0:
+                                d = np.float32(
+                                    distance_func(
+                                        current_query,
+                                        data[candidate],
+                                        query_inv_norm,
+                                        data_inv_norms[candidate],
+                                    )
+                                )
+                                simple_heap_push(
+                                    heap_priorities, heap_indices, d, candidate
+                                )
+                                heapq.heappush(seed_set, (d, candidate))
+                                n_initial_points += 1
+                else:
+                    leaf_bounds = np.empty((tree_leaf_budget, 2), dtype=np.int32)
+                    leaf_count = tree_spill_search_closure(
+                        tree_current_query, internal_rng_state, leaf_bounds
+                    )
+                    for leaf_num in range(leaf_count):
+                        candidate_indices = tree_indices[
+                            0, leaf_bounds[leaf_num, 0] : leaf_bounds[leaf_num, 1]
+                        ]
+                        for j in range(candidate_indices.shape[0]):
+                            candidate = candidate_indices[j]
+                            if check_and_mark_visited(visited_nodes, candidate) == 0:
+                                d = np.float32(
+                                    distance_func(
+                                        current_query,
+                                        data[candidate],
+                                        query_inv_norm,
+                                        data_inv_norms[candidate],
+                                    )
+                                )
+                                simple_heap_push(
+                                    heap_priorities, heap_indices, d, candidate
+                                )
+                                heapq.heappush(seed_set, (d, candidate))
+                                n_initial_points += 1
 
                 ############ Random samples if needed ################
                 n_random_samples = min(k, n_neighbors) - n_initial_points
@@ -1840,7 +2036,14 @@ class NNDescent:
                             np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
                         )
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
-                            d = np.float32(dist(current_query, data[candidate]))
+                            d = np.float32(
+                                distance_func(
+                                    current_query,
+                                    data[candidate],
+                                    query_inv_norm,
+                                    data_inv_norms[candidate],
+                                )
+                            )
                             simple_heap_push(
                                 heap_priorities, heap_indices, d, candidate
                             )
@@ -1853,26 +2056,74 @@ class NNDescent:
 
                 # Find smallest seed point
                 d_vertex, vertex = heapq.heappop(seed_set)
+                pending = np.empty(4, dtype=np.int32)
+                pending_d = np.empty(4, dtype=np.float32)
 
                 while d_vertex < distance_bound:
-
-                    for j in range(indptr[vertex], indptr[vertex + 1]):
-
-                        candidate = indices[j]
-
-                        if check_and_mark_visited(visited_nodes, candidate) == 0:
-
-                            d = np.float32(dist(current_query, data[candidate]))
-
+                    if search_kernel != 0:
+                        # Collect unvisited neighbours four at a time and compute
+                        # their distances together, then consider them in the
+                        # original order so the search path is unchanged.
+                        n_pending = 0
+                        for j in range(indptr[vertex], indptr[vertex + 1]):
+                            candidate = indices[j]
+                            if check_and_mark_visited(visited_nodes, candidate) == 0:
+                                pending[n_pending] = candidate
+                                n_pending += 1
+                                if n_pending == 4:
+                                    four_distances(
+                                        current_query,
+                                        data,
+                                        pending,
+                                        pending_d,
+                                        search_kernel,
+                                    )
+                                    for r in range(4):
+                                        d = pending_d[r]
+                                        if d < distance_bound:
+                                            simple_heap_push(
+                                                heap_priorities,
+                                                heap_indices,
+                                                d,
+                                                pending[r],
+                                            )
+                                            heapq.heappush(seed_set, (d, pending[r]))
+                                            distance_bound = heap_priorities[0] + (
+                                                epsilon
+                                                * (heap_priorities[0] - min_distance)
+                                            )
+                                    n_pending = 0
+                        for r in range(n_pending):
+                            d = np.float32(dist(current_query, data[pending[r]]))
                             if d < distance_bound:
                                 simple_heap_push(
-                                    heap_priorities, heap_indices, d, candidate
+                                    heap_priorities, heap_indices, d, pending[r]
                                 )
-                                heapq.heappush(seed_set, (d, candidate))
-                                # Update bound
+                                heapq.heappush(seed_set, (d, pending[r]))
                                 distance_bound = heap_priorities[0] + (
                                     epsilon * (heap_priorities[0] - min_distance)
                                 )
+                    else:
+                        for j in range(indptr[vertex], indptr[vertex + 1]):
+                            candidate = indices[j]
+                            if check_and_mark_visited(visited_nodes, candidate) == 0:
+                                d = np.float32(
+                                distance_func(
+                                    current_query,
+                                    data[candidate],
+                                    query_inv_norm,
+                                    data_inv_norms[candidate],
+                                )
+                            )
+                                if d < distance_bound:
+                                    simple_heap_push(
+                                        heap_priorities, heap_indices, d, candidate
+                                    )
+                                    heapq.heappush(seed_set, (d, candidate))
+                                    # Update bound
+                                    distance_bound = heap_priorities[0] + (
+                                        epsilon * (heap_priorities[0] - min_distance)
+                                    )
 
                     # find new smallest seed point
                     if len(seed_set) == 0:
@@ -1883,12 +2134,9 @@ class NNDescent:
             return result
 
         self._search_function = search_closure
-        if hasattr(deheap_sort, "py_func"):
-            self._deheap_function = numba.njit(parallel=self.parallel_batch_queries)(
-                deheap_sort.py_func
-            )
-        else:
-            self._deheap_function = deheap_sort
+        self._deheap_function = (
+            deheap_sort_parallel if self.parallel_batch_queries else deheap_sort_serial
+        )
 
         if hasattr(rerank, "py_func"):
             self._rerank_function = numba.njit(
@@ -1900,13 +2148,26 @@ class NNDescent:
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = (
             self._raw_data[:1]
-            if self.quantization != "binary"
+            if self.quantization not in ("binary", "int8")
             else self._quantized_data[:1]
         )
         inds, dists, _ = self._search_function(
-            query_data, 5, 0.0, self._visited, self.search_rng_state
+            query_data,
+            self._raw_data[:1],
+            (
+                self._quantized_inv_norms[:1]
+                if self.quantization == "int8"
+                else np.ones(1, dtype=np.float32)
+            ),
+            make_heap(1, 5),
+            5,
+            0.0,
+            self._visited,
+            False,
+            self.search_rng_state,
         )
         _ = self._deheap_function(inds, dists)
+        self._build_fast_query_plan()
 
     def _init_sparse_search_function(self):
 
@@ -1914,7 +2175,14 @@ class NNDescent:
             print(ts(), "Building and compiling sparse search function")
 
         if self.tree_init:
-            tree_hyperplanes = self._search_forest[0].hyperplanes
+            # Older indexes (and convert_tree_format) store padded hyperplanes
+            tree = self._search_forest[0]
+            if not isinstance(tree.hyperplanes, tuple):
+                tree = tree._replace(
+                    hyperplanes=sparse_hyperplanes_to_ragged(tree.hyperplanes)
+                )
+                self._search_forest = (tree,) + tuple(self._search_forest[1:])
+            plane_ptr, plane_inds, plane_vals = tree.hyperplanes
             tree_offsets = self._search_forest[0].offsets
             tree_indices = self._search_forest[0].indices
             tree_children = self._search_forest[0].children
@@ -1932,8 +2200,9 @@ class NNDescent:
             def sparse_tree_search_closure(point_inds, point_data, rng_state):
                 node = 0
                 while tree_children[node, 0] > 0:
-                    side = sparse_select_side(
-                        tree_hyperplanes[node],
+                    side = sparse_select_side_ragged(
+                        plane_inds[plane_ptr[node] : plane_ptr[node + 1]],
+                        plane_vals[plane_ptr[node] : plane_ptr[node + 1]],
                         tree_offsets[node],
                         point_inds,
                         point_data,
@@ -2122,12 +2391,9 @@ class NNDescent:
             return result
 
         self._search_function = search_closure
-        if hasattr(deheap_sort, "py_func"):
-            self._deheap_function = numba.njit(parallel=self.parallel_batch_queries)(
-                deheap_sort.py_func
-            )
-        else:
-            self._deheap_function = deheap_sort
+        self._deheap_function = (
+            deheap_sort_parallel if self.parallel_batch_queries else deheap_sort_serial
+        )
 
         # Force compilation of the search function (hardcoded k, epsilon)
         query_data = self._raw_data[:1]
@@ -2141,23 +2407,50 @@ class NNDescent:
             self.search_rng_state,
         )
         _ = self._deheap_function(inds, dists)
+        self._build_fast_query_plan()
 
     @property
     def neighbor_graph(self):
+        """The approximate k-nearest neighbor graph of the training data.
+
+        Returns
+        -------
+        indices, distances: array (n_samples, n_neighbors), array (n_samples, n_neighbors)
+            For each training point, the indices of its approximate nearest
+            neighbors and the distances to them, sorted by increasing distance.
+            Each point is listed as its own first neighbor (at distance 0). Rows
+            with fewer neighbors found are padded with -1 indices. Returns None,
+            with a warning, for compressed indexes.
+        """
         if self.compressed and not hasattr(self, "_neighbor_graph"):
             warn("Compressed indexes do not have neighbor graph information.")
             return None
         if self._distance_correction is not None:
-            result = (
-                self._neighbor_graph[0].copy(),
-                self._distance_correction(self._neighbor_graph[1]),
-            )
+            indices = self._neighbor_graph[0].copy()
+            distances = self._distance_correction(self._neighbor_graph[1])
         else:
-            result = (self._neighbor_graph[0].copy(), self._neighbor_graph[1].copy())
+            indices = self._neighbor_graph[0].copy()
+            distances = self._neighbor_graph[1].copy()
 
-        return result
+        # Re-insert self-loops at position 0 for backward compatibility.
+        # Internally, NN-descent now stores k real neighbors (no self-loops),
+        # but the public API has always returned self as the nearest neighbor.
+        # Shift all neighbors right by one (dropping the furthest) and insert self.
+        indices[:, 1:] = indices[:, :-1]
+        distances[:, 1:] = distances[:, :-1]
+        indices[:, 0] = np.arange(indices.shape[0], dtype=indices.dtype)
+        distances[:, 0] = 0.0
+
+        return (indices, distances)
 
     def compress_index(self):
+        """Prepare the index, then discard data needed only for construction.
+
+        The k-NN graph (``neighbor_graph``) and the random projection forest
+        are dropped, leaving only what is required for querying. This makes the
+        index much smaller, which is useful before pickling it, but the index
+        can no longer be updated.
+        """
         import gc
 
         self.prepare()
@@ -2171,7 +2464,37 @@ class NNDescent:
         gc.collect()
         return
 
-    def prepare(self):
+    def prepare(self, compile_search=False):
+        """Prepare the index for querying.
+
+        Builds the search tree (a graph-informed "hub" tree, built in parallel)
+        and the search graph (the k-NN graph diversified, symmetrised and
+        degree pruned), reorders the data to match the tree, and sets up the
+        search function. This is done automatically by the first ``query``, but
+        can be called explicitly to control when the cost is paid.
+
+        Parameters
+        ----------
+        compile_search: bool (optional, default=False)
+            By default, dense float32 indexes with euclidean, cosine or dot
+            metrics use a search function that is compiled once and cached on
+            disk, so preparing the index compiles nothing (the first use after
+            installation populates the cache). If True, compile a search
+            function specialised to this index instead, as earlier versions did;
+            queries are no faster, but compiling takes a second or more every
+            time an index is prepared. Other metrics and data types always use a
+            compiled, specialised search function. The choice is kept when the
+            index is pickled.
+        """
+        compile_search = bool(compile_search)
+        if (
+            hasattr(self, "_search_function")
+            and getattr(self, "_compile_search", False) != compile_search
+        ):
+            # Rebuild the search function with the requested approach
+            del self._search_function
+        self._compile_search = compile_search
+
         if self.quantization is not None:
             if self.quantization == "binary":
                 # Quantize data to binary and set bit-based distance functions
@@ -2259,6 +2582,21 @@ class NNDescent:
                     self._true_distance_func = self._distance_func
                 else:
                     raise ValueError(f"Not uint4 quantization version of {self.metric}")
+            elif self.quantization == "int8":
+                if self._is_sparse:
+                    raise ValueError("int8 quantization requires dense input data")
+                if self.metric not in pynnd_dist.quantized_distances["int8"]:
+                    raise ValueError(
+                        "int8 quantization only supports cosine, direct_cosine, and dot metrics"
+                    )
+
+                self._quantized_data = _quantize_int8_rows(self._raw_data)
+                self._quantized_inv_norms = _int8_code_inv_norms(self._quantized_data)
+                self._quantized_distance_func = pynnd_dist.quantized_distances["int8"][
+                    self.metric
+                ]
+                self._is_proxy_distance = True
+                self._true_distance_func = self._distance_func
             else:
                 raise ValueError(f"Unrecognized quantization type {self.quantization}")
 
@@ -2272,13 +2610,106 @@ class NNDescent:
                 self._init_search_function()
         return
 
-    def query(self, query_data, k=10, epsilon=0.1, proxy_beam_size=4):
+    def _ones_for_queries(self, n_queries):
+        ones = getattr(self, "_query_ones", None)
+        if ones is None or ones.shape[0] < n_queries:
+            ones = np.ones(max(n_queries, 1), dtype=np.float32)
+            self._query_ones = ones
+        return ones[:n_queries]
+
+    def _build_fast_query_plan(self):
+        """Per-index decisions for the plain dense query path, made once.
+
+        Called whenever the search function is (re)built, by
+        _init_search_function (from prepare(), and when pickling or
+        unpickling). Stores and returns ``self._fast_plan``: None when query()
+        must take the general path, or
+        ``(is_sparse, search_function, finish, search_normalizes, n_features,
+        ones_1)``.
+        ``finish`` is the compiled entry point of the finisher for this index's
+        exact argument types (the query workspace and _vertex_order), skipping
+        per-call type resolution; it is only ever called with those arrays.
+        """
+        search_function = self._search_function
+        usable = (
+            self.metric not in ("bit_hamming", "bit_jaccard")
+            and self.quantization is None
+            and not self._is_proxy_distance
+            and not self.parallel_batch_queries
+        )
+        finisher = self._query_finisher() if usable else None
+        fast = None
+        if finisher is not None:
+            heap_indices, heap_distances, _ = make_heap(1, 1)
+            finisher(heap_indices, heap_distances, self._vertex_order)  # compile
+            finish = finisher
+            try:
+                key = (
+                    numba.typeof(heap_indices),
+                    numba.typeof(heap_distances),
+                    numba.typeof(self._vertex_order),
+                )
+                finish = finisher.overloads[key].entry_point
+            except (AttributeError, KeyError, TypeError):
+                finish = finisher
+            fast = (
+                bool(self._is_sparse),
+                search_function,
+                finish,
+                bool(self._uses_normalized_data()),
+                int(self._raw_data.shape[1]),
+                np.ones(1, dtype=np.float32),
+            )
+        self._fast_plan = fast
+        return fast
+
+    def _query_finisher(self):
+        """Compiled function that sorts, maps and corrects dense query results in
+        one call, or None if this index's distance correction has no fused form."""
+        finisher = getattr(self, "_query_finisher_fn", False)
+        if finisher is False:
+            correction = self._distance_correction
+            if correction is None:
+                finisher = finish_query_no_correction
+            elif correction is np.sqrt:
+                finisher = finish_query_sqrt
+            elif correction is pynnd_dist.correct_alternative_cosine:
+                finisher = finish_query_alternative_cosine
+            elif (
+                correction is pynnd_dist.correct_alternative_jaccard
+                or correction is sparse.correct_alternative_jaccard
+            ):
+                # Same formula (1 - 2**-d) as correct_alternative_cosine
+                finisher = finish_query_alternative_cosine
+            elif correction is pynnd_dist.correct_alternative_hellinger:
+                finisher = finish_query_alternative_hellinger
+            elif correction is sparse.sparse_correct_alternative_cosine:
+                finisher = sparse.finish_query_sparse_alternative_cosine
+            elif correction is sparse.sparse_correct_alternative_hellinger:
+                finisher = sparse.finish_query_sparse_alternative_hellinger
+            else:
+                finisher = None
+            self._query_finisher_fn = finisher
+        return finisher
+
+    def query(
+        self,
+        query_data,
+        k=10,
+        epsilon=0.1,
+        proxy_beam_size=None,
+        candidate_width=None,
+        rerank_width=None,
+        return_distances=True,
+        pre_normalized=False,
+    ):
         """Query the training graph_data for the k nearest neighbors
 
         Parameters
         ----------
-        query_data: array-like, last dimension self.dim
-            An array of points to query
+        query_data: array-like of shape (n_queries, n_features)
+            The points to query; dense queries must have the same number of
+            features as the indexed data.
 
         k: integer (default = 10)
             The number of nearest neighbors to return
@@ -2289,6 +2720,32 @@ class NNDescent:
             produce more accurate nearest neighbor results at larger computational
             cost for the search. Values should be in the range 0.0 to 0.5, but
             should probably not exceed 0.3 without good reason.
+
+        proxy_beam_size: int or None (optional, default=None)
+            Backward-compatible multiplier for the proxy candidate width.
+            Ignored when ``candidate_width`` is supplied.
+
+        candidate_width: int or None (optional, default=None)
+            Absolute number of proxy candidates retained before exact reranking.
+            Only applies to proxy and quantized searches and must be at least
+            ``k``. Defaults to ``proxy_beam_size * k`` if ``proxy_beam_size`` is
+            given, otherwise ``int(1.66 * k)`` for int8 quantization and
+            ``4 * k`` for other proxy searches.
+
+        rerank_width: int or None (optional, default=None)
+            Number of proxy finalists to score with the exact distance. Defaults
+            to all proxy candidates. Set to zero to return proxy-ranked results
+            without retaining the cost of exact reranking.
+
+        return_distances: bool (optional, default=True)
+            When False, return only neighbor IDs and skip final distance
+            correction and copying. This is useful for ID-only consumers.
+
+        pre_normalized: bool (optional, default=False)
+            For ``cosine``, ``direct_cosine`` and ``dot`` on dense data, state
+            that each query row is already unit-normalized. This skips query and
+            search tree normalization. Callers are responsible for preserving the
+            unit-norm invariant; other metrics reject this option.
 
         Returns
         -------
@@ -2302,12 +2759,110 @@ class NNDescent:
             of the query points such that ``distances[i, j]`` is the distance
             from the ith query point to its jth nearest neighbor in the
             training graph_data.
+
+            If ``return_distances`` is False only ``indices`` is returned.
         """
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
 
+        # Fast path for plain dense and sparse queries; every per-index decision
+        # (including whether the index is sparse) is made once, in the plan.
+        if proxy_beam_size is None and candidate_width is None and rerank_width is None:
+            fast = getattr(self, "_fast_plan", None)
+            if fast is not None:
+                is_sparse, search_function, finish, normalizes, n_features, ones_1 = fast
+                if pre_normalized and (is_sparse or not normalizes):
+                    raise ValueError(
+                        "pre_normalized is only supported for dense cosine, direct_cosine "
+                        "and dot"
+                    )
+                if is_sparse:
+                    # CSR input with float32, finite data can be used directly;
+                    # anything else is converted and validated as before.
+                    if not (
+                        (isspmatrix_csr(query_data) or isinstance(query_data, csr_array))
+                        and query_data.dtype == np.float32
+                        and np.isfinite(query_data.data).all()
+                    ):
+                        query_data = check_array(
+                            query_data, accept_sparse="csr", dtype=np.float32
+                        )
+                        if not isspmatrix_csr(query_data) and not isinstance(
+                            query_data, csr_array
+                        ):
+                            query_data = csr_array(query_data, dtype=np.float32)
+                    if not query_data.has_sorted_indices:
+                        query_data.sort_indices()
+                    indices, dists, _ = search_function(
+                        query_data.indices,
+                        query_data.indptr,
+                        query_data.data,
+                        k,
+                        epsilon,
+                        self._visited,
+                        self.search_rng_state,
+                    )
+                else:
+                    query_data = np.asarray(query_data).astype(np.float32, order="C")
+                    if query_data.ndim != 2 or query_data.shape[1] != n_features:
+                        raise ValueError(
+                            "query_data must be a 2-D array with "
+                            f"{n_features} features, got shape {query_data.shape}"
+                        )
+                    n_queries = query_data.shape[0]
+                    workspace = getattr(self, "_query_workspace", None)
+                    if workspace is None or workspace[0].shape != (n_queries, k):
+                        workspace = make_heap(n_queries, k)
+                        self._query_workspace = workspace
+                    indices, dists, _ = search_function(
+                        query_data,
+                        query_data,
+                        ones_1 if n_queries == 1 else self._ones_for_queries(n_queries),
+                        workspace,
+                        k,
+                        epsilon,
+                        self._visited,
+                        # The search normalises the query itself unless the
+                        # caller says it already is (metrics without normalised
+                        # data neither normalise queries nor read this flag).
+                        pre_normalized,
+                        self.search_rng_state,
+                    )
+                indices, dists = finish(indices, dists, self._vertex_order)
+                if not return_distances:
+                    return indices
+                return indices, dists
+
+        normalized_data = self._uses_normalized_data()
+        if pre_normalized and (self._is_sparse or not normalized_data):
+            raise ValueError(
+                "pre_normalized is only supported for dense cosine, direct_cosine "
+                "and dot"
+            )
+
         if self._is_proxy_distance:
-            search_k = proxy_beam_size * k
+            if candidate_width is None:
+                if proxy_beam_size is not None:
+                    search_k = proxy_beam_size * k
+                elif self.quantization == "int8":
+                    search_k = int(1.66 * k)
+                else:
+                    search_k = 4 * k
+            else:
+                search_k = candidate_width
+                if search_k < k:
+                    raise ValueError("candidate_width must be at least k")
+
+            if rerank_width is None:
+                effective_rerank_width = search_k
+            else:
+                effective_rerank_width = rerank_width
+                if effective_rerank_width < 0 or effective_rerank_width > search_k:
+                    raise ValueError(
+                        "rerank_width must be between zero and candidate_width"
+                    )
+                if 0 < effective_rerank_width < k:
+                    raise ValueError("rerank_width must be zero or at least k")
         else:
             search_k = k
 
@@ -2317,6 +2872,23 @@ class NNDescent:
                 query_data = np.asarray(query_data).astype(np.uint8, order="C")
             else:
                 query_data = np.asarray(query_data).astype(np.float32, order="C")
+                if (
+                    query_data.ndim != 2
+                    or query_data.shape[1] != self._raw_data.shape[1]
+                ):
+                    raise ValueError(
+                        "query_data must be a 2-D array with "
+                        f"{self._raw_data.shape[1]} features, got shape "
+                        f"{query_data.shape}"
+                    )
+
+            # On the plain dense path the compiled search normalises each query
+            # itself; quantised and proxy-distance searches need normalised
+            # query data here.
+            plain_dense = self.quantization is None and not self._is_proxy_distance
+            search_normalizes = normalized_data and not pre_normalized and plain_dense
+            if normalized_data and not pre_normalized and not search_normalizes:
+                query_data = l2_normalize_rows(query_data)
 
             if self.quantization is not None:
                 epsilon += 1e-32  # ensure epsilon > 0 for quantized searches
@@ -2326,6 +2898,9 @@ class NNDescent:
                     )
                 elif self.quantization == "uint8" or self.quantization == "uint4":
                     proxy_query_data = query_data
+                elif self.quantization == "int8":
+                    proxy_query_data = _quantize_int8_rows(query_data)
+                    query_inv_norms = _int8_code_inv_norms(proxy_query_data)
                 else:
                     raise ValueError(
                         f"Unrecognized quantization type {self.quantization}"
@@ -2333,13 +2908,42 @@ class NNDescent:
             else:
                 proxy_query_data = query_data
 
+            if self.quantization != "int8":
+                # Only int8 searches read these; reuse one array of ones.
+                query_inv_norms = self._ones_for_queries(query_data.shape[0])
+
+            workspace_shape = (query_data.shape[0], search_k)
+            if (
+                not hasattr(self, "_query_workspace")
+                or self._query_workspace[0].shape != workspace_shape
+            ):
+                self._query_workspace = make_heap(*workspace_shape)
+
             indices, dists, _ = self._search_function(
                 proxy_query_data,
+                query_data,
+                query_inv_norms,
+                self._query_workspace,
                 search_k,
                 epsilon,
                 self._visited,
+                # query_is_normalized: whether the query arrays passed here are
+                # already unit length. That is the caller's pre_normalized,
+                # or -- on quantised and proxy-distance paths, which normalise
+                # query_data in Python above -- normalized_data. It cannot be
+                # pre_normalized alone: there the search would renormalise its
+                # query_points, which are the proxy codes (e.g. packed bits for
+                # binary quantisation), not the float query.
+                pre_normalized or (normalized_data and not search_normalizes),
                 self.search_rng_state,
             )
+            if plain_dense and not self.parallel_batch_queries:
+                finisher = self._query_finisher()
+                if finisher is not None:
+                    indices, dists = finisher(indices, dists, self._vertex_order)
+                    if not return_distances:
+                        return indices
+                    return indices, dists
         else:
             # Sparse case
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
@@ -2360,23 +2964,67 @@ class NNDescent:
 
         indices, dists = self._deheap_function(indices, dists)
 
+        reranked = False
         if self._is_proxy_distance:
-            indices, dists = rerank(
-                indices,
-                query_data,
-                self._raw_data,
-                self._true_distance_func,
-                k,
-                self._deheap_function,
-            )
+            if effective_rerank_width > 0:
+                reranked = True
+                indices, dists = rerank(
+                    indices[:, :effective_rerank_width],
+                    query_data,
+                    self._raw_data,
+                    self._true_distance_func,
+                    k,
+                    self._deheap_function,
+                )
+            else:
+                indices = indices[:, :k]
+                dists = dists[:, :k]
 
         # Sort to input graph_data order
         indices = self._vertex_order[indices]
 
+        if not return_distances:
+            return indices
+
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)
+        elif not self._is_sparse and not reranked:
+            # Dense searches return views into the reused query workspace; copy
+            # so results survive later queries.
+            dists = dists.copy()
 
         return indices, dists
+
+    def query_indices(
+        self,
+        query_data,
+        k=10,
+        epsilon=0.1,
+        proxy_beam_size=None,
+        candidate_width=None,
+        rerank_width=None,
+        pre_normalized=False,
+    ):
+        """Query for the k nearest neighbors, returning only their indices.
+
+        Equivalent to ``query(..., return_distances=False)``; see ``query`` for
+        the parameters.
+
+        Returns
+        -------
+        indices: array of shape (n_queries, k)
+            The indices of the nearest neighbors of each query point.
+        """
+        return self.query(
+            query_data,
+            k=k,
+            epsilon=epsilon,
+            proxy_beam_size=proxy_beam_size,
+            candidate_width=candidate_width,
+            rerank_width=rerank_width,
+            return_distances=False,
+            pre_normalized=pre_normalized,
+        )
 
     def update(self, xs_fresh=None, xs_updated=None, updated_indices=None):
         """
@@ -2421,6 +3069,8 @@ class NNDescent:
             xs_updated = check_array(
                 xs_updated, dtype=self._input_dtype, accept_sparse="csr", order="C"
             )
+            if self.metric == "dot":
+                xs_updated = normalize(xs_updated, norm="l2", copy=True)
             if updated_indices is None:
                 raise ValueError(
                     "If xs_updated are provided, updated_indices must also be provided!"
@@ -2467,6 +3117,8 @@ class NNDescent:
             xs_fresh = check_array(
                 xs_fresh, dtype=self._input_dtype, accept_sparse="csr", order="C"
             )
+            if self.metric == "dot":
+                xs_fresh = normalize(xs_fresh, norm="l2", copy=True)
         # data preparation
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)
@@ -2479,9 +3131,15 @@ class NNDescent:
                 # but will leave this here as a marker
                 raise error_sparse_to_do
         else:
+            if self._uses_normalized_data() and xs_fresh.shape[0] > 0:
+                xs_fresh = normalize(xs_fresh, norm="l2")
             self._raw_data = self._raw_data[original_order, :]
             for x_updated, i_fresh in zip(xs_updated, updated_indices):
                 self._raw_data[i_fresh] = x_updated
+            if self._uses_normalized_data() and len(updated_indices) > 0:
+                self._raw_data[updated_indices] = normalize(
+                    self._raw_data[updated_indices], norm="l2"
+                )
             self._raw_data = np.ascontiguousarray(np.vstack([self._raw_data, xs_fresh]))
             ns, ds = self._neighbor_graph
             n_examples, n_neighbors = ns.shape
@@ -2502,23 +3160,14 @@ class NNDescent:
             raise error_sparse_to_do
         else:
             self.n_trees = self.n_trees_after_update
-            self._rp_forest = make_forest(
-                self._raw_data,
-                self.n_neighbors,
-                self.n_trees,
-                self.leaf_size,
-                rng_state,
-                current_random_state,
-                self.n_jobs,
-                self._angular_trees,
-                max_depth=self.max_rptree_depth,
+            leaf_array = self._build_init_forest(
+                self._raw_data, self.n_trees, rng_state, current_random_state
             )
-            leaf_array = rptree_leaf_array(self._rp_forest)
             current_graph = make_heap(self._raw_data.shape[0], self.n_neighbors)
             init_from_neighbor_graph(
                 current_graph, self._neighbor_graph[0], self._neighbor_graph[1]
             )
-            init_rp_tree(self._raw_data, self._distance_func, current_graph, leaf_array)
+            init_rp_tree(self._raw_data, self._distance_func, current_graph, leaf_array, n_threads=numba.get_num_threads())
 
             if self.max_candidates is None:
                 effective_max_candidates = min(60, self.n_neighbors)
@@ -2538,6 +3187,7 @@ class NNDescent:
                 rp_tree_init=False,
                 leaf_array=np.array([[-1], [-1]]),
                 verbose=self.verbose,
+                kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
             # Remove search graph and search function
@@ -2582,6 +3232,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         The metric to use for computing nearest neighbors. If a callable is
         used it must be a numba njit compiled function. Supported metrics
         include:
+
             * euclidean
             * manhattan
             * chebyshev
@@ -2605,6 +3256,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             * yule
             * hellinger
             * wasserstein-1d
+
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
@@ -2638,11 +3290,11 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         that no edges get removed, and larger values result in significantly more
         aggressive edge removal. A value of 1.0 will prune all edges that it can.
 
-    n_search_trees: int (optional, default=1)
-        The number of random projection trees to use in initializing searching or
-        querying.
+    n_search_trees: int (optional, default=None)
+        No longer has any effect; a single search tree is always used.
 
-        .. deprecated::  0.5.5
+        .. deprecated:: 0.5.5
+            This parameter will be removed in the next version.
 
     search_epsilon: float (optional, default=0.1)
         When searching for nearest neighbors of a query point this values
@@ -2661,10 +3313,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         by `np.random`.
 
     n_jobs: int or None (optional, default=None)
-        The maximum number of parallel threads to be run at a time. If none
-        this will default to using all the cores available. Note that there is
-        not perfect parallelism, so at several pints the algorithm will be
-        single threaded.
+        The number of threads to use for index construction and preparation.
+        ``None`` or ``-1`` use numba's current number of threads (all cores
+        unless changed with ``numba.set_num_threads`` or the
+        ``NUMBA_NUM_THREADS`` environment variable).
 
     low_memory: boolean (optional, default=False)
         Whether to use a lower memory, but more computationally expensive
@@ -2722,7 +3374,7 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         search_epsilon=0.1,
         pruning_degree_multiplier=1.5,
         diversify_prob=1.0,
-        n_search_trees=1,
+        n_search_trees=None,
         tree_init=True,
         random_state=None,
         n_jobs=None,
@@ -2761,6 +3413,11 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         ----------
         X : array-like, shape (n_samples, n_features)
             Sample graph_data
+
+        compress_index : bool (optional, default=True)
+            Whether to compress the fitted index (see
+            ``NNDescent.compress_index``), discarding data needed only for
+            construction. This makes the transformer smaller to store.
 
         Returns
         -------
