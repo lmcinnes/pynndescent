@@ -89,6 +89,15 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 FLOAT32_EPS = np.finfo(np.float32).eps
 
 
+def _canonicalize_sparse_data(data):
+    """Normalize CSR storage without changing the caller's arrays."""
+    if not data.has_canonical_format or np.any(data.data == 0):
+        data = data.copy()
+        data.sum_duplicates()
+        data.eliminate_zeros()
+    return data
+
+
 def is_c_contiguous(array_like):
     flags = getattr(array_like, "flags", None)
     return flags is not None and flags["C_CONTIGUOUS"]
@@ -1026,6 +1035,9 @@ class NNDescent:
         else:
             data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
             self._input_dtype = np.float32
+
+        if issparse(data):
+            data = _canonicalize_sparse_data(data)
 
         self._raw_data = data
 
@@ -2791,8 +2803,7 @@ class NNDescent:
                             query_data, csr_array
                         ):
                             query_data = csr_array(query_data, dtype=np.float32)
-                    if not query_data.has_sorted_indices:
-                        query_data.sort_indices()
+                    query_data = _canonicalize_sparse_data(query_data)
                     indices, dists, _ = search_function(
                         query_data.indices,
                         query_data.indptr,
@@ -2949,8 +2960,7 @@ class NNDescent:
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
             if not isspmatrix_csr(query_data) and not isinstance(query_data, csr_array):
                 query_data = csr_array(query_data, dtype=np.float32)
-            if not query_data.has_sorted_indices:
-                query_data.sort_indices()
+            query_data = _canonicalize_sparse_data(query_data)
 
             indices, dists, _ = self._search_function(
                 query_data.indices,

@@ -28,6 +28,91 @@ from pynndescent.pynndescent_ import _int8_code_inv_norms, _quantize_int8_rows
 from pynndescent.kernels import select_kernel
 
 
+@pytest.mark.parametrize(
+    "sparse_type", [scipy.sparse.csr_matrix, scipy.sparse.csr_array]
+)
+@pytest.mark.parametrize(
+    "representation,metric",
+    [
+        ("duplicates", "euclidean"),
+        ("stored_zeros", "jaccard"),
+        ("unsorted", "euclidean"),
+    ],
+)
+@pytest.mark.parametrize("entry_point", ["training", "fast_query", "fallback_query"])
+def test_sparse_storage_preserves_distances(
+    sparse_type, representation, metric, entry_point
+):
+    data = np.vstack((np.eye(6), 1 - np.eye(6))).astype(np.float32)
+    canonical = sparse_type(data)
+    if representation == "duplicates":
+        supplied = sparse_type(
+            (
+                np.repeat(canonical.data / 2, 2),
+                np.repeat(canonical.indices, 2),
+                canonical.indptr * 2,
+            ),
+            shape=data.shape,
+        )
+    elif representation == "unsorted":
+        order = np.concatenate(
+            [
+                np.arange(stop - 1, start - 1, -1)
+                for start, stop in zip(canonical.indptr[:-1], canonical.indptr[1:])
+            ]
+        )
+        supplied = sparse_type(
+            (canonical.data[order], canonical.indices[order], canonical.indptr.copy()),
+            shape=data.shape,
+        )
+    else:
+        supplied = sparse_type(
+            (
+                data.ravel().copy(),
+                np.tile(np.arange(6), len(data)),
+                np.arange(0, data.size + 1, 6),
+            ),
+            shape=data.shape,
+        )
+    query_rows = np.arange(6, 9)
+    if entry_point != "training":
+        supplied = supplied[query_rows]
+    saved_storage = tuple(
+        array.copy() for array in (supplied.data, supplied.indices, supplied.indptr)
+    )
+    index = NNDescent(
+        supplied if entry_point == "training" else canonical,
+        metric=metric,
+        n_neighbors=6,
+        n_trees=0,
+        n_iters=1,
+        init_graph=np.tile(np.arange(len(data), dtype=np.int32), (len(data), 1)),
+        random_state=42,
+        n_jobs=1,
+    )
+    expected = scipy.spatial.distance.cdist(data, data, metric=metric)
+    if entry_point == "training":
+        indices, distances = index.neighbor_graph
+    else:
+        options = {"candidate_width": 4} if entry_point == "fallback_query" else {}
+        indices, distances = index.query(supplied, k=4, **options)
+    assert np.all((indices >= 0) & (indices < len(data)))
+    np.testing.assert_allclose(
+        distances,
+        expected[
+            (np.arange(len(data)) if entry_point == "training" else query_rows)[
+                :, None
+            ],
+            indices,
+        ],
+        atol=1e-6,
+    )
+    for current, saved in zip(
+        (supplied.data, supplied.indices, supplied.indptr), saved_storage
+    ):
+        np.testing.assert_array_equal(current, saved)
+
+
 def test_haversine_antipodal_neighbor_graph():
     data = np.deg2rad(
         np.array(
