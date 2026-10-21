@@ -112,6 +112,40 @@ def test_angular_nn_descent_neighbor_accuracy(nn_data, seed):
     ), "NN-descent did not get 99% accuracy on nearest neighbors"
 
 
+@pytest.mark.parametrize(
+    "metric,sparse", [("cosine", False), ("dot", False), ("cosine", True)]
+)
+@pytest.mark.parametrize("parallel", [False, True])
+def test_zero_query_neighbors(metric, parallel, sparse):
+    data = np.random.RandomState(42).normal(size=(60, 8)).astype(np.float32)
+    data[:10] = 0
+    queries = np.vstack((data[:2], data[10:12]))
+    index = NNDescent(
+        scipy.sparse.csr_matrix(data) if sparse else data,
+        metric=metric,
+        n_neighbors=10,
+        random_state=42,
+        parallel_batch_queries=parallel,
+    )
+    indices, distances = index.query(
+        scipy.sparse.csr_matrix(queries) if sparse else queries, k=5
+    )
+    assert np.all((indices >= 0) & (indices < len(data)))
+    assert all(len(set(row)) == 5 for row in indices)
+
+    products = (
+        normalize(queries.astype(np.float64)) @ normalize(data.astype(np.float64)).T
+    )
+    if metric == "dot":
+        expected = 1 - np.maximum(products, 0)
+    else:
+        expected = 1 - products
+        expected[:2, :10] = 0
+    np.testing.assert_allclose(
+        distances, expected[np.arange(len(queries))[:, None], indices], atol=1e-6
+    )
+
+
 def test_bitpacked_nn_descent_neighbor_accuracy(nn_data, seed):
     bitpacked_data = (nn_data * 256).astype(np.uint8)
     unpacked_data = np.zeros(
