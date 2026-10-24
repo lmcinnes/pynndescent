@@ -1182,12 +1182,13 @@ def true_angular(x, y):
     r"""True angular distance.
 
     The actual angle between two vectors, normalized to [0, 1].
-    Unlike cosine distance which uses 1 - cos(θ), this returns 1 - θ/π.
+    Unlike cosine distance which uses 1 - cos(θ), this returns θ/π.
 
     .. math::
-        D(x, y) = 1 - \frac{\arccos\left(\frac{\langle x, y \rangle}{\|x\| \|y\|}\right)}{\pi}
+        D(x, y) = \frac{\arccos\left(\frac{\langle x, y \rangle}{\|x\| \|y\|}\right)}{\pi}
 
-    Returns 0 for identical directions, approaches 1 for opposite directions.
+    Returns 0 for identical directions. Non-positive inner products are treated
+    as infinitely far, as in alternative_cosine.
     """
     result = 0.0
     norm_x = 0.0
@@ -1206,7 +1207,7 @@ def true_angular(x, y):
         return FLOAT32_MAX
     else:
         result = result / np.sqrt(norm_x * norm_y)
-        return 1.0 - (np.arccos(result) / np.pi)
+        return np.arccos(result) / np.pi
 
 
 @numba.vectorize(fastmath=True)
@@ -1214,9 +1215,9 @@ def true_angular_from_alt_cosine(d):
     r"""Convert alternative cosine distance to true angular distance.
 
     .. math::
-        D_{angular}(x, y) = 1 - \frac{\arccos(2^{-D_{alt}})}{\pi}
+        D_{angular}(x, y) = \frac{\arccos(2^{-D_{alt}})}{\pi}
     """
-    return 1.0 - (np.arccos(pow(2.0, -d)) / np.pi)
+    return np.arccos(pow(2.0, -d)) / np.pi
 
 
 @numba.njit(fastmath=True)
