@@ -363,11 +363,21 @@ def test_alternative_distances():
             y = np.random.random(30).astype(np.float32)
             x[x < 0.25] = 0.0
             y[y < 0.25] = 0.0
+            if distname == "dot":
+                # dot expects unit vectors, as NNDescent normalizes them.
+                x /= np.linalg.norm(x)
+                y /= np.linalg.norm(y)
 
             true_distance = true_dist(x, y)
             corrected_alt_distance = correction(alt_dist(x, y))
 
             assert np.isclose(true_distance, corrected_alt_distance)
+
+
+def test_correct_alternative_cosine_is_not_negative():
+    # float32 rounding can put a cosine just above 1, giving a slightly
+    # negative alternative distance (#214).
+    assert dist.correct_alternative_cosine(np.float32(-1e-7)) == 0.0
 
 
 def test_jensen_shannon():

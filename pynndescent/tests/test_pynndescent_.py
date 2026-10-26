@@ -553,6 +553,19 @@ def test_bitpacked_nn_descent_query_accuracy(nn_data):
     ), "Sparse NN-descent query did not get 95% accuracy on nearest neighbors"
 
 
+def test_cosine_distances_are_not_negative():
+    # Duplicate rows give a cosine a hair above 1 in float32, which came out as
+    # a distance of about -2e-7 and made sklearn reject the graph (#214).
+    rng = np.random.default_rng(0)
+    data = np.repeat(rng.normal(size=(300, 50)).astype(np.float32), 10, axis=0)
+    index = NNDescent(data, "cosine", n_neighbors=10, random_state=42)
+
+    assert index.neighbor_graph[1].min() >= 0.0
+    assert index.query(data[:500], k=10)[1].min() >= 0.0
+    graph = PyNNDescentTransformer(metric="cosine", random_state=42).fit_transform(data)
+    assert graph.data.min() >= 0.0
+
+
 def test_transformer_equivalence(nn_data):
     N_NEIGHBORS = 15
     EPSILON = 0.15

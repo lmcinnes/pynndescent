@@ -703,8 +703,10 @@ def correct_alternative_cosine(d):
 
     .. math::
         D(x, y) = 1 - 2^{-D_{alt}(x, y)}
+
+    Clamped at 0, as float32 rounding can put a cosine just above 1.
     """
-    return 1.0 - pow(2.0, -d)
+    return max(0.0, 1.0 - pow(2.0, -d))
 
 
 @numba.njit(
