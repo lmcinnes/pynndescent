@@ -1296,7 +1296,11 @@ def hellinger(x, y):
     elif l1_norm_x == 0 or l1_norm_y == 0:
         return np.float32(1.0)
     else:
-        return np.float32(np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y)))
+        sqrt_norm_prod = np.sqrt(l1_norm_x * l1_norm_y)
+        # float32 rounding can push the overlap of proportional rows above 1
+        if result > sqrt_norm_prod:
+            return np.float32(0.0)
+        return np.float32(np.sqrt(1 - result / sqrt_norm_prod))
 
 
 @numba.njit(
@@ -1347,8 +1351,11 @@ def correct_alternative_hellinger(d):
 
     .. math::
         D(x, y) = \sqrt{1 - 2^{-D_{alt}(x, y)}}
+
+    Clamped at 0, as float32 rounding can make the alternative distance of
+    proportional rows slightly negative.
     """
-    return np.sqrt(1.0 - pow(2.0, -d))
+    return np.sqrt(max(0.0, 1.0 - pow(2.0, -d)))
 
 
 @numba.njit()
