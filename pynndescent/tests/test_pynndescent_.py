@@ -1321,3 +1321,15 @@ def test_prepare_compile_search_option(nn_data):
     # And switching back
     index.prepare(compile_search=True)
     assert not index._uses_cached_search
+
+
+def test_hellinger_distances_are_not_nan():
+    # Duplicate and proportional rows can give a float32 overlap a hair above 1,
+    # which came out of the square root as NaN.
+    rng = np.random.default_rng(0)
+    base = rng.random((300, 10)).astype(np.float32)
+    data = np.vstack([base, base, 3 * base])
+    index = NNDescent(data, "hellinger", n_neighbors=10, random_state=42)
+
+    assert not np.isnan(index.neighbor_graph[1]).any()
+    assert not np.isnan(index.query(data[:100], k=10)[1]).any()

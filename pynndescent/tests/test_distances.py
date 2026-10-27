@@ -426,6 +426,18 @@ def test_sparse_jensen_shannon():
             assert np.isclose(d1, d2, rtol=1e-3)
 
 
+@pytest.mark.parametrize("x, scale", [([3.0, 5.0, 7.0], 7.0), ([0.2, 0.3, 0.5], 2.0)])
+def test_hellinger_proportional_inputs(x, scale):
+    # float32 rounding can put the overlap of proportional rows just above 1,
+    # which made the square root return NaN.
+    x = np.array(x, dtype=np.float32)
+    y = (scale * x).astype(np.float32)
+
+    assert np.isclose(dist.hellinger(x, y), 0.0, atol=1e-3)
+    assert dist.correct_alternative_hellinger(dist.alternative_hellinger(x, y)) == 0.0
+    assert dist.correct_alternative_hellinger(np.float32(-1e-7)) == 0.0
+
+
 @pytest.mark.parametrize("p", [1.0, 2.0, 3.0, 0.5])
 def test_wasserstein_1d(p):
     test_data = np.random.random(size=(10, 100))
