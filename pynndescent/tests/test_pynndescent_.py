@@ -1,4 +1,5 @@
 import os
+import warnings
 import io
 import re
 import pathlib
@@ -36,21 +37,49 @@ def test_haversine_antipodal_neighbor_graph():
         )
     )
     init_graph = np.tile(np.arange(len(data), dtype=np.int32), (len(data), 1))
-    index = NNDescent(
-        data,
-        metric="haversine",
-        n_neighbors=len(data),
-        n_trees=0,
-        n_iters=2,
-        init_graph=init_graph,
-        n_jobs=1,
-        random_state=0,
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        index = NNDescent(
+            data,
+            metric="haversine",
+            n_neighbors=len(data),
+            n_trees=0,
+            n_iters=2,
+            init_graph=init_graph,
+            n_jobs=1,
+            random_state=0,
+        )
+    assert not any(
+        "Failed to correctly find n_neighbors" in str(warning.message)
+        for warning in caught_warnings
     )
 
     indices, distances = index.neighbor_graph
     assert np.isfinite(distances).all()
     np.testing.assert_array_equal(np.sort(indices, axis=1), init_graph)
     np.testing.assert_allclose(distances[:, -1], np.pi, rtol=0, atol=1e-6)
+
+
+
+def test_transformer_no_warning_when_n_neighbors_equals_n_samples():
+    data = np.array(
+        [[0, 0], [1, 0], [0, 1], [1, 1]],
+        dtype=np.float32,
+    )
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        graph = PyNNDescentTransformer(
+            n_neighbors=len(data) - 1,
+            random_state=0,
+            n_jobs=1,
+        ).fit_transform(data)
+
+    assert not any(
+        "Failed to correctly find n_neighbors" in str(warning.message)
+        for warning in caught_warnings
+    )
+    assert graph.shape == (len(data), len(data))
+    assert graph.nnz == len(data) * len(data)
 
 
 def test_nn_descent_neighbor_accuracy(nn_data, seed):

@@ -1201,7 +1201,7 @@ class NNDescent:
                 kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
-        if np.any(self._neighbor_graph[0] < 0):
+        if np.any(self._neighbor_graph[0][:, :-1] < 0):
             warn(
                 "Failed to correctly find n_neighbors for some samples."
                 " Results may be less than ideal. Try re-running with"
