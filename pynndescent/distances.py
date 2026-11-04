@@ -812,11 +812,11 @@ def proxy_inner_product(x, y):
     if norm_x == 0 or norm_y == 0:
         return np.float32(FLOAT32_MAX)
 
-    cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
-    if ip_result >= 0:
-        return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
-    else:
+    if ip_result <= 0:
         return np.float32(FLOAT32_MAX)
+
+    cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
+    return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
 
 
 @numba.vectorize(fastmath=True)

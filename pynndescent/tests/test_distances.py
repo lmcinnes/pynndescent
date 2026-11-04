@@ -567,3 +567,13 @@ def test_sparse_dot_product_with_empty_vector(empty_first):
 
     assert spdist.sparse_dot_product(*args) == 0.0
     assert spdist.sparse_dot(*args) == 1.0
+
+
+@pytest.mark.parametrize("y", [[0.0, 1.0], [-1.0, 1.0]])
+def test_proxy_inner_product_without_positive_inner_product(y):
+    # orthogonal or opposed vectors are maximally distant, as in
+    # alternative_inner_product, instead of dividing by sqrt(0)
+    x = np.array([1.0, 0.0], dtype=np.float32)
+    y = np.array(y, dtype=np.float32)
+    assert dist.proxy_inner_product(x, y) == dist.FLOAT32_MAX
+    assert dist.alternative_inner_product(x, y) == dist.FLOAT32_MAX
