@@ -1213,7 +1213,7 @@ class NNDescent:
                 kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
-        if np.any(self._neighbor_graph[0] < 0):
+        if np.any(self._neighbor_graph[0][:, :-1] < 0):
             warn(
                 "Failed to correctly find n_neighbors for some samples."
                 " Results may be less than ideal. Try re-running with"
@@ -3145,20 +3145,21 @@ class NNDescent:
                     self._raw_data[updated_indices], norm="l2"
                 )
             self._raw_data = np.ascontiguousarray(np.vstack([self._raw_data, xs_fresh]))
-            ns, ds = self._neighbor_graph
-            n_examples, n_neighbors = ns.shape
-            indices_set = set(updated_indices)  # for fast "is element" checks
-            for i in range(n_examples):
-                # maybe update whole row
-                if i in indices_set:
-                    ns[i] = -1
-                    ds[i] = np.inf
-                    continue
-                # maybe update some columns
-                for j in range(n_neighbors):
-                    if ns[i, j] in indices_set:
-                        ns[i, j] = -1
-                        ds[i, j] = np.inf
+            if updated_indices:
+                ns, ds = self._neighbor_graph
+                n_examples, n_neighbors = ns.shape
+                indices_set = set(updated_indices)  # for fast "is element" checks
+                for i in range(n_examples):
+                    # maybe update whole row
+                    if i in indices_set:
+                        ns[i] = -1
+                        ds[i] = np.inf
+                        continue
+                    # maybe update some columns
+                    for j in range(n_neighbors):
+                        if ns[i, j] in indices_set:
+                            ns[i, j] = -1
+                            ds[i, j] = np.inf
         # update neighbors
         if self._is_sparse:
             raise error_sparse_to_do

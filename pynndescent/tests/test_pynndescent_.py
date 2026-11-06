@@ -1,4 +1,5 @@
 import os
+import warnings
 import io
 import re
 import pathlib
@@ -121,21 +122,49 @@ def test_haversine_antipodal_neighbor_graph():
         )
     )
     init_graph = np.tile(np.arange(len(data), dtype=np.int32), (len(data), 1))
-    index = NNDescent(
-        data,
-        metric="haversine",
-        n_neighbors=len(data),
-        n_trees=0,
-        n_iters=2,
-        init_graph=init_graph,
-        n_jobs=1,
-        random_state=0,
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        index = NNDescent(
+            data,
+            metric="haversine",
+            n_neighbors=len(data),
+            n_trees=0,
+            n_iters=2,
+            init_graph=init_graph,
+            n_jobs=1,
+            random_state=0,
+        )
+    assert not any(
+        "Failed to correctly find n_neighbors" in str(warning.message)
+        for warning in caught_warnings
     )
 
     indices, distances = index.neighbor_graph
     assert np.isfinite(distances).all()
     np.testing.assert_array_equal(np.sort(indices, axis=1), init_graph)
     np.testing.assert_allclose(distances[:, -1], np.pi, rtol=0, atol=1e-6)
+
+
+
+def test_transformer_no_warning_when_n_neighbors_equals_n_samples():
+    data = np.array(
+        [[0, 0], [1, 0], [0, 1], [1, 1]],
+        dtype=np.float32,
+    )
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        graph = PyNNDescentTransformer(
+            n_neighbors=len(data) - 1,
+            random_state=0,
+            n_jobs=1,
+        ).fit_transform(data)
+
+    assert not any(
+        "Failed to correctly find n_neighbors" in str(warning.message)
+        for warning in caught_warnings
+    )
+    assert graph.shape == (len(data), len(data))
+    assert graph.nnz == len(data) * len(data)
 
 
 def test_nn_descent_neighbor_accuracy(nn_data, seed):
@@ -638,6 +667,19 @@ def test_bitpacked_nn_descent_query_accuracy(nn_data):
     ), "Sparse NN-descent query did not get 95% accuracy on nearest neighbors"
 
 
+def test_cosine_distances_are_not_negative():
+    # Duplicate rows give a cosine a hair above 1 in float32, which came out as
+    # a distance of about -2e-7 and made sklearn reject the graph (#214).
+    rng = np.random.default_rng(0)
+    data = np.repeat(rng.normal(size=(300, 50)).astype(np.float32), 10, axis=0)
+    index = NNDescent(data, "cosine", n_neighbors=10, random_state=42)
+
+    assert index.neighbor_graph[1].min() >= 0.0
+    assert index.query(data[:500], k=10)[1].min() >= 0.0
+    graph = PyNNDescentTransformer(metric="cosine", random_state=42).fit_transform(data)
+    assert graph.data.min() >= 0.0
+
+
 def test_transformer_equivalence(nn_data):
     N_NEIGHBORS = 15
     EPSILON = 0.15
@@ -1085,6 +1127,9 @@ def test_dot_update_distances(mode, prepared):
 
     normalized = normalize(expected_data.astype(np.float64))
     expected = 1 - np.maximum(normalized @ normalized.T, 0)
+    # neighbor_graph lists each point as its own first neighbor at distance 0,
+    # including the all-zero row (whose dot distance to everything else is 1)
+    np.fill_diagonal(expected, 0.0)
     indices, distances = index.neighbor_graph
     assert np.all(indices >= 0)
     np.testing.assert_allclose(
@@ -1391,3 +1436,14 @@ def test_prepare_compile_search_option(nn_data):
     index.prepare(compile_search=True)
     assert not index._uses_cached_search
 
+
+def test_hellinger_distances_are_not_nan():
+    # Duplicate and proportional rows can give a float32 overlap a hair above 1,
+    # which came out of the square root as NaN.
+    rng = np.random.default_rng(0)
+    base = rng.random((300, 10)).astype(np.float32)
+    data = np.vstack([base, base, 3 * base])
+    index = NNDescent(data, "hellinger", n_neighbors=10, random_state=42)
+
+    assert not np.isnan(index.neighbor_graph[1]).any()
+    assert not np.isnan(index.query(data[:100], k=10)[1]).any()

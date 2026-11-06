@@ -703,8 +703,10 @@ def correct_alternative_cosine(d):
 
     .. math::
         D(x, y) = 1 - 2^{-D_{alt}(x, y)}
+
+    Clamped at 0, as float32 rounding can put a cosine just above 1.
     """
-    return 1.0 - pow(2.0, -d)
+    return max(0.0, 1.0 - pow(2.0, -d))
 
 
 @numba.njit(
@@ -812,11 +814,11 @@ def proxy_inner_product(x, y):
     if norm_x == 0 or norm_y == 0:
         return np.float32(FLOAT32_MAX)
 
-    cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
-    if ip_result >= 0:
-        return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
-    else:
+    if ip_result <= 0:
         return np.float32(FLOAT32_MAX)
+
+    cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
+    return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
 
 
 @numba.vectorize(fastmath=True)
@@ -1296,7 +1298,11 @@ def hellinger(x, y):
     elif l1_norm_x == 0 or l1_norm_y == 0:
         return np.float32(1.0)
     else:
-        return np.float32(np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y)))
+        sqrt_norm_prod = np.sqrt(l1_norm_x * l1_norm_y)
+        # float32 rounding can push the overlap of proportional rows above 1
+        if result > sqrt_norm_prod:
+            return np.float32(0.0)
+        return np.float32(np.sqrt(1 - result / sqrt_norm_prod))
 
 
 @numba.njit(
@@ -1347,8 +1353,11 @@ def correct_alternative_hellinger(d):
 
     .. math::
         D(x, y) = \sqrt{1 - 2^{-D_{alt}(x, y)}}
+
+    Clamped at 0, as float32 rounding can make the alternative distance of
+    proportional rows slightly negative.
     """
-    return np.sqrt(1.0 - pow(2.0, -d))
+    return np.sqrt(max(0.0, 1.0 - pow(2.0, -d)))
 
 
 @numba.njit()
@@ -1738,7 +1747,7 @@ def bit_jaccard(x, y):
     with the bounded-radius search algorithm.
 
     .. math::
-        D(x, y) = -\log\left(\frac{\text{popcount}(x \land y)}{\text{popcount}(x \lor y)}\right)
+        D(x, y) = -\log_2\left(\frac{\text{popcount}(x \land y)}{\text{popcount}(x \lor y)}\right)
 
     More efficient than standard Jaccard for binary data.
     """
@@ -1755,7 +1764,7 @@ def bit_jaccard(x, y):
     if denom == 0:
         return np.float32(0.0)
     else:
-        return np.float32(-np.log(np.float32(result) / np.float32(denom)))
+        return np.float32(-np.log2(np.float32(result) / np.float32(denom)))
 
 
 @numba.njit(
@@ -2274,6 +2283,7 @@ fast_distance_alternatives = {
         "correction": correct_alternative_hellinger,
     },
     "jaccard": {"dist": alternative_jaccard, "correction": correct_alternative_jaccard},
+    "bit_jaccard": {"dist": bit_jaccard, "correction": correct_alternative_jaccard},
 }
 
 proxy_distances = {
