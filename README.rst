@@ -142,9 +142,10 @@ PyNNDescent is designed to be easy to install being a pure python module with
 relatively light requirements:
 
 * numpy
-* scipy
-* scikit-learn >= 0.22
-* numba >= 0.51
+* scipy >= 1.0
+* scikit-learn >= 0.18
+* numba >= 0.55
+* joblib >= 0.11
 
 all of which should be pip or conda installable. The easiest way to install should be
 via conda:
@@ -167,7 +168,7 @@ To manually install this package:
     unzip master.zip
     rm master.zip
     cd pynndescent-master
-    python setup.py install
+    pip install .
 
 ----------------
 Help and Support

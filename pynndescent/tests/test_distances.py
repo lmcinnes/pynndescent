@@ -1,3 +1,4 @@
+import numba
 import pytest
 import numpy as np
 from numpy.testing import assert_array_equal, assert_array_almost_equal
@@ -314,6 +315,32 @@ def test_haversine(spatial_data):
     )
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("latitude", [-89.0, -85.0, 85.0, 89.0])
+def test_haversine_antipodal(dtype, latitude):
+    x = np.deg2rad(np.array([latitude, 15.0], dtype=dtype))
+    y = np.deg2rad(np.array([-latitude, -165.0], dtype=dtype))
+
+    assert dist.haversine(x, y) == pytest.approx(np.pi, abs=1e-6)
+    assert dist.haversine(y, x) == pytest.approx(np.pi, abs=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize(
+    "x, y, expected",
+    [
+        ([0.0, 0.0], [0.0, 0.0], 0.0),
+        ([0.0, 0.0], [0.0, 90.0], np.pi / 2),
+        ([0.0, 0.0], [90.0, 0.0], np.pi / 2),
+    ],
+)
+def test_haversine_regular_points(dtype, x, y, expected):
+    x = np.deg2rad(np.array(x, dtype=dtype))
+    y = np.deg2rad(np.array(y, dtype=dtype))
+
+    assert dist.haversine(x, y) == pytest.approx(expected, abs=1e-6)
+
+
 def test_spearmanr():
     x = np.random.randn(100)
     y = np.random.randn(100)
@@ -357,11 +384,21 @@ def test_alternative_distances():
                 y = np.random.random(30).astype(np.float32)
                 x[x < 0.25] = 0.0
                 y[y < 0.25] = 0.0
+                if distname == "dot":
+                    # dot expects unit vectors, as NNDescent normalizes them.
+                    x /= np.linalg.norm(x)
+                    y /= np.linalg.norm(y)
 
                 true_distance = true_dist(x, y)
                 corrected_alt_distance = correction(alt_dist(x, y))
 
                 assert np.isclose(true_distance, corrected_alt_distance)
+
+
+def test_correct_alternative_cosine_is_not_negative():
+    # float32 rounding can put a cosine just above 1, giving a slightly
+    # negative alternative distance (#214).
+    assert dist.correct_alternative_cosine(np.float32(-1e-7)) == 0.0
 
 
 def test_jensen_shannon():
@@ -408,6 +445,18 @@ def test_sparse_jensen_shannon():
                 sparse_test_data[j].data,
             )
             assert np.isclose(d1, d2, rtol=1e-3)
+
+
+@pytest.mark.parametrize("x, scale", [([3.0, 5.0, 7.0], 7.0), ([0.2, 0.3, 0.5], 2.0)])
+def test_hellinger_proportional_inputs(x, scale):
+    # float32 rounding can put the overlap of proportional rows just above 1,
+    # which made the square root return NaN.
+    x = np.array(x, dtype=np.float32)
+    y = (scale * x).astype(np.float32)
+
+    assert np.isclose(dist.hellinger(x, y), 0.0, atol=1e-3)
+    assert dist.correct_alternative_hellinger(dist.alternative_hellinger(x, y)) == 0.0
+    assert dist.correct_alternative_hellinger(np.float32(-1e-7)) == 0.0
 
 
 @pytest.mark.parametrize("p", [1.0, 2.0, 3.0, 0.5])
@@ -462,3 +511,112 @@ def test_bit_jaccard():
             d1 = 1.0 - pow(2.0, -dist.bit_jaccard(test_data[i], test_data[j]))
             d2 = all_pairs[i, j]
             assert np.isclose(d1, d2)
+
+
+F4 = numba.float32[::1]
+U1 = numba.uint8[::1]
+I4 = numba.int32[::1]
+DENSE_F4 = [
+    "alternative_cosine",
+    "alternative_dot",
+    "alternative_hellinger",
+    "alternative_inner_product",
+    "alternative_jaccard",
+    "dot",
+    "hellinger",
+    "inner_product",
+    "proxy_circular_kantorovich",
+    "proxy_inner_product",
+    "proxy_jensen_shannon",
+    "proxy_kantorovich",
+    "proxy_sinkhorn",
+    "proxy_symmetric_kl",
+    "proxy_wasserstein_1d",
+    "squared_euclidean",
+]
+QUANTIZED_F4 = [
+    "quantized_uint4_alternative_cosine",
+    "quantized_uint4_alternative_dot",
+    "quantized_uint4_sq_euclidean",
+    "quantized_uint8_alternative_cosine",
+    "quantized_uint8_alternative_dot",
+    "quantized_uint8_sq_euclidean",
+]
+SPARSE_F4 = [
+    "sparse_alternative_jaccard",
+    "sparse_bray_curtis",
+    "sparse_dot_product",
+    "sparse_squared_euclidean",
+]
+
+
+@pytest.mark.parametrize(
+    "kernel,args,return_type",
+    [(getattr(dist, name), (F4, F4), numba.float32) for name in DENSE_F4]
+    + [(getattr(dist, name), (F4, U1, F4), numba.float32) for name in QUANTIZED_F4]
+    + [
+        (getattr(dist, name), (U1, U1), numba.float32)
+        for name in ("bit_hamming", "bit_jaccard")
+    ]
+    + [(getattr(spdist, name), (I4, F4, I4, F4), numba.float32) for name in SPARSE_F4]
+    + [(spdist.fast_intersection_size, (I4, I4), numba.int32)],
+)
+def test_lazy_kernel_return_types(kernel, args, return_type):
+    # Kernels compile on first use, so their return dtype comes from inference
+    # rather than an explicit signature; callers compare against float32 heaps.
+    kernel.compile(args)
+    assert kernel.overloads[args].signature.return_type == return_type
+
+
+def test_tsss_matches_definition():
+    # https://github.com/lmcinnes/pynndescent/issues/233
+    # TS-SS (Heidarian & Dinneen, 2016) is the product of the triangle area
+    # |x||y|sin(theta)/2 and the sector area pi*(ED + MD)^2*theta/360 with theta
+    # in degrees, i.e. (ED + MD)^2*theta/2 with theta in radians.
+    x = np.array([1.0, 2.0, 3.0])
+    y = np.array([2.0, 0.5, 1.0])
+    norm_x = np.linalg.norm(x)
+    norm_y = np.linalg.norm(y)
+    theta = np.arccos(x @ y / (norm_x * norm_y)) + np.radians(10)
+    triangle = norm_x * norm_y * np.sin(theta) / 2
+    sector = (np.linalg.norm(x - y) + abs(norm_x - norm_y)) ** 2 * theta / 2
+    assert dist.tsss(x, y) == pytest.approx(triangle * sector)
+
+
+def test_sparse_correlation_with_zero_centred_shared_entry():
+    # Index 1 is stored in both rows and x[1] equals mean(x), so its centred
+    # product is exactly zero; it must still be treated as a shared index.
+    x = np.array([3.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    y = np.array([1.0, 2.0, 0.0, 0.0], dtype=np.float32)
+    sx = csr_matrix(x[None, :])
+    sy = csr_matrix(y[None, :])
+    result = spdist.sparse_correlation(
+        sx.indices, sx.data, sy.indices, sy.data, x.shape[0]
+    )
+    expected = pairwise_distances(x[None, :], y[None, :], metric="correlation")[0, 0]
+    assert_array_almost_equal(result, expected, decimal=6)
+
+
+@pytest.mark.parametrize("empty_first", [True, False])
+def test_sparse_dot_product_with_empty_vector(empty_first):
+    # Empty vectors are usually slices of larger arrays (an empty CSR row, or
+    # an empty search-tree hyperplane), so the memory just past them holds
+    # real indices and values that must not be read.
+    full_inds = np.array([5], dtype=np.int32)
+    full_data = np.array([3.0], dtype=np.float32)
+    empty = (full_inds[0:0], full_data[0:0])
+    other = (np.array([5], dtype=np.int32), np.array([2.0], dtype=np.float32))
+    args = empty + other if empty_first else other + empty
+
+    assert spdist.sparse_dot_product(*args) == 0.0
+    assert spdist.sparse_dot(*args) == 1.0
+
+
+@pytest.mark.parametrize("y", [[0.0, 1.0], [-1.0, 1.0]])
+def test_proxy_inner_product_without_positive_inner_product(y):
+    # orthogonal or opposed vectors are maximally distant, as in
+    # alternative_inner_product, instead of dividing by sqrt(0)
+    x = np.array([1.0, 0.0], dtype=np.float32)
+    y = np.array(y, dtype=np.float32)
+    assert dist.proxy_inner_product(x, y) == dist.FLOAT32_MAX
+    assert dist.alternative_inner_product(x, y) == dist.FLOAT32_MAX

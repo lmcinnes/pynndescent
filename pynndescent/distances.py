@@ -61,20 +61,13 @@ def euclidean(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "diff": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def squared_euclidean(x, y):
     r"""Squared euclidean distance.
@@ -282,13 +275,6 @@ def jaccard(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -297,8 +283,8 @@ def jaccard(x, y):
         "x_true": numba.types.uint8,
         "y_true": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_jaccard(x, y):
     r"""Alternative Jaccard distance using log transform.
@@ -321,9 +307,9 @@ def alternative_jaccard(x, y):
         num_equal += x_true and y_true
 
     if num_non_zero == 0.0:
-        return 0.0
+        return np.float32(0.0)
     else:
-        return -np.log2(num_equal / num_non_zero)
+        return np.float32(-np.log2(num_equal / num_non_zero))
 
 
 @numba.vectorize(fastmath=True)
@@ -518,7 +504,7 @@ def haversine(x, y):
     sin_lat = np.sin(0.5 * (x[0] - y[0]))
     sin_long = np.sin(0.5 * (x[1] - y[1]))
     result = np.sqrt(sin_lat**2 + np.cos(x[0]) * np.cos(y[0]) * sin_long**2)
-    return 2.0 * np.arcsin(result)
+    return 2.0 * np.arcsin(min(result, 1.0))
 
 
 @numba.njit(fastmath=True)
@@ -581,21 +567,14 @@ def cosine(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_cosine(x, y):
     r"""Alternative cosine distance using log transform.
@@ -620,24 +599,23 @@ def alternative_cosine(x, y):
         norm_y += y[i] * y[i]
 
     if norm_x == 0.0 and norm_y == 0.0:
-        return 0.0
+        return np.float32(0.0)
     elif norm_x == 0.0 or norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     elif result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
         result = np.sqrt(norm_x * norm_y) / result
-        return np.log2(result)
+        return np.float32(np.log2(result))
 
 
 @numba.njit(
-    "f4(f4[::1],f4[::1])",
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def dot(x, y):
     r"""Dot product distance for normalized vectors.
@@ -657,24 +635,42 @@ def dot(x, y):
         result += x[i] * y[i]
 
     if result <= 0.0:
-        return 1.0
+        return np.float32(1.0)
     else:
-        return 1.0 - result
+        return np.float32(1.0 - result)
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
+    },
+    cache=True,
+)
+def direct_cosine(x, y):
+    r"""Cosine distance for vectors normalized before index construction.
+
+    This avoids the logarithmic alternative-distance transform used by the
+    default ``cosine`` metric. Inputs must be unit-normalized; ``NNDescent``
+    normalizes dense index vectors and queries for this named metric.
+    """
+    result = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        result += x[i] * y[i]
+
+    if result <= 0.0:
+        return np.float32(1.0)
+    else:
+        return np.float32(1.0 - result)
+
+
+@numba.njit(
+    fastmath=True,
+    locals={
+        "result": numba.types.float32,
+        "dim": numba.types.intp,
     },
 )
 def alternative_dot(x, y):
@@ -707,18 +703,19 @@ def correct_alternative_cosine(d):
 
     .. math::
         D(x, y) = 1 - 2^{-D_{alt}(x, y)}
+
+    Clamped at 0, as float32 rounding can put a cosine just above 1.
     """
-    return 1.0 - pow(2.0, -d)
+    return max(0.0, 1.0 - pow(2.0, -d))
 
 
 @numba.njit(
-    "f4(f4[::1],f4[::1])",
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def inner_product(x, y):
     r"""Inner product distance (negative inner product).
@@ -742,19 +739,12 @@ def inner_product(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_inner_product(x, y):
     r"""Alternative inner product distance using reciprocal transform.
@@ -784,19 +774,12 @@ def alternative_inner_product(x, y):
         result += x[i] * y[i]
 
     if result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
-        return 1.0 / result
+        return np.float32(1.0 / result)
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -804,8 +787,8 @@ def alternative_inner_product(x, y):
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_inner_product(x, y):
     r"""A proxy for inner product distance (negative inner product).
@@ -829,13 +812,13 @@ def proxy_inner_product(x, y):
         norm_y += y[i] * y[i]
 
     if norm_x == 0 or norm_y == 0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
+
+    if ip_result <= 0:
+        return np.float32(FLOAT32_MAX)
 
     cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
-    if ip_result >= 0:
-        return cosine_result + 1.0 / np.sqrt(ip_result)
-    else:
-        return FLOAT32_MAX
+    return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
 
 
 @numba.vectorize(fastmath=True)
@@ -854,13 +837,6 @@ def correct_alternative_inner_product(d):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -869,8 +845,8 @@ def correct_alternative_inner_product(d):
         "cdf_x": numba.types.float32,
         "cdf_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_wasserstein_1d(x, y):
     r"""A proxy for 1D Wasserstein distance.
@@ -914,13 +890,6 @@ def proxy_wasserstein_1d(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -931,8 +900,8 @@ def proxy_wasserstein_1d(x, y):
         "px": numba.types.float32,
         "py": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_kantorovich(x, y):
     r"""A proxy for Kantorovich (Earth Mover's) distance.
@@ -957,7 +926,7 @@ def proxy_kantorovich(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0.0 or l1_norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
 
     # Total variation distance + Hellinger-like term
     tv_result = 0.0
@@ -970,17 +939,10 @@ def proxy_kantorovich(x, y):
         hellinger_result += np.sqrt(px * py)
 
     # Combine: TV captures mass difference, Hellinger captures shape similarity
-    return 0.5 * tv_result + (1.0 - hellinger_result)
+    return np.float32(0.5 * tv_result + (1.0 - hellinger_result))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -990,8 +952,8 @@ def proxy_kantorovich(x, y):
         "cdf_y": numba.types.float32,
         "mu": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_circular_kantorovich(x, y):
     r"""A proxy for circular Kantorovich distance.
@@ -1040,21 +1002,14 @@ def proxy_circular_kantorovich(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "bc": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_jensen_shannon(x, y):
     r"""A proxy for Jensen-Shannon divergence.
@@ -1080,7 +1035,7 @@ def proxy_jensen_shannon(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0.0 or l1_norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
 
     # Bhattacharyya coefficient
     bc = 0.0
@@ -1090,17 +1045,10 @@ def proxy_jensen_shannon(x, y):
     # Squared Hellinger-like distance: 1 - BC^2
     # This spreads values more than standard Hellinger and correlates
     # well with Jensen-Shannon divergence
-    return 1.0 - bc * bc
+    return np.float32(1.0 - bc * bc)
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -1111,8 +1059,8 @@ def proxy_jensen_shannon(x, y):
         "denom": numba.types.float32,
         "diff": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_symmetric_kl(x, y):
     r"""A proxy for symmetric KL divergence.
@@ -1151,13 +1099,6 @@ def proxy_symmetric_kl(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
@@ -1168,8 +1109,8 @@ def proxy_symmetric_kl(x, y):
         "px": numba.types.float32,
         "py": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def proxy_sinkhorn(x, y):
     r"""A proxy for Sinkhorn (entropy-regularized optimal transport) distance.
@@ -1189,7 +1130,7 @@ def proxy_sinkhorn(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0.0 or l1_norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
 
     # Total variation distance + Hellinger-like term
     tv_result = 0.0
@@ -1201,7 +1142,7 @@ def proxy_sinkhorn(x, y):
         tv_result += np.abs(px - py)
         hellinger_result += np.sqrt(px * py)
 
-    return 0.5 * tv_result + (1.0 - hellinger_result)
+    return np.float32(0.5 * tv_result + (1.0 - hellinger_result))
 
 
 @numba.njit(fastmath=True)
@@ -1233,7 +1174,7 @@ def tsss(x, y):
     d_cos /= norm_x * norm_y
     theta = np.arccos(d_cos) + np.radians(10)  # Add 10 degrees as an "epsilon" to
     # avoid problems
-    sector = ((np.sqrt(d_euc_squared) + magnitude_difference) ** 2) * theta
+    sector = ((np.sqrt(d_euc_squared) + magnitude_difference) ** 2) * theta / 2.0
     triangle = norm_x * norm_y * np.sin(theta) / 2.0
     return triangle * sector
 
@@ -1321,21 +1262,14 @@ def correlation(x, y):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def hellinger(x, y):
     r"""Hellinger distance.
@@ -1360,29 +1294,26 @@ def hellinger(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0 and l1_norm_y == 0:
-        return 0.0
+        return np.float32(0.0)
     elif l1_norm_x == 0 or l1_norm_y == 0:
-        return 1.0
+        return np.float32(1.0)
     else:
-        return np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y))
+        sqrt_norm_prod = np.sqrt(l1_norm_x * l1_norm_y)
+        # float32 rounding can push the overlap of proportional rows above 1
+        if result > sqrt_norm_prod:
+            return np.float32(0.0)
+        return np.float32(np.sqrt(1 - result / sqrt_norm_prod))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "l1_norm_x": numba.types.float32,
         "l1_norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def alternative_hellinger(x, y):
     r"""Alternative Hellinger distance using log transform.
@@ -1406,14 +1337,14 @@ def alternative_hellinger(x, y):
         l1_norm_y += y[i]
 
     if l1_norm_x == 0 and l1_norm_y == 0:
-        return 0.0
+        return np.float32(0.0)
     elif l1_norm_x == 0 or l1_norm_y == 0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     elif result <= 0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
         result = np.sqrt(l1_norm_x * l1_norm_y) / result
-        return np.log2(result)
+        return np.float32(np.log2(result))
 
 
 @numba.vectorize(fastmath=True)
@@ -1422,8 +1353,11 @@ def correct_alternative_hellinger(d):
 
     .. math::
         D(x, y) = \sqrt{1 - 2^{-D_{alt}(x, y)}}
+
+    Clamped at 0, as float32 rounding can make the alternative distance of
+    proportional rows slightly negative.
     """
-    return np.sqrt(1.0 - pow(2.0, -d))
+    return np.sqrt(max(0.0, 1.0 - pow(2.0, -d)))
 
 
 @numba.njit()
@@ -1724,7 +1658,7 @@ def circular_kantorovich(x, y, p=1):
         raise ValueError("Invalid p supplied to Kantorvich distance")
 
 
-@numba.njit()
+@numba.njit(cache=True)
 def symmetric_kl_divergence(x, y):
     r"""Symmetric Kullback-Leibler divergence.
 
@@ -1760,13 +1694,6 @@ def symmetric_kl_divergence(x, y):
 
 
 @numba.njit(
-    [
-        "f4(u1[::1],u1[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     nogil=True,
     boundscheck=False,
@@ -1774,8 +1701,8 @@ def symmetric_kl_divergence(x, y):
         "result": numba.types.int32,
         "intersection": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def bit_hamming(x, y):
     r"""Hamming distance for bit-packed binary vectors.
@@ -1800,13 +1727,6 @@ def bit_hamming(x, y):
 
 
 @numba.njit(
-    [
-        "f4(u1[::1],u1[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     nogil=True,
     boundscheck=False,
@@ -1816,8 +1736,8 @@ def bit_hamming(x, y):
         "and_": numba.types.uint8,
         "or_": numba.types.uint8,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def bit_jaccard(x, y):
     r"""Jaccard distance for bit-packed binary vectors.
@@ -1842,29 +1762,21 @@ def bit_jaccard(x, y):
         denom += popcnt_u8(or_)
 
     if denom == 0:
-        return 0.0
+        return np.float32(0.0)
     else:
-        return -np.log2(np.float32(result) / np.float32(denom))
+        return np.float32(-np.log2(np.float32(result) / np.float32(denom)))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     nogil=True,
     boundscheck=False,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
         "y_i": numba.types.float32,
     },
+    cache=True,
 )
 def quantized_uint8_sq_euclidean(x, y, quantized_values):
     r"""Squared Euclidean distance between a float vector ``x`` and
@@ -1883,14 +1795,6 @@ def quantized_uint8_sq_euclidean(x, y, quantized_values):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     nogil=True,
     boundscheck=False,
@@ -1899,8 +1803,8 @@ def quantized_uint8_sq_euclidean(x, y, quantized_values):
         "norm_x": numba.types.float32,
         "norm_y": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint8_alternative_cosine(x, y, quantized_values):
     r"""Alternative cosine distance between a float vector ``x`` and
@@ -1919,31 +1823,23 @@ def quantized_uint8_alternative_cosine(x, y, quantized_values):
         norm_y += qy * qy
 
     if norm_x == 0.0 and norm_y == 0.0:
-        return 0.0
+        return np.float32(0.0)
     elif norm_x == 0.0 or norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     elif result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
         result = result / np.sqrt(norm_x * norm_y)
-        return -np.log2((result + 1.0) / 2.0)
+        return np.float32(-np.log2((result + 1.0) / 2.0))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint8_alternative_dot(x, y, quantized_values):
     r"""Alternative dot product distance between a float vector ``x`` and
@@ -1961,27 +1857,19 @@ def quantized_uint8_alternative_dot(x, y, quantized_values):
         norm_y += qy * qy
 
     if result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
-        return -np.log2(result / np.sqrt(norm_y))
+        return np.float32(-np.log2(result / np.sqrt(norm_y)))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint4_sq_euclidean(x, y, quantized_values):
     r"""Squared Euclidean distance between a float vector ``x`` and
@@ -2006,21 +1894,13 @@ def quantized_uint4_sq_euclidean(x, y, quantized_values):
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint4_alternative_cosine(x, y, quantized_values):
     r"""Alternative cosine distance between a float vector ``x`` and
@@ -2046,32 +1926,24 @@ def quantized_uint4_alternative_cosine(x, y, quantized_values):
         norm_y += qy * qy
 
     if norm_x == 0.0 and norm_y == 0.0:
-        return 0.0
+        return np.float32(0.0)
     elif norm_x == 0.0 or norm_y == 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     elif result <= 0.0:
-        return FLOAT32_MAX
+        return np.float32(FLOAT32_MAX)
     else:
         result = result / np.sqrt(norm_x * norm_y)
-        return -np.log2((result + 1.0) / 2.0)
+        return np.float32(-np.log2((result + 1.0) / 2.0))
 
 
 @numba.njit(
-    [
-        "f4(f4[::1],u1[::1],f4[::1])",
-        numba.types.float32(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-        ),
-    ],
     fastmath=True,
     locals={
         "quantized_index": numba.types.uint8,
         "result": numba.types.float32,
         "dim": numba.types.intp,
-        "i": numba.types.uint16,
     },
+    cache=True,
 )
 def quantized_uint4_alternative_dot(x, y, quantized_values):
     r"""Alternative dot product distance between a float vector ``x`` and
@@ -2095,9 +1967,234 @@ def quantized_uint4_alternative_dot(x, y, quantized_values):
         norm_y += qy * qy
 
     if result <= 0.0:
+        return np.float32(FLOAT32_MAX)
+    else:
+        return np.float32(-np.log2(result / np.sqrt(norm_y)))
+
+
+@numba.njit(
+    [
+        "f4(i1[::1],i1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    locals={
+        "dot": numba.types.int32,
+        "norm_x": numba.types.int32,
+        "norm_y": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def quantized_int8_alternative_cosine(x, y):
+    r"""Alternative cosine distance between symmetric signed-int8 codes.
+
+    Each vector is independently quantized using its maximum absolute value.
+    The per-vector scale cancels when computing cosine similarity, so the
+    integer-domain vector norms provide the necessary correction without
+    retaining a floating-point scale for every vector.
+    """
+    dot = np.int32(0)
+    norm_x = np.int32(0)
+    norm_y = np.int32(0)
+    dim = x.shape[0]
+
+    for i in range(dim):
+        x_i = np.int32(x[i])
+        y_i = np.int32(y[i])
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+        norm_x += x_i * x_i
+        norm_y += y_i * y_i
+
+    if norm_x == 0 and norm_y == 0:
+        return 0.0
+    elif norm_x == 0 or norm_y == 0 or dot <= 0:
         return FLOAT32_MAX
     else:
-        return -np.log2(result / np.sqrt(norm_y))
+        similarity = np.float32(dot) / np.sqrt(np.float32(norm_x) * norm_y)
+        similarity = min(np.float32(1.0), similarity)
+        return -np.log2((similarity + 1.0) / 2.0)
+
+
+@numba.njit(
+    [
+        "f4(i1[::1],i1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    locals={
+        "dot": numba.types.int32,
+        "norm_x": numba.types.int32,
+        "norm_y": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def quantized_int8_alternative_dot(x, y):
+    r"""Alternative dot distance between symmetric signed-int8 codes.
+
+    Inputs are treated as cosine-normalized after correction by their integer
+    norms. Products are explicitly widened to ``int32`` before accumulation.
+    """
+    dot = np.int32(0)
+    norm_x = np.int32(0)
+    norm_y = np.int32(0)
+    dim = x.shape[0]
+
+    for i in range(dim):
+        x_i = np.int32(x[i])
+        y_i = np.int32(y[i])
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+        norm_x += x_i * x_i
+        norm_y += y_i * y_i
+
+    if norm_x == 0 or norm_y == 0 or dot <= 0:
+        return FLOAT32_MAX
+    else:
+        similarity = np.float32(dot) / np.sqrt(np.float32(norm_x) * norm_y)
+        return -np.log2(min(np.float32(1.0), similarity))
+
+
+@numba.njit(
+    "f4(i1[::1],i1[::1],f4,f4)",
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    inline="always",
+    locals={
+        "dot": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def quantized_int8_alternative_cosine_with_norms(x, y, inv_norm_x, inv_norm_y):
+    """Alternative cosine distance using precomputed code-space inverse norms."""
+    dot = np.int32(0)
+    dim = x.shape[0]
+    for i in range(dim):
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+
+    similarity = np.float32(dot) * inv_norm_x * inv_norm_y
+    if similarity <= 0.0:
+        return FLOAT32_MAX
+    similarity = min(np.float32(1.0), similarity)
+    return -np.log2((similarity + 1.0) / 2.0)
+
+
+@numba.njit(
+    [
+        "f4(i1[::1],i1[::1])",
+        numba.types.float32(
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+            numba.types.Array(numba.types.int8, 1, "C", readonly=True),
+        ),
+    ],
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    locals={
+        "dot": numba.types.int32,
+        "norm_x": numba.types.int32,
+        "norm_y": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def quantized_int8_direct_cosine(x, y):
+    """Direct cosine distance between symmetric signed-int8 codes."""
+    dot = np.int32(0)
+    norm_x = np.int32(0)
+    norm_y = np.int32(0)
+    dim = x.shape[0]
+
+    for i in range(dim):
+        x_i = np.int32(x[i])
+        y_i = np.int32(y[i])
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+        norm_x += x_i * x_i
+        norm_y += y_i * y_i
+
+    if norm_x == 0 or norm_y == 0 or dot <= 0:
+        return 1.0
+    similarity = np.float32(dot) / np.sqrt(np.float32(norm_x) * norm_y)
+    return 1.0 - min(np.float32(1.0), similarity)
+
+
+@numba.njit(
+    "f4(i1[::1],i1[::1],f4,f4)",
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    inline="always",
+    locals={
+        "dot": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def quantized_int8_direct_cosine_with_norms(x, y, inv_norm_x, inv_norm_y):
+    """Direct cosine distance using precomputed signed-int8 code norms.
+
+    Unlike ``quantized_int8_alternative_cosine_with_norms``, this leaves the
+    cosine distance in its native domain and consequently avoids the scalar
+    logarithm in the graph traversal hot path.
+    """
+    dot = np.int32(0)
+    dim = x.shape[0]
+    for i in range(dim):
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+
+    similarity = np.float32(dot) * inv_norm_x * inv_norm_y
+    if similarity <= 0.0:
+        return 1.0
+    return 1.0 - min(np.float32(1.0), similarity)
+
+
+@numba.njit(
+    "f4(i1[::1],i1[::1],f4,f4)",
+    fastmath=True,
+    nogil=True,
+    boundscheck=False,
+    inline="always",
+    locals={
+        "dot": numba.types.int32,
+        "product": numba.types.int16,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def quantized_int8_alternative_dot_with_norms(x, y, inv_norm_x, inv_norm_y):
+    """Alternative dot distance using precomputed code-space inverse norms."""
+    dot = np.int32(0)
+    dim = x.shape[0]
+    for i in range(dim):
+        product = np.int16(x[i]) * np.int16(y[i])
+        dot += np.int32(product)
+
+    similarity = np.float32(dot) * inv_norm_x * inv_norm_y
+    if similarity <= 0.0:
+        return FLOAT32_MAX
+    return -np.log2(min(np.float32(1.0), similarity))
 
 
 named_distances = {
@@ -2122,6 +2219,7 @@ named_distances = {
     # Other distances
     "canberra": canberra,
     "cosine": cosine,
+    "direct_cosine": direct_cosine,
     "dot": dot,
     "inner_product": inner_product,
     "correlation": correlation,
@@ -2259,5 +2357,10 @@ quantized_distances = {
         "l2": quantized_uint4_sq_euclidean,
         "cosine": quantized_uint4_alternative_cosine,
         "dot": quantized_uint4_alternative_dot,
+    },
+    "int8": {
+        "cosine": quantized_int8_alternative_cosine,
+        "direct_cosine": quantized_int8_direct_cosine,
+        "dot": quantized_int8_alternative_dot,
     },
 }
