@@ -1362,3 +1362,28 @@ def test_hellinger_distances_are_not_nan():
 
     assert not np.isnan(index.neighbor_graph[1]).any()
     assert not np.isnan(index.query(data[:100], k=10)[1]).any()
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_build_matches_generic_nn_descent(metric):
+    from pynndescent.pynndescent_ import nn_descent, INT32_MIN, INT32_MAX
+
+    data = np.random.RandomState(0).normal(size=(300, 10)).astype(np.float32)
+    index = NNDescent(data, metric=metric, n_neighbors=10, random_state=42)
+
+    rng_state = (
+        np.random.RandomState(42).randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
+    )
+    expected = nn_descent(
+        index._raw_data,
+        index.n_neighbors,
+        rng_state,
+        10,
+        index._distance_func,
+        index.n_iters,
+        index.delta,
+        leaf_array=index._rp_forest,
+        kernel=select_kernel(index._distance_func, index._raw_data),
+    )
+    np.testing.assert_array_equal(index._neighbor_graph[0], expected[0])
+    np.testing.assert_array_equal(index._neighbor_graph[1], expected[1])
