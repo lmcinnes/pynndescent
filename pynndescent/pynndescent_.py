@@ -299,6 +299,7 @@ def nn_descent_internal(
     data,
     n_neighbors,
     rng_state,
+    n_threads,
     max_candidates=50,
     dist=pynnd_dist.euclidean,
     n_iters=10,
@@ -309,7 +310,6 @@ def nn_descent_internal(
     n_vertices = data.shape[0]
     block_size = 16384
     n_blocks = n_vertices // block_size
-    n_threads = numba.get_num_threads()
 
     # Pre-allocate update arrays for efficiency
     # Estimate max updates: each candidate pair can generate one update
@@ -405,12 +405,24 @@ def nn_descent(
     verbose=False,
     kernel=0,
 ):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta,
+        init_graph, rp_tree_init, leaf_array, low_memory, verbose, kernel,
+        numba.get_num_threads(),
+    )
 
+
+# numba.get_num_threads() inside a function keeps it out of the on-disk cache.
+@numba.njit()
+def nn_descent_with_threads(
+    data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
     if init_graph[0].shape[0] == 1:  # EMPTY_GRAPH
         current_graph = make_heap(data.shape[0], n_neighbors)
 
         if rp_tree_init:
-            init_rp_tree(data, dist, current_graph, leaf_array, n_threads=numba.get_num_threads())
+            init_rp_tree(data, dist, current_graph, leaf_array, n_threads=n_threads)
 
         init_random(n_neighbors, data, current_graph, dist, rng_state)
     elif (
@@ -426,6 +438,7 @@ def nn_descent(
         data,
         n_neighbors,
         rng_state,
+        n_threads,
         max_candidates=max_candidates,
         dist=dist,
         n_iters=n_iters,
@@ -435,6 +448,51 @@ def nn_descent(
     )
 
     return deheap_sort(current_graph[0], current_graph[1])
+
+
+# Same reason as diversify_squared_euclidean: a fixed distance lets numba cache it.
+@numba.njit(cache=True)
+def nn_descent_squared_euclidean(
+    data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates, pynnd_dist.squared_euclidean,
+        n_iters, delta, init_graph, rp_tree_init, leaf_array, low_memory, verbose,
+        kernel, n_threads,
+    )
+
+
+@numba.njit(cache=True)
+def nn_descent_alternative_dot(
+    data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates, pynnd_dist.alternative_dot,
+        n_iters, delta, init_graph, rp_tree_init, leaf_array, low_memory, verbose,
+        kernel, n_threads,
+    )
+
+
+def run_nn_descent(
+    data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose,
+):
+    kernel = select_kernel(dist, data)
+    if kernel == KERNEL_SQEUCLIDEAN:
+        cached_nn_descent = nn_descent_squared_euclidean
+    elif kernel == KERNEL_ALT_DOT:
+        cached_nn_descent = nn_descent_alternative_dot
+    else:
+        return nn_descent(
+            data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta,
+            init_graph, rp_tree_init, leaf_array, low_memory, verbose, kernel,
+        )
+    return cached_nn_descent(
+        data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+        rp_tree_init, leaf_array, low_memory, verbose, kernel, numba.get_num_threads(),
+    )
 
 
 @numba.njit(inline="always")
@@ -1185,7 +1243,7 @@ class NNDescent:
             if verbose:
                 print(ts(), "NN descent for", str(n_iters), "iterations")
 
-            self._neighbor_graph = nn_descent(
+            self._neighbor_graph = run_nn_descent(
                 self._raw_data,
                 self.n_neighbors,
                 self.rng_state,
@@ -1198,7 +1256,6 @@ class NNDescent:
                 init_graph=_init_graph,
                 leaf_array=leaf_array,
                 verbose=verbose,
-                kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
         if np.any(self._neighbor_graph[0][:, :-1] < 0):
@@ -3169,7 +3226,7 @@ class NNDescent:
             else:
                 effective_max_candidates = self.max_candidates
 
-            self._neighbor_graph = nn_descent(
+            self._neighbor_graph = run_nn_descent(
                 self._raw_data,
                 self.n_neighbors,
                 self.rng_state,
@@ -3182,7 +3239,6 @@ class NNDescent:
                 rp_tree_init=False,
                 leaf_array=np.array([[-1], [-1]]),
                 verbose=self.verbose,
-                kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
             # Remove search graph and search function

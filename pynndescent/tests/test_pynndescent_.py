@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 import warnings
 import io
 import re
@@ -1387,3 +1389,40 @@ def test_build_matches_generic_nn_descent(metric):
     )
     np.testing.assert_array_equal(index._neighbor_graph[0], expected[0])
     np.testing.assert_array_equal(index._neighbor_graph[1], expected[1])
+
+
+CACHE_HITS_IN_FRESH_PROCESS = """
+import numpy as np
+from pynndescent import NNDescent, pynndescent_
+
+data = np.random.RandomState(0).normal(size=(300, 10)).astype(np.float32)
+for metric in ("euclidean", "cosine"):
+    NNDescent(data, metric=metric, n_neighbors=10, random_state=42)
+cache_hits = [
+    sum(getattr(pynndescent_, name).stats.cache_hits.values())
+    for name in ("nn_descent_squared_euclidean", "nn_descent_alternative_dot")
+]
+print("RESULT", pynndescent_.__file__, *cache_hits)
+"""
+
+
+@pytest.mark.skipif(
+    "NUMBA_DISABLE_JIT" in os.environ, reason="Caching needs Numba compilation"
+)
+def test_dense_build_is_reused_from_disk_cache():
+    from pynndescent import pynndescent_
+
+    data = np.random.RandomState(0).normal(size=(300, 10)).astype(np.float32)
+    for metric in ("euclidean", "cosine"):
+        NNDescent(data, metric=metric, n_neighbors=10, random_state=42)
+
+    checkout = str(pathlib.Path(pynndescent_.__file__).parents[1])
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([checkout, os.environ.get("PYTHONPATH", "")])}
+    output = subprocess.run(
+        [sys.executable, "-c", CACHE_HITS_IN_FRESH_PROCESS],
+        env=env, capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    _, child_module, *cache_hits = next(line for line in output if line.startswith("RESULT ")).split()
+
+    assert child_module == pynndescent_.__file__
+    assert [int(hits) > 0 for hits in cache_hits] == [True, True]
