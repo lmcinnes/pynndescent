@@ -3053,11 +3053,13 @@ class NNDescent:
         -------
             None
         """
+        error_sparse_to_do = NotImplementedError("Sparse update not complete yet")
+        if self._is_sparse:
+            raise error_sparse_to_do
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
-        error_sparse_to_do = NotImplementedError("Sparse update not complete yet")
         # input checks
         if xs_updated is not None:
             xs_updated = check_array(
