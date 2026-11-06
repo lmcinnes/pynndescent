@@ -1390,3 +1390,4 @@ def test_prepare_compile_search_option(nn_data):
     # And switching back
     index.prepare(compile_search=True)
     assert not index._uses_cached_search
+
