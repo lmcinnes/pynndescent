@@ -821,6 +821,40 @@ def proxy_inner_product(x, y):
     return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
 
 
+@numba.njit(
+    fastmath=True,
+    locals={
+        "ip_result": numba.types.float32,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def proxy_inner_product_query(x, y, inv_scale):
+    r"""Query-time distance for ``proxy_inner_product`` searches.
+
+    With ``inv_scale = 1 / (|x| * max_y |y|)`` this is non-negative and, for a
+    fixed query ``x``, orders points ``y`` with a positive inner product by
+    that inner product, where ``proxy_inner_product`` orders them mostly by
+    angle. It keeps the logarithmic scale of the proxy.
+
+    .. math::
+        D(x, y) = -\log_2(\min(\langle x, y \rangle \cdot \mathrm{inv\_scale}, 1))
+
+    Non-positive inner products are treated as maximally distant, as in
+    ``proxy_inner_product``.
+    """
+    ip_result = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        ip_result += x[i] * y[i]
+
+    if ip_result <= 0:
+        return np.float32(FLOAT32_MAX)
+
+    # Rounding can put the best point just past the bound of 1
+    return np.float32(-np.log2(min(ip_result * inv_scale, 1.0)))
+
+
 @numba.vectorize(fastmath=True)
 def correct_alternative_inner_product(d):
     r"""Convert alternative inner product distance back to negative inner product.

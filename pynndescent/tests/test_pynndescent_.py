@@ -487,6 +487,21 @@ def test_proxy_only_results_survive_later_queries(nn_data):
     np.testing.assert_array_equal(distances, expected_distances)
 
 
+@pytest.mark.parametrize("scale", [1.0, 1e-3])
+def test_proxy_inner_product_search_ranks_by_inner_product(scale):
+    # Varied norms, as in attention keys: best angles are not best inner products
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(300, 8)) * rng.uniform(0.2, 3.0, size=(300, 1))
+    data = (data * scale).astype(np.float32)
+    queries = rng.normal(size=(20, 8)).astype(np.float32)
+    index = NNDescent(data, "proxy_inner_product", n_neighbors=15, random_state=42)
+
+    indices, _ = index.query(queries, k=10, epsilon=0.5, rerank_width=0)
+
+    expected = np.argsort(-(queries @ data.T), axis=1)[:, :10]
+    np.testing.assert_array_equal(indices, expected)
+
+
 def test_direct_cosine_int8_quantized_query(nn_data):
     train = nn_data[200:]
     queries = nn_data[:50]
