@@ -639,9 +639,12 @@ def test_proxy_inner_product_query_orders_by_inner_product():
 
     assert np.all(dists >= 0.0)
     assert np.all(dists[~positive] == dist.FLOAT32_MAX)
-    # The best possible point (the query at the largest norm) sits at 0
+    # The best possible point (the query at the largest norm) sits at 0, up to
+    # float32 rounding, which differs between platforms
     own_inv_scale = np.float32(1.0 / np.dot(query, query))
-    assert dist.proxy_inner_product_query(query, query, own_inv_scale) == 0.0
+    assert dist.proxy_inner_product_query(query, query, own_inv_scale) == pytest.approx(
+        0.0, abs=1e-6
+    )
     np.testing.assert_array_equal(
         np.argsort(dists[positive], kind="stable"),
         np.argsort(-ips[positive], kind="stable"),
