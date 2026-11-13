@@ -1905,6 +1905,18 @@ class NNDescent:
             def distance_func(a, b, inv_norm_a, inv_norm_b):
                 return int8_dist(a, b, inv_norm_a, inv_norm_b)
 
+        elif self.metric == "proxy_inner_product":
+            # Search ranks by inner product; query() passes 1 / (|q| * max |y|)
+            data_inv_norms = np.ones(data.shape[0], dtype=np.float32)
+            self._max_data_norm = np.float32(
+                np.sqrt(np.max(np.einsum("ij,ij->i", data, data)))
+            )
+            query_dist = pynnd_dist.proxy_inner_product_query
+
+            @numba.njit(inline="always", fastmath=True)
+            def distance_func(a, b, inv_scale_a, inv_norm_b):
+                return query_dist(a, b, inv_scale_a)
+
         else:
             data_inv_norms = np.ones(data.shape[0], dtype=np.float32)
 
@@ -1916,7 +1928,11 @@ class NNDescent:
         indices = self._search_graph.indices
         n_neighbors = self.n_neighbors
         parallel_search = self.parallel_batch_queries
-        min_distance = self._min_distance
+        if self.metric == "proxy_inner_product":
+            # The query distance is never below 0, unlike the graph's proxy
+            min_distance = np.float32(0.0)
+        else:
+            min_distance = self._min_distance
 
         if dist == pynnd_dist.bit_hamming or dist == pynnd_dist.bit_jaccard:
             data_type = numba.types.uint8[::1]
@@ -2792,7 +2808,9 @@ class NNDescent:
         rerank_width: int or None (optional, default=None)
             Number of proxy finalists to score with the exact distance. Defaults
             to all proxy candidates. Set to zero to return proxy-ranked results
-            without retaining the cost of exact reranking.
+            without retaining the cost of exact reranking. For
+            ``proxy_inner_product`` these results are ranked, and their distances
+            given, by ``-log2(<q, y> / (|q| * max |y|))``.
 
         return_distances: bool (optional, default=True)
             When False, return only neighbor IDs and skip final distance
@@ -2965,8 +2983,19 @@ class NNDescent:
             else:
                 proxy_query_data = query_data
 
-            if self.quantization != "int8":
-                # Only int8 searches read these; reuse one array of ones.
+            if self.metric == "proxy_inner_product":
+                query_scale = (
+                    np.sqrt(np.sum(query_data * query_data, axis=1))
+                    * self._max_data_norm
+                )
+                query_inv_norms = np.divide(
+                    np.float32(1.0),
+                    query_scale,
+                    out=np.zeros_like(query_scale),
+                    where=query_scale > 0,
+                )
+            elif self.quantization != "int8":
+                # Only int8 and proxy_inner_product searches read these; reuse ones.
                 query_inv_norms = self._ones_for_queries(query_data.shape[0])
 
             workspace_shape = (query_data.shape[0], search_k)

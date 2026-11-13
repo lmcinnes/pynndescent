@@ -620,3 +620,32 @@ def test_proxy_inner_product_without_positive_inner_product(y):
     y = np.array(y, dtype=np.float32)
     assert dist.proxy_inner_product(x, y) == dist.FLOAT32_MAX
     assert dist.alternative_inner_product(x, y) == dist.FLOAT32_MAX
+    assert dist.proxy_inner_product_query(x, y, np.float32(1.0)) == dist.FLOAT32_MAX
+
+
+def test_proxy_inner_product_query_orders_by_inner_product():
+    rng = np.random.default_rng(0)
+    query = rng.normal(size=16).astype(np.float32)
+    points = rng.normal(size=(200, 16)) * rng.uniform(0.1, 5.0, size=(200, 1))
+    points = np.vstack([points, query[None, :]]).astype(np.float32)
+    inv_scale = np.float32(
+        1.0 / (np.linalg.norm(query) * np.linalg.norm(points, axis=1).max())
+    )
+    ips = points @ query
+    positive = ips > 0
+    dists = np.array(
+        [dist.proxy_inner_product_query(query, y, inv_scale) for y in points]
+    )
+
+    assert np.all(dists >= 0.0)
+    assert np.all(dists[~positive] == dist.FLOAT32_MAX)
+    # The best possible point (the query at the largest norm) sits at 0, up to
+    # float32 rounding, which differs between platforms
+    own_inv_scale = np.float32(1.0 / np.dot(query, query))
+    assert dist.proxy_inner_product_query(query, query, own_inv_scale) == pytest.approx(
+        0.0, abs=1e-6
+    )
+    np.testing.assert_array_equal(
+        np.argsort(dists[positive], kind="stable"),
+        np.argsort(-ips[positive], kind="stable"),
+    )
