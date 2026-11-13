@@ -165,61 +165,90 @@ def _dense_sides(data, assign, planes, offsets, s_seed, sides):
                         )
 
 
-@numba.njit(parallel=True, fastmath=True, boundscheck=False, cache=True)
-def _dense_local_subtrees(
-    data, perm, leaf_mark, d_tree, d_start, d_end, d_seed, d_depth, leaf_size, max_depth, angular
+# Keep stack traversal outside the parallel IR for Numba 0.60's parfor pass.
+@numba.njit(fastmath=True, boundscheck=False, cache=True)
+def _dense_local_subtree(
+    data, perm, leaf_mark, t, start, end, seed, depth, leaf_size, max_depth, angular
 ):
     dim = data.shape[1]
+    plane = np.empty(dim, np.float32)
+    st_start = np.empty(256, np.int64)
+    st_end = np.empty(256, np.int64)
+    st_seed = np.empty(256, np.uint64)
+    st_depth = np.empty(256, np.int64)
+    st_start[0] = start
+    st_end[0] = end
+    st_seed[0] = seed
+    st_depth[0] = depth
+    top = 1
+    while top > 0:
+        top -= 1
+        a0 = st_start[top]
+        a1 = st_end[top]
+        seed = st_seed[top]
+        depth = st_depth[top]
+        size = a1 - a0
+        if size <= leaf_size or depth >= max_depth or top >= 254:
+            leaf_mark[t, a0] = 1
+            continue
+        a, b = _two_points(seed, size)
+        offset = _dense_plane(data, perm[t, a0 + a], perm[t, a0 + b], plane, angular)
+        lo = a0
+        hi = a1
+        while lo < hi:
+            point = perm[t, lo]
+            m = offset
+            for d in range(dim):
+                m += plane[d] * data[point, d]
+            if _side(m, seed, point) == 0:
+                lo += 1
+            else:
+                hi -= 1
+                perm[t, lo] = perm[t, hi]
+                perm[t, hi] = point
+        left = lo - a0
+        if left == 0 or left == size:
+            left = size // 2
+        st_start[top] = a0 + left
+        st_end[top] = a1
+        st_seed[top] = _mix64(seed * _U(2) + _U(1))
+        st_depth[top] = depth + 1
+        top += 1
+        st_start[top] = a0
+        st_end[top] = a0 + left
+        st_seed[top] = _mix64(seed * _U(2))
+        st_depth[top] = depth + 1
+        top += 1
+
+
+@numba.njit(parallel=True, fastmath=True, boundscheck=False, cache=True)
+def _dense_local_subtrees(
+    data,
+    perm,
+    leaf_mark,
+    d_tree,
+    d_start,
+    d_end,
+    d_seed,
+    d_depth,
+    leaf_size,
+    max_depth,
+    angular,
+):
     for s in numba.prange(d_tree.shape[0]):
-        t = d_tree[s]
-        plane = np.empty(dim, np.float32)
-        st_start = np.empty(256, np.int64)
-        st_end = np.empty(256, np.int64)
-        st_seed = np.empty(256, np.uint64)
-        st_depth = np.empty(256, np.int64)
-        st_start[0] = d_start[s]
-        st_end[0] = d_end[s]
-        st_seed[0] = d_seed[s]
-        st_depth[0] = d_depth[s]
-        top = 1
-        while top > 0:
-            top -= 1
-            a0 = st_start[top]
-            a1 = st_end[top]
-            seed = st_seed[top]
-            depth = st_depth[top]
-            size = a1 - a0
-            if size <= leaf_size or depth >= max_depth or top >= 254:
-                leaf_mark[t, a0] = 1
-                continue
-            a, b = _two_points(seed, size)
-            offset = _dense_plane(data, perm[t, a0 + a], perm[t, a0 + b], plane, angular)
-            lo = a0
-            hi = a1
-            while lo < hi:
-                point = perm[t, lo]
-                m = offset
-                for d in range(dim):
-                    m += plane[d] * data[point, d]
-                if _side(m, seed, point) == 0:
-                    lo += 1
-                else:
-                    hi -= 1
-                    perm[t, lo] = perm[t, hi]
-                    perm[t, hi] = point
-            left = lo - a0
-            if left == 0 or left == size:
-                left = size // 2
-            st_start[top] = a0 + left
-            st_end[top] = a1
-            st_seed[top] = _mix64(seed * _U(2) + _U(1))
-            st_depth[top] = depth + 1
-            top += 1
-            st_start[top] = a0
-            st_end[top] = a0 + left
-            st_seed[top] = _mix64(seed * _U(2))
-            st_depth[top] = depth + 1
-            top += 1
+        _dense_local_subtree(
+            data,
+            perm,
+            leaf_mark,
+            d_tree[s],
+            d_start[s],
+            d_end[s],
+            d_seed[s],
+            d_depth[s],
+            leaf_size,
+            max_depth,
+            angular,
+        )
 
 
 # --------------------------------------------------------------------------- sparse
@@ -360,65 +389,114 @@ def _sparse_sides(inds, indptr, values, assign, plane_ptr, plane_inds, plane_val
                 sides[p, t] = _side(m, s_seed[s], p)
 
 
+# Keep stack traversal outside the parallel IR for Numba 0.60's parfor pass.
+@numba.njit(cache=True)
+def _sparse_local_subtree(
+    inds,
+    indptr,
+    values,
+    perm,
+    leaf_mark,
+    t,
+    start,
+    end,
+    seed,
+    depth,
+    leaf_size,
+    max_depth,
+    angular,
+):
+    st_start = np.empty(256, np.int64)
+    st_end = np.empty(256, np.int64)
+    st_seed = np.empty(256, np.uint64)
+    st_depth = np.empty(256, np.int64)
+    st_start[0] = start
+    st_end[0] = end
+    st_seed[0] = seed
+    st_depth[0] = depth
+    top = 1
+    while top > 0:
+        top -= 1
+        a0 = st_start[top]
+        a1 = st_end[top]
+        seed = st_seed[top]
+        depth = st_depth[top]
+        size = a1 - a0
+        if size <= leaf_size or depth >= max_depth or top >= 254:
+            leaf_mark[t, a0] = 1
+            continue
+        a, b = _two_points(seed, size)
+        p = perm[t, a0 + a]
+        q = perm[t, a0 + b]
+        nnz = _sparse_plane_size(inds, indptr, p, q)
+        plane_inds = np.empty(nnz, np.int32)
+        plane_values = np.empty(nnz, np.float32)
+        offset = _sparse_plane_fill(
+            inds, indptr, values, p, q, plane_inds, plane_values, 0, angular
+        )
+        lo = a0
+        hi = a1
+        while lo < hi:
+            point = perm[t, lo]
+            m = (
+                _sparse_margin(
+                    inds, indptr, values, point, plane_inds, plane_values, 0, nnz
+                )
+                + offset
+            )
+            if _side(m, seed, point) == 0:
+                lo += 1
+            else:
+                hi -= 1
+                perm[t, lo] = perm[t, hi]
+                perm[t, hi] = point
+        left = lo - a0
+        if left == 0 or left == size:
+            left = size // 2
+        st_start[top] = a0 + left
+        st_end[top] = a1
+        st_seed[top] = _mix64(seed * _U(2) + _U(1))
+        st_depth[top] = depth + 1
+        top += 1
+        st_start[top] = a0
+        st_end[top] = a0 + left
+        st_seed[top] = _mix64(seed * _U(2))
+        st_depth[top] = depth + 1
+        top += 1
+
+
 @numba.njit(parallel=True, cache=True)
 def _sparse_local_subtrees(
-    inds, indptr, values, perm, leaf_mark, d_tree, d_start, d_end, d_seed, d_depth,
-    leaf_size, max_depth, angular,
+    inds,
+    indptr,
+    values,
+    perm,
+    leaf_mark,
+    d_tree,
+    d_start,
+    d_end,
+    d_seed,
+    d_depth,
+    leaf_size,
+    max_depth,
+    angular,
 ):
     for s in numba.prange(d_tree.shape[0]):
-        t = d_tree[s]
-        st_start = np.empty(256, np.int64)
-        st_end = np.empty(256, np.int64)
-        st_seed = np.empty(256, np.uint64)
-        st_depth = np.empty(256, np.int64)
-        st_start[0] = d_start[s]
-        st_end[0] = d_end[s]
-        st_seed[0] = d_seed[s]
-        st_depth[0] = d_depth[s]
-        top = 1
-        while top > 0:
-            top -= 1
-            a0 = st_start[top]
-            a1 = st_end[top]
-            seed = st_seed[top]
-            depth = st_depth[top]
-            size = a1 - a0
-            if size <= leaf_size or depth >= max_depth or top >= 254:
-                leaf_mark[t, a0] = 1
-                continue
-            a, b = _two_points(seed, size)
-            p = perm[t, a0 + a]
-            q = perm[t, a0 + b]
-            nnz = _sparse_plane_size(inds, indptr, p, q)
-            plane_inds = np.empty(nnz, np.int32)
-            plane_values = np.empty(nnz, np.float32)
-            offset = _sparse_plane_fill(
-                inds, indptr, values, p, q, plane_inds, plane_values, 0, angular
-            )
-            lo = a0
-            hi = a1
-            while lo < hi:
-                point = perm[t, lo]
-                m = _sparse_margin(inds, indptr, values, point, plane_inds, plane_values, 0, nnz) + offset
-                if _side(m, seed, point) == 0:
-                    lo += 1
-                else:
-                    hi -= 1
-                    perm[t, lo] = perm[t, hi]
-                    perm[t, hi] = point
-            left = lo - a0
-            if left == 0 or left == size:
-                left = size // 2
-            st_start[top] = a0 + left
-            st_end[top] = a1
-            st_seed[top] = _mix64(seed * _U(2) + _U(1))
-            st_depth[top] = depth + 1
-            top += 1
-            st_start[top] = a0
-            st_end[top] = a0 + left
-            st_seed[top] = _mix64(seed * _U(2))
-            st_depth[top] = depth + 1
-            top += 1
+        _sparse_local_subtree(
+            inds,
+            indptr,
+            values,
+            perm,
+            leaf_mark,
+            d_tree[s],
+            d_start[s],
+            d_end[s],
+            d_seed[s],
+            d_depth[s],
+            leaf_size,
+            max_depth,
+            angular,
+        )
 
 
 # --------------------------------------------------------------------------- shared
