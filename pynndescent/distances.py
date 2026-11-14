@@ -1552,17 +1552,17 @@ def sinkhorn(x, y, cost=_dummy_cost, regularization=1.0):
     a /= a_sum
     b /= b_sum
 
-    sub_cost = cost[row_mask, :][:, col_mask]
+    sub_cost = cost[row_mask, :][:, col_mask].astype(np.float64)
 
     transport_plan = sinkhorn_transport_plan(
-        x, y, cost=sub_cost, regularization=regularization
+        a, b, cost=sub_cost, regularization=regularization
     )
     dim_i = transport_plan.shape[0]
     dim_j = transport_plan.shape[1]
     result = 0.0
     for i in range(dim_i):
         for j in range(dim_j):
-            result += transport_plan[i, j] * cost[i, j]
+            result += transport_plan[i, j] * sub_cost[i, j]
 
     return result
 
