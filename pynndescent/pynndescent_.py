@@ -785,16 +785,16 @@ def _quantize_int8_rows(data):
         out=np.zeros_like(max_abs, dtype=np.float32),
         where=max_abs > 0.0,
     )
-    return np.ascontiguousarray(
-        np.clip(np.rint(data * multipliers), -127.0, 127.0).astype(np.int8)
-    )
+    scaled = data * multipliers
+    np.rint(scaled, out=scaled)
+    np.clip(scaled, -127.0, 127.0, out=scaled)
+    return np.ascontiguousarray(scaled.astype(np.int8))
 
 
 def _int8_code_inv_norms(codes):
     """Return reciprocal L2 norms for rows of signed-int8 codes."""
-    squared_norms = np.einsum(
-        "ij,ij->i", codes.astype(np.float32), codes.astype(np.float32)
-    )
+    float_codes = codes.astype(np.float32)
+    squared_norms = np.einsum("ij,ij->i", float_codes, float_codes)
     return np.divide(
         np.float32(1.0),
         np.sqrt(squared_norms),
