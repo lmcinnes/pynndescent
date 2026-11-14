@@ -475,6 +475,18 @@ def nn_descent_alternative_dot(
     )
 
 
+@numba.njit(cache=True)
+def nn_descent_proxy_inner_product(
+    data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates, pynnd_dist.proxy_inner_product,
+        n_iters, delta, init_graph, rp_tree_init, leaf_array, low_memory, verbose,
+        kernel, n_threads,
+    )
+
+
 def run_nn_descent(
     data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta, init_graph,
     rp_tree_init, leaf_array, low_memory, verbose,
@@ -484,6 +496,8 @@ def run_nn_descent(
         cached_nn_descent = nn_descent_squared_euclidean
     elif kernel == KERNEL_ALT_DOT:
         cached_nn_descent = nn_descent_alternative_dot
+    elif dist is pynnd_dist.proxy_inner_product:
+        cached_nn_descent = nn_descent_proxy_inner_product
     else:
         return nn_descent(
             data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta,
@@ -540,7 +554,7 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
     return indices, distances
 
 
-# Disk-cached diversify for the two dense distances with batched kernels. A
+# Disk-cached diversify for the dense distances with cached builds. A
 # function that takes the distance as an argument cannot be reused from the
 # on-disk cache (its argument type differs between processes), so these fix the
 # distance at compile time; other distances compile diversify per process.
@@ -556,6 +570,16 @@ def diversify_squared_euclidean(indices, distances, data, rng_state, prune_proba
 def diversify_alternative_dot(indices, distances, data, rng_state, prune_probability):
     return diversify(
         indices, distances, data, pynnd_dist.alternative_dot, rng_state,
+        prune_probability,
+    )
+
+
+@numba.njit(cache=True)
+def diversify_proxy_inner_product(
+    indices, distances, data, rng_state, prune_probability
+):
+    return diversify(
+        indices, distances, data, pynnd_dist.proxy_inner_product, rng_state,
         prune_probability,
     )
 
@@ -1548,6 +1572,10 @@ class NNDescent:
                     )
                 elif kernel == KERNEL_ALT_DOT:
                     diversified_rows, diversified_data = diversify_alternative_dot(
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                    )
+                elif self._distance_func is pynnd_dist.proxy_inner_product:
+                    diversified_rows, diversified_data = diversify_proxy_inner_product(
                         rows, dists, self._raw_data, self.rng_state, self.diversify_prob
                     )
                 else:
