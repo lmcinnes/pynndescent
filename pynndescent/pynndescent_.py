@@ -487,6 +487,18 @@ def nn_descent_proxy_inner_product(
     )
 
 
+@numba.njit(cache=True)
+def nn_descent_alternative_inner_product(
+    data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates,
+        pynnd_dist.alternative_inner_product, n_iters, delta, init_graph,
+        rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+    )
+
+
 def run_nn_descent(
     data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta, init_graph,
     rp_tree_init, leaf_array, low_memory, verbose,
@@ -498,6 +510,8 @@ def run_nn_descent(
         cached_nn_descent = nn_descent_alternative_dot
     elif dist is pynnd_dist.proxy_inner_product:
         cached_nn_descent = nn_descent_proxy_inner_product
+    elif dist is pynnd_dist.alternative_inner_product:
+        cached_nn_descent = nn_descent_alternative_inner_product
     else:
         return nn_descent(
             data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta,
@@ -580,6 +594,16 @@ def diversify_proxy_inner_product(
 ):
     return diversify(
         indices, distances, data, pynnd_dist.proxy_inner_product, rng_state,
+        prune_probability,
+    )
+
+
+@numba.njit(cache=True)
+def diversify_alternative_inner_product(
+    indices, distances, data, rng_state, prune_probability
+):
+    return diversify(
+        indices, distances, data, pynnd_dist.alternative_inner_product, rng_state,
         prune_probability,
     )
 
@@ -1577,6 +1601,13 @@ class NNDescent:
                 elif self._distance_func is pynnd_dist.proxy_inner_product:
                     diversified_rows, diversified_data = diversify_proxy_inner_product(
                         rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                    )
+                elif self._distance_func is pynnd_dist.alternative_inner_product:
+                    diversified_rows, diversified_data = (
+                        diversify_alternative_inner_product(
+                            rows, dists, self._raw_data, self.rng_state,
+                            self.diversify_prob,
+                        )
                     )
                 else:
                     diversified_rows, diversified_data = diversify(
