@@ -1533,3 +1533,53 @@ def test_dense_build_is_reused_from_disk_cache():
 
     assert child_module == pynndescent_.__file__
     assert [int(hits) > 0 for hits in cache_hits] == [True] * 6
+
+
+@pytest.mark.parametrize(
+    "data, match",
+    [
+        (np.zeros(10, dtype=np.float32), "Expected 2D array"),
+        (np.zeros((0, 5), dtype=np.float32), "0 sample"),
+        (np.zeros((5, 0), dtype=np.float32), "0 feature"),
+        ([[1.0, 2.0], [3.0]], "inhomogeneous|sequence"),
+    ],
+)
+def test_invalid_data_raises_value_error(data, match):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (11)"""
+    with pytest.raises(ValueError, match=match):
+        NNDescent(data, n_neighbors=5)
+
+
+@pytest.mark.parametrize("n_neighbors", [0, -3])
+def test_invalid_n_neighbors_raises_value_error(nn_data, n_neighbors):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (11)"""
+    with pytest.raises(ValueError, match="n_neighbors must be at least 1"):
+        NNDescent(nn_data[:50], n_neighbors=n_neighbors)
+
+
+def test_list_input_is_accepted():
+    data = np.random.RandomState(0).normal(size=(50, 4)).tolist()
+    indices, _ = NNDescent(data, n_neighbors=5, random_state=0).neighbor_graph
+    assert indices.shape == (50, 5)
+
+
+def test_transformer_transform_none_after_query(nn_data):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (10)"""
+    data = nn_data[:200]
+
+    # An uncompressed index keeps the training graph, so transform(None) keeps working.
+    transformer = PyNNDescentTransformer(n_neighbors=5, random_state=0)
+    transformer.fit(data, compress_index=False)
+    expected = transformer.transform(None)
+    transformer.transform(data[:10])
+    np.testing.assert_array_equal(
+        transformer.transform(None).toarray(), expected.toarray()
+    )
+
+    # A compressed index discards it on the first query: fail with a clear error.
+    transformer = PyNNDescentTransformer(n_neighbors=5, random_state=0).fit(data)
+    transformer.transform(data[:10])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="compress_index=False"):
+            transformer.transform(None)
