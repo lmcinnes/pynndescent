@@ -56,6 +56,7 @@ from pynndescent.utils import (
 
 from pynndescent.kernels import (
     KERNEL_ALT_DOT,
+    KERNEL_PROXY_IP_QUERY,
     KERNEL_SQEUCLIDEAN,
     select_kernel,
     generate_graph_update_array_batched,
@@ -87,6 +88,15 @@ INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
 FLOAT32_EPS = np.finfo(np.float32).eps
+
+
+def _canonicalize_sparse_data(data):
+    """Normalize CSR storage without changing the caller's arrays."""
+    if not data.has_canonical_format or np.any(data.data == 0):
+        data = data.copy()
+        data.sum_duplicates()
+        data.eliminate_zeros()
+    return data
 
 
 def is_c_contiguous(array_like):
@@ -809,16 +819,16 @@ def _quantize_int8_rows(data):
         out=np.zeros_like(max_abs, dtype=np.float32),
         where=max_abs > 0.0,
     )
-    return np.ascontiguousarray(
-        np.clip(np.rint(data * multipliers), -127.0, 127.0).astype(np.int8)
-    )
+    scaled = data * multipliers
+    np.rint(scaled, out=scaled)
+    np.clip(scaled, -127.0, 127.0, out=scaled)
+    return np.ascontiguousarray(scaled.astype(np.int8))
 
 
 def _int8_code_inv_norms(codes):
     """Return reciprocal L2 norms for rows of signed-int8 codes."""
-    squared_norms = np.einsum(
-        "ij,ij->i", codes.astype(np.float32), codes.astype(np.float32)
-    )
+    float_codes = codes.astype(np.float32)
+    squared_norms = np.einsum("ij,ij->i", float_codes, float_codes)
     return np.divide(
         np.float32(1.0),
         np.sqrt(squared_norms),
@@ -1076,6 +1086,28 @@ class NNDescent:
         search_tree_leaf_budget=1,
     ):
 
+        if n_neighbors < 1:
+            raise ValueError(f"n_neighbors must be at least 1, got {n_neighbors}")
+
+        # Decided on the input as given, before check_array may copy or convert it.
+        if getattr(data, "dtype", None) == np.float32 and (
+            issparse(data) or is_c_contiguous(data)
+        ):
+            copy_on_normalize = True
+        else:
+            copy_on_normalize = False
+
+        # Validate the input before anything below reads data.shape, so that
+        # invalid input raises check_array's ValueError instead of an unrelated error.
+        if metric in ("bit_hamming", "bit_jaccard") or (
+            callable(metric) and bit_metric
+        ):
+            data = check_array(data, dtype=np.uint8, order="C")
+            self._input_dtype = np.uint8
+        else:
+            data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
+            self._input_dtype = np.float32
+
         if n_trees is None:
             n_trees = max(3, min(12, int(round(2.0 * np.log10(data.shape[0])))))
         if n_iters is None:
@@ -1117,21 +1149,8 @@ class NNDescent:
         self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
 
-        if getattr(data, "dtype", None) == np.float32 and (
-            issparse(data) or is_c_contiguous(data)
-        ):
-            copy_on_normalize = True
-        else:
-            copy_on_normalize = False
-
-        if metric in ("bit_hamming", "bit_jaccard") or (
-            callable(self.metric) and self.bit_metric
-        ):
-            data = check_array(data, dtype=np.uint8, order="C")
-            self._input_dtype = np.uint8
-        else:
-            data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
-            self._input_dtype = np.float32
+        if issparse(data):
+            data = _canonicalize_sparse_data(data)
 
         self._raw_data = data
 
@@ -1694,6 +1713,10 @@ class NNDescent:
 
         numba.set_num_threads(self._original_num_threads)
 
+    @staticmethod
+    def _compute_max_data_norm(data):
+        return np.float32(np.sqrt(np.max(np.einsum("ij,ij->i", data, data))))
+
     def _init_cached_search_function(self):
         """Use the shared, disk-cached search function where it applies.
 
@@ -1715,9 +1738,15 @@ class NNDescent:
             and data.flags.c_contiguous
         ):
             return False
-        kernel = select_kernel(self._distance_func, data)
-        if kernel == 0:
-            return False
+        min_distance = self._min_distance
+        if self.metric == "proxy_inner_product":
+            kernel = KERNEL_PROXY_IP_QUERY
+            self._max_data_norm = self._compute_max_data_norm(data)
+            min_distance = np.float32(0.0)
+        else:
+            kernel = select_kernel(self._distance_func, data)
+            if kernel == 0:
+                return False
 
         angular_query = self.metric in ("cosine", "direct_cosine", "dot")
         self._search_function = make_cached_search_function(
@@ -1727,7 +1756,7 @@ class NNDescent:
             self._search_forest,
             self.search_tree_leaf_budget,
             self.n_neighbors,
-            self._min_distance,
+            min_distance,
             angular_query,
             angular_query,
             kernel,
@@ -1967,9 +1996,7 @@ class NNDescent:
         elif self.metric == "proxy_inner_product":
             # Search ranks by inner product; query() passes 1 / (|q| * max |y|)
             data_inv_norms = np.ones(data.shape[0], dtype=np.float32)
-            self._max_data_norm = np.float32(
-                np.sqrt(np.max(np.einsum("ij,ij->i", data, data)))
-            )
+            self._max_data_norm = self._compute_max_data_norm(data)
             query_dist = pynnd_dist.proxy_inner_product_query
 
             @numba.njit(inline="always", fastmath=True)
@@ -2925,8 +2952,7 @@ class NNDescent:
                             query_data, csr_array
                         ):
                             query_data = csr_array(query_data, dtype=np.float32)
-                    if not query_data.has_sorted_indices:
-                        query_data.sort_indices()
+                    query_data = _canonicalize_sparse_data(query_data)
                     indices, dists, _ = search_function(
                         query_data.indices,
                         query_data.indptr,
@@ -3094,8 +3120,7 @@ class NNDescent:
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
             if not isspmatrix_csr(query_data) and not isinstance(query_data, csr_array):
                 query_data = csr_array(query_data, dtype=np.float32)
-            if not query_data.has_sorted_indices:
-                query_data.sort_indices()
+            query_data = _canonicalize_sparse_data(query_data)
 
             indices, dists, _ = self._search_function(
                 query_data.indices,
@@ -3622,7 +3647,14 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             n_samples_transform = X.shape[0]
 
         if X is None:
-            indices, distances = self.index_.neighbor_graph
+            neighbor_graph = self.index_.neighbor_graph
+            if neighbor_graph is None:
+                raise ValueError(
+                    "transform(None) needs the neighbor graph of the training data, "
+                    "which a compressed index discards once it is queried. Call "
+                    "fit(X, compress_index=False) to keep it, or use fit_transform."
+                )
+            indices, distances = neighbor_graph
         else:
             indices, distances = self.index_.query(
                 X, k=self.n_neighbors, epsilon=self.search_epsilon

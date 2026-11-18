@@ -31,6 +31,91 @@ from pynndescent.pynndescent_ import _int8_code_inv_norms, _quantize_int8_rows
 from pynndescent.kernels import select_kernel
 
 
+@pytest.mark.parametrize(
+    "sparse_type", [scipy.sparse.csr_matrix, scipy.sparse.csr_array]
+)
+@pytest.mark.parametrize(
+    "representation,metric",
+    [
+        ("duplicates", "euclidean"),
+        ("stored_zeros", "jaccard"),
+        ("unsorted", "euclidean"),
+    ],
+)
+@pytest.mark.parametrize("entry_point", ["training", "fast_query", "fallback_query"])
+def test_sparse_storage_preserves_distances(
+    sparse_type, representation, metric, entry_point
+):
+    data = np.vstack((np.eye(6), 1 - np.eye(6))).astype(np.float32)
+    canonical = sparse_type(data)
+    if representation == "duplicates":
+        supplied = sparse_type(
+            (
+                np.repeat(canonical.data / 2, 2),
+                np.repeat(canonical.indices, 2),
+                canonical.indptr * 2,
+            ),
+            shape=data.shape,
+        )
+    elif representation == "unsorted":
+        order = np.concatenate(
+            [
+                np.arange(stop - 1, start - 1, -1)
+                for start, stop in zip(canonical.indptr[:-1], canonical.indptr[1:])
+            ]
+        )
+        supplied = sparse_type(
+            (canonical.data[order], canonical.indices[order], canonical.indptr.copy()),
+            shape=data.shape,
+        )
+    else:
+        supplied = sparse_type(
+            (
+                data.ravel().copy(),
+                np.tile(np.arange(6), len(data)),
+                np.arange(0, data.size + 1, 6),
+            ),
+            shape=data.shape,
+        )
+    query_rows = np.arange(6, 9)
+    if entry_point != "training":
+        supplied = supplied[query_rows]
+    saved_storage = tuple(
+        array.copy() for array in (supplied.data, supplied.indices, supplied.indptr)
+    )
+    index = NNDescent(
+        supplied if entry_point == "training" else canonical,
+        metric=metric,
+        n_neighbors=6,
+        n_trees=0,
+        n_iters=1,
+        init_graph=np.tile(np.arange(len(data), dtype=np.int32), (len(data), 1)),
+        random_state=42,
+        n_jobs=1,
+    )
+    expected = scipy.spatial.distance.cdist(data, data, metric=metric)
+    if entry_point == "training":
+        indices, distances = index.neighbor_graph
+    else:
+        options = {"candidate_width": 4} if entry_point == "fallback_query" else {}
+        indices, distances = index.query(supplied, k=4, **options)
+    assert np.all((indices >= 0) & (indices < len(data)))
+    np.testing.assert_allclose(
+        distances,
+        expected[
+            (np.arange(len(data)) if entry_point == "training" else query_rows)[
+                :, None
+            ],
+            indices,
+        ],
+        atol=1e-6,
+    )
+    for current, saved in zip(
+        (supplied.data, supplied.indices, supplied.indptr), saved_storage
+    ):
+        np.testing.assert_array_equal(current, saved)
+
+
 def test_haversine_antipodal_neighbor_graph():
     data = np.deg2rad(
         np.array(
@@ -487,14 +572,23 @@ def test_proxy_only_results_survive_later_queries(nn_data):
     np.testing.assert_array_equal(distances, expected_distances)
 
 
+@pytest.mark.parametrize("parallel_batch_queries", [False, True])
 @pytest.mark.parametrize("scale", [1.0, 1e-3])
-def test_proxy_inner_product_search_ranks_by_inner_product(scale):
+def test_proxy_inner_product_search_ranks_by_inner_product(
+    scale, parallel_batch_queries
+):
     # Varied norms, as in attention keys: best angles are not best inner products
     rng = np.random.default_rng(0)
     data = rng.normal(size=(300, 8)) * rng.uniform(0.2, 3.0, size=(300, 1))
     data = (data * scale).astype(np.float32)
     queries = rng.normal(size=(20, 8)).astype(np.float32)
-    index = NNDescent(data, "proxy_inner_product", n_neighbors=15, random_state=42)
+    index = NNDescent(
+        data,
+        "proxy_inner_product",
+        n_neighbors=15,
+        random_state=42,
+        parallel_batch_queries=parallel_batch_queries,
+    )
 
     indices, _ = index.query(queries, k=10, epsilon=0.5, rerank_width=0)
 
@@ -1309,6 +1403,7 @@ def test_bad_data():
         ("cosine", {}),
         ("euclidean", {"search_tree_leaf_budget": 4}),
         ("euclidean", {"parallel_batch_queries": True}),
+        ("proxy_inner_product", {}),
     ],
 )
 def test_cached_search_matches_closure(nn_data, metric, kwargs):
@@ -1329,6 +1424,24 @@ def test_cached_search_matches_closure(nn_data, metric, kwargs):
 
     np.testing.assert_array_equal(cached_indices, closure_indices)
     np.testing.assert_allclose(cached_dists, closure_dists, rtol=1e-6)
+
+
+def test_proxy_cached_search_matches_closure_without_rerank(nn_data):
+    index = NNDescent(
+        nn_data[:300], metric="proxy_inner_product", n_neighbors=10, random_state=42
+    )
+    index.prepare(compile_search=False)
+    assert index._uses_cached_search
+    queries = nn_data[300:350]
+    cached = index.query(queries, k=8, epsilon=0.1, rerank_width=0)
+
+    index._init_cached_search_function = lambda: False
+    index._init_search_function()
+    assert not index._uses_cached_search
+    closure = index.query(queries, k=8, epsilon=0.1, rerank_width=0)
+
+    np.testing.assert_array_equal(cached[0], closure[0])
+    np.testing.assert_array_equal(cached[1], closure[1])
 
 
 def test_query_rejects_wrong_shape(nn_data):
@@ -1452,3 +1565,53 @@ def test_dense_build_is_reused_from_disk_cache():
 
     assert child_module == pynndescent_.__file__
     assert [int(hits) > 0 for hits in cache_hits] == [True] * 8
+
+
+@pytest.mark.parametrize(
+    "data, match",
+    [
+        (np.zeros(10, dtype=np.float32), "Expected 2D array"),
+        (np.zeros((0, 5), dtype=np.float32), "0 sample"),
+        (np.zeros((5, 0), dtype=np.float32), "0 feature"),
+        ([[1.0, 2.0], [3.0]], "inhomogeneous|sequence"),
+    ],
+)
+def test_invalid_data_raises_value_error(data, match):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (11)"""
+    with pytest.raises(ValueError, match=match):
+        NNDescent(data, n_neighbors=5)
+
+
+@pytest.mark.parametrize("n_neighbors", [0, -3])
+def test_invalid_n_neighbors_raises_value_error(nn_data, n_neighbors):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (11)"""
+    with pytest.raises(ValueError, match="n_neighbors must be at least 1"):
+        NNDescent(nn_data[:50], n_neighbors=n_neighbors)
+
+
+def test_list_input_is_accepted():
+    data = np.random.RandomState(0).normal(size=(50, 4)).tolist()
+    indices, _ = NNDescent(data, n_neighbors=5, random_state=0).neighbor_graph
+    assert indices.shape == (50, 5)
+
+
+def test_transformer_transform_none_after_query(nn_data):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (10)"""
+    data = nn_data[:200]
+
+    # An uncompressed index keeps the training graph, so transform(None) keeps working.
+    transformer = PyNNDescentTransformer(n_neighbors=5, random_state=0)
+    transformer.fit(data, compress_index=False)
+    expected = transformer.transform(None)
+    transformer.transform(data[:10])
+    np.testing.assert_array_equal(
+        transformer.transform(None).toarray(), expected.toarray()
+    )
+
+    # A compressed index discards it on the first query: fail with a clear error.
+    transformer = PyNNDescentTransformer(n_neighbors=5, random_state=0).fit(data)
+    transformer.transform(data[:10])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="compress_index=False"):
+            transformer.transform(None)
