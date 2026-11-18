@@ -572,14 +572,23 @@ def test_proxy_only_results_survive_later_queries(nn_data):
     np.testing.assert_array_equal(distances, expected_distances)
 
 
+@pytest.mark.parametrize("parallel_batch_queries", [False, True])
 @pytest.mark.parametrize("scale", [1.0, 1e-3])
-def test_proxy_inner_product_search_ranks_by_inner_product(scale):
+def test_proxy_inner_product_search_ranks_by_inner_product(
+    scale, parallel_batch_queries
+):
     # Varied norms, as in attention keys: best angles are not best inner products
     rng = np.random.default_rng(0)
     data = rng.normal(size=(300, 8)) * rng.uniform(0.2, 3.0, size=(300, 1))
     data = (data * scale).astype(np.float32)
     queries = rng.normal(size=(20, 8)).astype(np.float32)
-    index = NNDescent(data, "proxy_inner_product", n_neighbors=15, random_state=42)
+    index = NNDescent(
+        data,
+        "proxy_inner_product",
+        n_neighbors=15,
+        random_state=42,
+        parallel_batch_queries=parallel_batch_queries,
+    )
 
     indices, _ = index.query(queries, k=10, epsilon=0.5, rerank_width=0)
 
@@ -1394,6 +1403,7 @@ def test_bad_data():
         ("cosine", {}),
         ("euclidean", {"search_tree_leaf_budget": 4}),
         ("euclidean", {"parallel_batch_queries": True}),
+        ("proxy_inner_product", {}),
     ],
 )
 def test_cached_search_matches_closure(nn_data, metric, kwargs):
@@ -1414,6 +1424,24 @@ def test_cached_search_matches_closure(nn_data, metric, kwargs):
 
     np.testing.assert_array_equal(cached_indices, closure_indices)
     np.testing.assert_allclose(cached_dists, closure_dists, rtol=1e-6)
+
+
+def test_proxy_cached_search_matches_closure_without_rerank(nn_data):
+    index = NNDescent(
+        nn_data[:300], metric="proxy_inner_product", n_neighbors=10, random_state=42
+    )
+    index.prepare(compile_search=False)
+    assert index._uses_cached_search
+    queries = nn_data[300:350]
+    cached = index.query(queries, k=8, epsilon=0.1, rerank_width=0)
+
+    index._init_cached_search_function = lambda: False
+    index._init_search_function()
+    assert not index._uses_cached_search
+    closure = index.query(queries, k=8, epsilon=0.1, rerank_width=0)
+
+    np.testing.assert_array_equal(cached[0], closure[0])
+    np.testing.assert_array_equal(cached[1], closure[1])
 
 
 def test_query_rejects_wrong_shape(nn_data):
