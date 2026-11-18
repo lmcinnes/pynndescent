@@ -32,8 +32,17 @@ import numpy as np
 from numba import types
 from numba.experimental import structref
 
-from pynndescent.distances import alternative_dot, squared_euclidean
-from pynndescent.kernels import KERNEL_ALT_DOT, KERNEL_SQEUCLIDEAN, four_distances
+from pynndescent.distances import (
+    alternative_dot,
+    proxy_inner_product_query,
+    squared_euclidean,
+)
+from pynndescent.kernels import (
+    KERNEL_ALT_DOT,
+    KERNEL_PROXY_IP_QUERY,
+    KERNEL_SQEUCLIDEAN,
+    four_distances,
+)
 from pynndescent.rp_trees import select_side
 from pynndescent.utils import (
     check_and_mark_visited,
@@ -87,9 +96,11 @@ structref.define_proxy(SearchIndex, SearchIndexType, _SEARCH_INDEX_FIELDS)
 
 
 @numba.njit(inline="always", fastmath=True)
-def _distance(kernel, x, y):
+def _distance(kernel, x, y, query_inv_norm):
     if kernel == KERNEL_SQEUCLIDEAN:
         return squared_euclidean(x, y)
+    if kernel == KERNEL_PROXY_IP_QUERY:
+        return proxy_inner_product_query(x, y, query_inv_norm)
     return alternative_dot(x, y)
 
 
@@ -164,6 +175,7 @@ def _tree_spill_leaves(point, rng_state, leaves, tree_hyperplanes, tree_offsets,
 )
 def _search_one(
     current_query,
+    query_inv_norm,
     tree_current_query,
     heap_priorities,
     heap_indices,
@@ -200,7 +212,7 @@ def _search_one(
             for j in range(leaf_start, leaf_end):
                 candidate = tree_indices[tree_num, j]
                 if check_and_mark_visited(visited, candidate) == 0:
-                    d = np.float32(_distance(kernel, current_query, data[candidate]))
+                    d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
                     n_initial_points += 1
@@ -214,7 +226,7 @@ def _search_one(
             for j in range(leaf_bounds[leaf_num, 0], leaf_bounds[leaf_num, 1]):
                 candidate = tree_indices[0, j]
                 if check_and_mark_visited(visited, candidate) == 0:
-                    d = np.float32(_distance(kernel, current_query, data[candidate]))
+                    d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     heapq.heappush(seed_set, (d, candidate))
                     n_initial_points += 1
@@ -225,7 +237,7 @@ def _search_one(
         for j in range(n_random_samples):
             candidate = np.int32(np.abs(tau_rand_int(rng_state)) % data.shape[0])
             if check_and_mark_visited(visited, candidate) == 0:
-                d = np.float32(_distance(kernel, current_query, data[candidate]))
+                d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
                 heapq.heappush(seed_set, (d, candidate))
 
@@ -250,7 +262,13 @@ def _search_one(
                 pending[n_pending] = candidate
                 n_pending += 1
                 if n_pending == 4:
-                    four_distances(current_query, data, pending, pending_d, kernel)
+                    if kernel == KERNEL_PROXY_IP_QUERY:
+                        for r in range(4):
+                            pending_d[r] = _distance(
+                                kernel, current_query, data[pending[r]], query_inv_norm
+                            )
+                    else:
+                        four_distances(current_query, data, pending, pending_d, kernel)
                     for r in range(4):
                         d = pending_d[r]
                         if d < distance_bound:
@@ -261,7 +279,7 @@ def _search_one(
                             )
                     n_pending = 0
         for r in range(n_pending):
-            d = np.float32(_distance(kernel, current_query, data[pending[r]]))
+            d = np.float32(_distance(kernel, current_query, data[pending[r]], query_inv_norm))
             if d < distance_bound:
                 simple_heap_push(heap_priorities, heap_indices, d, pending[r])
                 heapq.heappush(seed_set, (d, pending[r]))
@@ -301,8 +319,8 @@ def _prepare_queries(i, query_points, tree_query_points, query_is_normalized, no
 
 @numba.njit(inline="always", fastmath=True)
 def _search_dense_serial(
-    index, query_points, tree_query_points, result, k, epsilon, visited,
-    query_is_normalized, rng_state, kernel,
+    index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
+    visited, query_is_normalized, rng_state, kernel,
 ):
     data = index.data
     indptr = index.indptr
@@ -331,7 +349,8 @@ def _search_dense_serial(
         if not ok:
             continue
         _search_one(
-            current_query, tree_current_query, heap_priorities, heap_indices, k,
+            current_query, query_inv_norms[i], tree_current_query, heap_priorities,
+            heap_indices, k,
             epsilon, visited, internal_rng_state, data, indptr, indices,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
@@ -339,18 +358,14 @@ def _search_dense_serial(
     return result
 
 
-# One cached function per distance kernel, so that the kernel is a compile-time
-# constant (as it is in a closure). Arguments are in the order query() passes
-# them, after the index, so that functools.partial(entry_point, index) can be
-# called directly. query_inv_norms is only used by int8 quantised search.
 @numba.njit(fastmath=True, cache=True)
 def search_dense_sqeuclidean(
     index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
     visited, query_is_normalized, rng_state,
 ):
     return _search_dense_serial(
-        index, query_points, tree_query_points, result, k, epsilon, visited,
-        query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN,
+        index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
+        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN,
     )
 
 
@@ -360,8 +375,19 @@ def search_dense_alternative_dot(
     visited, query_is_normalized, rng_state,
 ):
     return _search_dense_serial(
-        index, query_points, tree_query_points, result, k, epsilon, visited,
-        query_is_normalized, rng_state, KERNEL_ALT_DOT,
+        index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
+        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT,
+    )
+
+
+@numba.njit(fastmath=True, cache=True)
+def search_dense_proxy_inner_product(
+    index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
+    visited, query_is_normalized, rng_state,
+):
+    return _search_dense_serial(
+        index, query_points, tree_query_points, query_inv_norms, result, k, epsilon,
+        visited, query_is_normalized, rng_state, KERNEL_PROXY_IP_QUERY,
     )
 
 
@@ -399,7 +425,8 @@ def search_dense_parallel(
         if not ok:
             continue
         _search_one(
-            current_query, tree_current_query, heap_priorities, heap_indices, k,
+            current_query, query_inv_norms[i], tree_current_query, heap_priorities,
+            heap_indices, k,
             epsilon, visited_nodes, internal_rng_state, data, indptr, indices,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
@@ -455,13 +482,13 @@ def make_cached_search_function(
     Returns a callable with the dense search closure's interface,
     ``search(query_points, tree_query_points, query_inv_norms, result, k,
     epsilon, visited, query_is_normalized, rng_state) -> result``.
-    ``query_inv_norms`` is only used by int8 quantised search, which does not
-    use this path, and is ignored.
     """
     if parallel:
         dispatcher = search_dense_parallel
     elif kernel == KERNEL_SQEUCLIDEAN:
         dispatcher = search_dense_sqeuclidean
+    elif kernel == KERNEL_PROXY_IP_QUERY:
+        dispatcher = search_dense_proxy_inner_product
     else:
         dispatcher = search_dense_alternative_dot
     hyperplanes, offsets, children, tree_indices = stack_search_forest(
@@ -487,7 +514,7 @@ def make_cached_search_function(
         numba.typeof(index),  # index arrays and settings
         _array(types.float32, 2),  # query_points
         _array(types.float32, 2),  # tree_query_points
-        _array(types.float32, 1),  # query_inv_norms (unused here)
+        _array(types.float32, 1),
         _HEAP_TYPE,  # result
         types.int64,  # k
         types.float32,  # epsilon

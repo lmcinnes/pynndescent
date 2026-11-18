@@ -56,6 +56,7 @@ from pynndescent.utils import (
 
 from pynndescent.kernels import (
     KERNEL_ALT_DOT,
+    KERNEL_PROXY_IP_QUERY,
     KERNEL_SQEUCLIDEAN,
     select_kernel,
     generate_graph_update_array_batched,
@@ -1681,6 +1682,10 @@ class NNDescent:
 
         numba.set_num_threads(self._original_num_threads)
 
+    @staticmethod
+    def _compute_max_data_norm(data):
+        return np.float32(np.sqrt(np.max(np.einsum("ij,ij->i", data, data))))
+
     def _init_cached_search_function(self):
         """Use the shared, disk-cached search function where it applies.
 
@@ -1702,9 +1707,15 @@ class NNDescent:
             and data.flags.c_contiguous
         ):
             return False
-        kernel = select_kernel(self._distance_func, data)
-        if kernel == 0:
-            return False
+        min_distance = self._min_distance
+        if self.metric == "proxy_inner_product":
+            kernel = KERNEL_PROXY_IP_QUERY
+            self._max_data_norm = self._compute_max_data_norm(data)
+            min_distance = np.float32(0.0)
+        else:
+            kernel = select_kernel(self._distance_func, data)
+            if kernel == 0:
+                return False
 
         angular_query = self.metric in ("cosine", "direct_cosine", "dot")
         self._search_function = make_cached_search_function(
@@ -1714,7 +1725,7 @@ class NNDescent:
             self._search_forest,
             self.search_tree_leaf_budget,
             self.n_neighbors,
-            self._min_distance,
+            min_distance,
             angular_query,
             angular_query,
             kernel,
@@ -1954,9 +1965,7 @@ class NNDescent:
         elif self.metric == "proxy_inner_product":
             # Search ranks by inner product; query() passes 1 / (|q| * max |y|)
             data_inv_norms = np.ones(data.shape[0], dtype=np.float32)
-            self._max_data_norm = np.float32(
-                np.sqrt(np.max(np.einsum("ij,ij->i", data, data)))
-            )
+            self._max_data_norm = self._compute_max_data_norm(data)
             query_dist = pynnd_dist.proxy_inner_product_query
 
             @numba.njit(inline="always", fastmath=True)
