@@ -1061,6 +1061,28 @@ class NNDescent:
         search_tree_leaf_budget=1,
     ):
 
+        if n_neighbors < 1:
+            raise ValueError(f"n_neighbors must be at least 1, got {n_neighbors}")
+
+        # Decided on the input as given, before check_array may copy or convert it.
+        if getattr(data, "dtype", None) == np.float32 and (
+            issparse(data) or is_c_contiguous(data)
+        ):
+            copy_on_normalize = True
+        else:
+            copy_on_normalize = False
+
+        # Validate the input before anything below reads data.shape, so that
+        # invalid input raises check_array's ValueError instead of an unrelated error.
+        if metric in ("bit_hamming", "bit_jaccard") or (
+            callable(metric) and bit_metric
+        ):
+            data = check_array(data, dtype=np.uint8, order="C")
+            self._input_dtype = np.uint8
+        else:
+            data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
+            self._input_dtype = np.float32
+
         if n_trees is None:
             n_trees = max(3, min(12, int(round(2.0 * np.log10(data.shape[0])))))
         if n_iters is None:
@@ -1101,22 +1123,6 @@ class NNDescent:
         self.compressed = compressed
         self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
-
-        if getattr(data, "dtype", None) == np.float32 and (
-            issparse(data) or is_c_contiguous(data)
-        ):
-            copy_on_normalize = True
-        else:
-            copy_on_normalize = False
-
-        if metric in ("bit_hamming", "bit_jaccard") or (
-            callable(self.metric) and self.bit_metric
-        ):
-            data = check_array(data, dtype=np.uint8, order="C")
-            self._input_dtype = np.uint8
-        else:
-            data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
-            self._input_dtype = np.float32
 
         if issparse(data):
             data = _canonicalize_sparse_data(data)
@@ -3601,7 +3607,14 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             n_samples_transform = X.shape[0]
 
         if X is None:
-            indices, distances = self.index_.neighbor_graph
+            neighbor_graph = self.index_.neighbor_graph
+            if neighbor_graph is None:
+                raise ValueError(
+                    "transform(None) needs the neighbor graph of the training data, "
+                    "which a compressed index discards once it is queried. Call "
+                    "fit(X, compress_index=False) to keep it, or use fit_transform."
+                )
+            indices, distances = neighbor_graph
         else:
             indices, distances = self.index_.query(
                 X, k=self.n_neighbors, epsilon=self.search_epsilon
