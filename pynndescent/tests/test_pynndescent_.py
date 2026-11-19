@@ -1494,7 +1494,9 @@ def test_hellinger_distances_are_not_nan():
     assert not np.isnan(index.query(data[:100], k=10)[1]).any()
 
 
-@pytest.mark.parametrize("metric", ["euclidean", "cosine", "proxy_inner_product"])
+@pytest.mark.parametrize(
+    "metric", ["euclidean", "cosine", "proxy_inner_product", "inner_product"]
+)
 def test_build_matches_generic_nn_descent(metric):
     from pynndescent.pynndescent_ import nn_descent, INT32_MIN, INT32_MAX
 
@@ -1524,7 +1526,7 @@ import numpy as np
 from pynndescent import NNDescent, pynndescent_
 
 data = np.random.RandomState(0).normal(size=(300, 10)).astype(np.float32)
-for metric in ("euclidean", "cosine", "proxy_inner_product"):
+for metric in ("euclidean", "cosine", "proxy_inner_product", "inner_product"):
     NNDescent(data, metric=metric, n_neighbors=10, random_state=42).prepare()
 cache_hits = [
     sum(getattr(pynndescent_, name).stats.cache_hits.values())
@@ -1532,9 +1534,11 @@ cache_hits = [
         "nn_descent_squared_euclidean",
         "nn_descent_alternative_dot",
         "nn_descent_proxy_inner_product",
+        "nn_descent_alternative_inner_product",
         "diversify_squared_euclidean",
         "diversify_alternative_dot",
         "diversify_proxy_inner_product",
+        "diversify_alternative_inner_product",
     )
 ]
 print("RESULT", pynndescent_.__file__, *cache_hits)
@@ -1548,7 +1552,7 @@ def test_dense_build_is_reused_from_disk_cache():
     from pynndescent import pynndescent_
 
     data = np.random.RandomState(0).normal(size=(300, 10)).astype(np.float32)
-    for metric in ("euclidean", "cosine", "proxy_inner_product"):
+    for metric in ("euclidean", "cosine", "proxy_inner_product", "inner_product"):
         NNDescent(data, metric=metric, n_neighbors=10, random_state=42).prepare()
 
     checkout = str(pathlib.Path(pynndescent_.__file__).parents[1])
@@ -1560,7 +1564,7 @@ def test_dense_build_is_reused_from_disk_cache():
     _, child_module, *cache_hits = next(line for line in output if line.startswith("RESULT ")).split()
 
     assert child_module == pynndescent_.__file__
-    assert [int(hits) > 0 for hits in cache_hits] == [True] * 6
+    assert [int(hits) > 0 for hits in cache_hits] == [True] * 8
 
 
 @pytest.mark.parametrize(
