@@ -47,9 +47,6 @@ point_indices_list_type = numba.types.ListType(point_indices_type)
 
 
 @numba.njit(
-    numba.types.Tuple(
-        (numba.int32[::1], numba.int32[::1], dense_hyperplane_type, offset_type)
-    )(numba.float32[:, ::1], numba.int32[::1], numba.int64[::1]),
     locals={
         "n_left": numba.uint32,
         "n_right": numba.uint32,
@@ -180,9 +177,6 @@ def angular_random_projection_split(data, indices, rng_state):
 
 
 @numba.njit(
-    numba.types.Tuple(
-        (numba.int32[::1], numba.int32[::1], bit_hyperplane_type, offset_type)
-    )(numba.uint8[:, ::1], numba.int32[::1], numba.int64[::1]),
     locals={
         "n_left": numba.uint32,
         "n_right": numba.uint32,
@@ -310,9 +304,6 @@ def angular_bitpacked_random_projection_split(data, indices, rng_state):
 
 
 @numba.njit(
-    numba.types.Tuple(
-        (numba.int32[::1], numba.int32[::1], dense_hyperplane_type, offset_type)
-    )(numba.float32[:, ::1], numba.int32[::1], numba.int64[::1]),
     locals={
         "n_left": numba.uint32,
         "n_right": numba.uint32,
@@ -425,7 +416,12 @@ def euclidean_random_projection_split(data, indices, rng_state):
             indices_right[n_right] = indices[i]
             n_right += 1
 
-    return indices_left, indices_right, hyperplane_vector, hyperplane_offset
+    return (
+        indices_left,
+        indices_right,
+        hyperplane_vector,
+        np.float64(hyperplane_offset),
+    )
 
 
 @numba.njit(
@@ -695,7 +691,6 @@ FAST_SPLIT_THRESHOLD = 5000
 
 
 @numba.njit(
-    numba.types.int32(numba.types.Array(numba.types.int32, 1, "C"), numba.types.int32),
     fastmath=True,
     nogil=True,
     cache=True,
@@ -707,18 +702,15 @@ def binary_search(sorted_arr, value):
     while lo <= hi:
         mid = (lo + hi) // 2
         if sorted_arr[mid] == value:
-            return mid
+            return np.int32(mid)
         elif sorted_arr[mid] < value:
             lo = mid + 1
         else:
             hi = mid - 1
-    return -1
+    return np.int32(-1)
 
 
 @numba.njit(
-    numba.types.Array(numba.types.int32, 1, "C")(
-        numba.types.Array(numba.types.int32, 2, "C")
-    ),
     fastmath=True,
     nogil=True,
     cache=True,
@@ -752,11 +744,6 @@ def compute_global_degrees(neighbor_indices):
 
 
 @numba.njit(
-    numba.types.Array(numba.types.int32, 1, "C")(
-        numba.types.Array(numba.types.int32, 1, "C"),
-        numba.types.Array(numba.types.int32, 1, "C"),
-        numba.types.int64,
-    ),
     fastmath=True,
     nogil=True,
     cache=True,
@@ -816,21 +803,6 @@ MIN_SPLIT_BALANCE = 0.1
 
 
 @numba.njit(
-    numba.types.Tuple(
-        (
-            numba.int32[::1],
-            numba.int32[::1],
-            numba.float32[::1],
-            numba.float32,
-            numba.float32,
-        )
-    )(
-        numba.float32[:, ::1],
-        numba.int32[::1],
-        numba.int32[:, ::1],
-        numba.int32[::1],
-        numba.int64[::1],
-    ),
     fastmath=True,
     nogil=True,
     cache=True,
@@ -956,25 +928,16 @@ def euclidean_hub_split(data, indices, neighbor_indices, global_degrees, rng_sta
             indices_right[n_right] = indices[i]
             n_right += 1
 
-    return indices_left, indices_right, best_hyperplane, best_offset, best_balance
+    return (
+        indices_left,
+        indices_right,
+        best_hyperplane,
+        np.float32(best_offset),
+        best_balance,
+    )
 
 
 @numba.njit(
-    numba.types.Tuple(
-        (
-            numba.int32[::1],
-            numba.int32[::1],
-            numba.float32[::1],
-            numba.float32,
-            numba.float32,
-        )
-    )(
-        numba.float32[:, ::1],
-        numba.int32[::1],
-        numba.int32[:, ::1],
-        numba.int32[::1],
-        numba.int64[::1],
-    ),
     fastmath=True,
     nogil=True,
     cache=True,
@@ -1099,21 +1062,8 @@ def angular_hub_split(data, indices, neighbor_indices, global_degrees, rng_state
 
 
 @numba.njit(
-    numba.types.void(
-        numba.float32[:, ::1],
-        numba.int32[::1],
-        numba.int32[:, ::1],
-        numba.int32[::1],
-        dense_hyperplanes_list_type,
-        offsets_list_type,
-        children_list_type,
-        point_indices_list_type,
-        numba.int64[::1],
-        numba.int64,
-        numba.int64,
-    ),
     nogil=True,
-    cache=True,
+    cache=False,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_hub_euclidean_tree(
@@ -1201,21 +1151,8 @@ def make_hub_euclidean_tree(
 
 
 @numba.njit(
-    numba.types.void(
-        numba.float32[:, ::1],
-        numba.int32[::1],
-        numba.int32[:, ::1],
-        numba.int32[::1],
-        dense_hyperplanes_list_type,
-        offsets_list_type,
-        children_list_type,
-        point_indices_list_type,
-        numba.int64[::1],
-        numba.int64,
-        numba.int64,
-    ),
     nogil=True,
-    cache=True,
+    cache=False,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_hub_angular_tree(
@@ -1302,7 +1239,7 @@ def make_hub_angular_tree(
     return
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(nogil=True, cache=False)
 def make_hub_tree(
     data,
     neighbor_indices,
@@ -1941,12 +1878,6 @@ def make_sparse_hub_tree(
 
 
 @numba.njit(
-    numba.types.Array(numba.types.int32, 1, "C")(
-        numba.types.Array(numba.types.int32, 1, "C"),
-        numba.types.Array(numba.types.uint8, 2, "C"),
-        numba.types.Array(numba.types.int32, 1, "C"),
-        numba.types.int64,
-    ),
     fastmath=True,
     nogil=True,
     cache=True,
@@ -1982,20 +1913,6 @@ def get_top_k_hub_indices_bit(indices, data, global_degrees, k=3):
 
 
 @numba.njit(
-    numba.types.Tuple(
-        (
-            numba.int32[::1],
-            numba.int32[::1],
-            numba.uint8[::1],
-            numba.float32,
-        )
-    )(
-        numba.uint8[:, ::1],
-        numba.int32[::1],
-        numba.int32[:, ::1],
-        numba.int32[::1],
-        numba.int64[::1],
-    ),
     fastmath=True,
     nogil=True,
     cache=True,
@@ -2121,21 +2038,8 @@ def bit_hub_split(data, indices, neighbor_indices, global_degrees, rng_state):
 
 
 @numba.njit(
-    numba.types.void(
-        numba.uint8[:, ::1],
-        numba.int32[::1],
-        numba.int32[:, ::1],
-        numba.int32[::1],
-        bit_hyperplanes_list_type,
-        offsets_list_type,
-        children_list_type,
-        point_indices_list_type,
-        numba.int64[::1],
-        numba.int64,
-        numba.int64,
-    ),
     nogil=True,
-    cache=True,
+    cache=False,
     locals={"left_node_num": numba.types.int32, "right_node_num": numba.types.int32},
 )
 def make_bit_hub_tree_recursive(
@@ -2205,7 +2109,7 @@ def make_bit_hub_tree_recursive(
     return
 
 
-@numba.njit(nogil=True, cache=True)
+@numba.njit(nogil=True, cache=False)
 def make_bit_hub_tree(
     data,
     neighbor_indices,
@@ -2770,15 +2674,6 @@ def make_dense_bit_tree(data, rng_state, leaf_size=30, angular=False, max_depth=
 
 
 @numba.njit(
-    [
-        "b1(f4[::1],f4,f4[::1],i8[::1])",
-        numba.types.boolean(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.float32,
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
-        ),
-    ],
     fastmath=True,
     locals={
         "margin": numba.types.float32,
@@ -2795,25 +2690,16 @@ def select_side(hyperplane, offset, point, rng_state):
     if abs(margin) < EPS:
         side = np.abs(tau_rand_int(rng_state)) % 2
         if side == 0:
-            return 0
+            return False
         else:
-            return 1
+            return True
     elif margin > 0:
-        return 0
+        return False
     else:
-        return 1
+        return True
 
 
 @numba.njit(
-    [
-        "b1(u1[::1],f4,u1[::1],i8[::1])",
-        numba.types.boolean(
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.float32,
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
-        ),
-    ],
     fastmath=True,
     locals={
         "margin": numba.types.float32,
@@ -2831,27 +2717,16 @@ def select_side_bit(hyperplane, offset, point, rng_state):
     if abs(margin) < EPS:
         side = np.abs(tau_rand_int(rng_state)) % 2
         if side == 0:
-            return 0
+            return False
         else:
-            return 1
+            return True
     elif margin > 0:
-        return 0
+        return False
     else:
-        return 1
+        return True
 
 
 @numba.njit(
-    [
-        "i4[::1](f4[::1],f4[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])",
-        numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 2, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 2, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
-        ),
-    ],
     locals={"node": numba.types.uint32, "side": numba.types.boolean},
     cache=True,
 )
@@ -2868,17 +2743,6 @@ def search_flat_tree(point, hyperplanes, offsets, children, indices, rng_state):
 
 
 @numba.njit(
-    [
-        "i4[::1](u1[::1],u1[:,::1],f4[::1],i4[:,::1],i4[::1],i8[::1])",
-        numba.types.Array(numba.types.int32, 1, "C", readonly=True)(
-            numba.types.Array(numba.types.uint8, 1, "C", readonly=True),
-            numba.types.Array(numba.types.uint8, 2, "C", readonly=True),
-            numba.types.Array(numba.types.float32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 2, "C", readonly=True),
-            numba.types.Array(numba.types.int32, 1, "C", readonly=True),
-            numba.types.Array(numba.types.int64, 1, "C", readonly=False),
-        ),
-    ],
     locals={"node": numba.types.uint32, "side": numba.types.boolean},
     cache=True,
 )
