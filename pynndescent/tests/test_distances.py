@@ -354,20 +354,51 @@ def test_alternative_distances():
 
     for distname in dist.fast_distance_alternatives:
 
-        true_dist = dist.named_distances[distname]
         alt_dist = dist.fast_distance_alternatives[distname]["dist"]
         correction = dist.fast_distance_alternatives[distname]["correction"]
 
-        for i in range(100):
-            x = np.random.random(30).astype(np.float32)
-            y = np.random.random(30).astype(np.float32)
-            x[x < 0.25] = 0.0
-            y[y < 0.25] = 0.0
+        if distname == "bit_jaccard":
+            true_dist = dist.named_distances["jaccard"]
 
-            true_distance = true_dist(x, y)
-            corrected_alt_distance = correction(alt_dist(x, y))
+            for i in range(100):
+                x = np.random.random(30).astype(np.float32)
+                y = np.random.random(30).astype(np.float32)
+                x[x < 0.25] = 0.0
+                y[y < 0.25] = 0.0
 
-            assert np.isclose(true_distance, corrected_alt_distance)
+                mask_x = (x != 0.0)
+                mask_y = (y != 0.0)
+
+                packed_mask_x = np.packbits(mask_x)
+                packed_mask_y = np.packbits(mask_y)
+
+                true_distance = true_dist(x, y)
+                corrected_alt_distance = correction(alt_dist(packed_mask_x, packed_mask_y))
+
+                assert np.isclose(true_distance, corrected_alt_distance)
+        else:
+            true_dist = dist.named_distances[distname]
+
+            for i in range(100):
+                x = np.random.random(30).astype(np.float32)
+                y = np.random.random(30).astype(np.float32)
+                x[x < 0.25] = 0.0
+                y[y < 0.25] = 0.0
+                if distname == "dot":
+                    # dot expects unit vectors, as NNDescent normalizes them.
+                    x /= np.linalg.norm(x)
+                    y /= np.linalg.norm(y)
+
+                true_distance = true_dist(x, y)
+                corrected_alt_distance = correction(alt_dist(x, y))
+
+                assert np.isclose(true_distance, corrected_alt_distance)
+
+
+def test_correct_alternative_cosine_is_not_negative():
+    # float32 rounding can put a cosine just above 1, giving a slightly
+    # negative alternative distance (#214).
+    assert dist.correct_alternative_cosine(np.float32(-1e-7)) == 0.0
 
 
 def test_jensen_shannon():
@@ -414,6 +445,18 @@ def test_sparse_jensen_shannon():
                 sparse_test_data[j].data,
             )
             assert np.isclose(d1, d2, rtol=1e-3)
+
+
+@pytest.mark.parametrize("x, scale", [([3.0, 5.0, 7.0], 7.0), ([0.2, 0.3, 0.5], 2.0)])
+def test_hellinger_proportional_inputs(x, scale):
+    # float32 rounding can put the overlap of proportional rows just above 1,
+    # which made the square root return NaN.
+    x = np.array(x, dtype=np.float32)
+    y = (scale * x).astype(np.float32)
+
+    assert np.isclose(dist.hellinger(x, y), 0.0, atol=1e-3)
+    assert dist.correct_alternative_hellinger(dist.alternative_hellinger(x, y)) == 0.0
+    assert dist.correct_alternative_hellinger(np.float32(-1e-7)) == 0.0
 
 
 @pytest.mark.parametrize("p", [1.0, 2.0, 3.0, 0.5])
@@ -465,7 +508,7 @@ def test_bit_jaccard():
     all_pairs = pairwise_distances(unpacked_data, metric="jaccard")
     for i in range(test_data.shape[0]):
         for j in range(i + 1, test_data.shape[0]):
-            d1 = 1.0 - np.exp(-dist.bit_jaccard(test_data[i], test_data[j]))
+            d1 = 1.0 - pow(2.0, -dist.bit_jaccard(test_data[i], test_data[j]))
             d2 = all_pairs[i, j]
             assert np.isclose(d1, d2)
 
@@ -567,3 +610,42 @@ def test_sparse_dot_product_with_empty_vector(empty_first):
 
     assert spdist.sparse_dot_product(*args) == 0.0
     assert spdist.sparse_dot(*args) == 1.0
+
+
+@pytest.mark.parametrize("y", [[0.0, 1.0], [-1.0, 1.0]])
+def test_proxy_inner_product_without_positive_inner_product(y):
+    # orthogonal or opposed vectors are maximally distant, as in
+    # alternative_inner_product, instead of dividing by sqrt(0)
+    x = np.array([1.0, 0.0], dtype=np.float32)
+    y = np.array(y, dtype=np.float32)
+    assert dist.proxy_inner_product(x, y) == dist.FLOAT32_MAX
+    assert dist.alternative_inner_product(x, y) == dist.FLOAT32_MAX
+    assert dist.proxy_inner_product_query(x, y, np.float32(1.0)) == dist.FLOAT32_MAX
+
+
+def test_proxy_inner_product_query_orders_by_inner_product():
+    rng = np.random.default_rng(0)
+    query = rng.normal(size=16).astype(np.float32)
+    points = rng.normal(size=(200, 16)) * rng.uniform(0.1, 5.0, size=(200, 1))
+    points = np.vstack([points, query[None, :]]).astype(np.float32)
+    inv_scale = np.float32(
+        1.0 / (np.linalg.norm(query) * np.linalg.norm(points, axis=1).max())
+    )
+    ips = points @ query
+    positive = ips > 0
+    dists = np.array(
+        [dist.proxy_inner_product_query(query, y, inv_scale) for y in points]
+    )
+
+    assert np.all(dists >= 0.0)
+    assert np.all(dists[~positive] == dist.FLOAT32_MAX)
+    # The best possible point (the query at the largest norm) sits at 0, up to
+    # float32 rounding, which differs between platforms
+    own_inv_scale = np.float32(1.0 / np.dot(query, query))
+    assert dist.proxy_inner_product_query(query, query, own_inv_scale) == pytest.approx(
+        0.0, abs=1e-6
+    )
+    np.testing.assert_array_equal(
+        np.argsort(dists[positive], kind="stable"),
+        np.argsort(-ips[positive], kind="stable"),
+    )
