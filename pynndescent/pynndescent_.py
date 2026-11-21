@@ -56,6 +56,7 @@ from pynndescent.utils import (
 
 from pynndescent.kernels import (
     KERNEL_ALT_DOT,
+    KERNEL_PROXY_IP_QUERY,
     KERNEL_SQEUCLIDEAN,
     select_kernel,
     generate_graph_update_array_batched,
@@ -87,6 +88,15 @@ INT32_MIN = np.iinfo(np.int32).min + 1
 INT32_MAX = np.iinfo(np.int32).max - 1
 
 FLOAT32_EPS = np.finfo(np.float32).eps
+
+
+def _canonicalize_sparse_data(data):
+    """Normalize CSR storage without changing the caller's arrays."""
+    if not data.has_canonical_format or np.any(data.data == 0):
+        data = data.copy()
+        data.sum_duplicates()
+        data.eliminate_zeros()
+    return data
 
 
 def is_c_contiguous(array_like):
@@ -299,6 +309,7 @@ def nn_descent_internal(
     data,
     n_neighbors,
     rng_state,
+    n_threads,
     max_candidates=50,
     dist=pynnd_dist.euclidean,
     n_iters=10,
@@ -309,7 +320,6 @@ def nn_descent_internal(
     n_vertices = data.shape[0]
     block_size = 16384
     n_blocks = n_vertices // block_size
-    n_threads = numba.get_num_threads()
 
     # Pre-allocate update arrays for efficiency
     # Estimate max updates: each candidate pair can generate one update
@@ -405,12 +415,24 @@ def nn_descent(
     verbose=False,
     kernel=0,
 ):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta,
+        init_graph, rp_tree_init, leaf_array, low_memory, verbose, kernel,
+        numba.get_num_threads(),
+    )
 
+
+# numba.get_num_threads() inside a function keeps it out of the on-disk cache.
+@numba.njit()
+def nn_descent_with_threads(
+    data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
     if init_graph[0].shape[0] == 1:  # EMPTY_GRAPH
         current_graph = make_heap(data.shape[0], n_neighbors)
 
         if rp_tree_init:
-            init_rp_tree(data, dist, current_graph, leaf_array, n_threads=numba.get_num_threads())
+            init_rp_tree(data, dist, current_graph, leaf_array, n_threads=n_threads)
 
         init_random(n_neighbors, data, current_graph, dist, rng_state)
     elif (
@@ -426,6 +448,7 @@ def nn_descent(
         data,
         n_neighbors,
         rng_state,
+        n_threads,
         max_candidates=max_candidates,
         dist=dist,
         n_iters=n_iters,
@@ -435,6 +458,79 @@ def nn_descent(
     )
 
     return deheap_sort(current_graph[0], current_graph[1])
+
+
+# Same reason as diversify_squared_euclidean: a fixed distance lets numba cache it.
+@numba.njit(cache=True)
+def nn_descent_squared_euclidean(
+    data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates, pynnd_dist.squared_euclidean,
+        n_iters, delta, init_graph, rp_tree_init, leaf_array, low_memory, verbose,
+        kernel, n_threads,
+    )
+
+
+@numba.njit(cache=True)
+def nn_descent_alternative_dot(
+    data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates, pynnd_dist.alternative_dot,
+        n_iters, delta, init_graph, rp_tree_init, leaf_array, low_memory, verbose,
+        kernel, n_threads,
+    )
+
+
+@numba.njit(cache=True)
+def nn_descent_proxy_inner_product(
+    data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates, pynnd_dist.proxy_inner_product,
+        n_iters, delta, init_graph, rp_tree_init, leaf_array, low_memory, verbose,
+        kernel, n_threads,
+    )
+
+
+@numba.njit(cache=True)
+def nn_descent_alternative_inner_product(
+    data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+):
+    return nn_descent_with_threads(
+        data, n_neighbors, rng_state, max_candidates,
+        pynnd_dist.alternative_inner_product, n_iters, delta, init_graph,
+        rp_tree_init, leaf_array, low_memory, verbose, kernel, n_threads,
+    )
+
+
+def run_nn_descent(
+    data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta, init_graph,
+    rp_tree_init, leaf_array, low_memory, verbose,
+):
+    kernel = select_kernel(dist, data)
+    if kernel == KERNEL_SQEUCLIDEAN:
+        cached_nn_descent = nn_descent_squared_euclidean
+    elif kernel == KERNEL_ALT_DOT:
+        cached_nn_descent = nn_descent_alternative_dot
+    elif dist is pynnd_dist.proxy_inner_product:
+        cached_nn_descent = nn_descent_proxy_inner_product
+    elif dist is pynnd_dist.alternative_inner_product:
+        cached_nn_descent = nn_descent_alternative_inner_product
+    else:
+        return nn_descent(
+            data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta,
+            init_graph, rp_tree_init, leaf_array, low_memory, verbose, kernel,
+        )
+    return cached_nn_descent(
+        data, n_neighbors, rng_state, max_candidates, n_iters, delta, init_graph,
+        rp_tree_init, leaf_array, low_memory, verbose, kernel, numba.get_num_threads(),
+    )
 
 
 @numba.njit(inline="always")
@@ -482,7 +578,7 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
     return indices, distances
 
 
-# Disk-cached diversify for the two dense distances with batched kernels. A
+# Disk-cached diversify for the dense distances with cached builds. A
 # function that takes the distance as an argument cannot be reused from the
 # on-disk cache (its argument type differs between processes), so these fix the
 # distance at compile time; other distances compile diversify per process.
@@ -498,6 +594,26 @@ def diversify_squared_euclidean(indices, distances, data, rng_state, prune_proba
 def diversify_alternative_dot(indices, distances, data, rng_state, prune_probability):
     return diversify(
         indices, distances, data, pynnd_dist.alternative_dot, rng_state,
+        prune_probability,
+    )
+
+
+@numba.njit(cache=True)
+def diversify_proxy_inner_product(
+    indices, distances, data, rng_state, prune_probability
+):
+    return diversify(
+        indices, distances, data, pynnd_dist.proxy_inner_product, rng_state,
+        prune_probability,
+    )
+
+
+@numba.njit(cache=True)
+def diversify_alternative_inner_product(
+    indices, distances, data, rng_state, prune_probability
+):
+    return diversify(
+        indices, distances, data, pynnd_dist.alternative_inner_product, rng_state,
         prune_probability,
     )
 
@@ -703,16 +819,16 @@ def _quantize_int8_rows(data):
         out=np.zeros_like(max_abs, dtype=np.float32),
         where=max_abs > 0.0,
     )
-    return np.ascontiguousarray(
-        np.clip(np.rint(data * multipliers), -127.0, 127.0).astype(np.int8)
-    )
+    scaled = data * multipliers
+    np.rint(scaled, out=scaled)
+    np.clip(scaled, -127.0, 127.0, out=scaled)
+    return np.ascontiguousarray(scaled.astype(np.int8))
 
 
 def _int8_code_inv_norms(codes):
     """Return reciprocal L2 norms for rows of signed-int8 codes."""
-    squared_norms = np.einsum(
-        "ij,ij->i", codes.astype(np.float32), codes.astype(np.float32)
-    )
+    float_codes = codes.astype(np.float32)
+    squared_norms = np.einsum("ij,ij->i", float_codes, float_codes)
     return np.divide(
         np.float32(1.0),
         np.sqrt(squared_norms),
@@ -970,6 +1086,28 @@ class NNDescent:
         search_tree_leaf_budget=1,
     ):
 
+        if n_neighbors < 1:
+            raise ValueError(f"n_neighbors must be at least 1, got {n_neighbors}")
+
+        # Decided on the input as given, before check_array may copy or convert it.
+        if getattr(data, "dtype", None) == np.float32 and (
+            issparse(data) or is_c_contiguous(data)
+        ):
+            copy_on_normalize = True
+        else:
+            copy_on_normalize = False
+
+        # Validate the input before anything below reads data.shape, so that
+        # invalid input raises check_array's ValueError instead of an unrelated error.
+        if metric in ("bit_hamming", "bit_jaccard") or (
+            callable(metric) and bit_metric
+        ):
+            data = check_array(data, dtype=np.uint8, order="C")
+            self._input_dtype = np.uint8
+        else:
+            data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
+            self._input_dtype = np.float32
+
         if n_trees is None:
             n_trees = max(3, min(12, int(round(2.0 * np.log10(data.shape[0])))))
         if n_iters is None:
@@ -1011,21 +1149,8 @@ class NNDescent:
         self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
 
-        if getattr(data, "dtype", None) == np.float32 and (
-            issparse(data) or is_c_contiguous(data)
-        ):
-            copy_on_normalize = True
-        else:
-            copy_on_normalize = False
-
-        if metric in ("bit_hamming", "bit_jaccard") or (
-            callable(self.metric) and self.bit_metric
-        ):
-            data = check_array(data, dtype=np.uint8, order="C")
-            self._input_dtype = np.uint8
-        else:
-            data = check_array(data, dtype=np.float32, accept_sparse="csr", order="C")
-            self._input_dtype = np.float32
+        if issparse(data):
+            data = _canonicalize_sparse_data(data)
 
         self._raw_data = data
 
@@ -1185,7 +1310,7 @@ class NNDescent:
             if verbose:
                 print(ts(), "NN descent for", str(n_iters), "iterations")
 
-            self._neighbor_graph = nn_descent(
+            self._neighbor_graph = run_nn_descent(
                 self._raw_data,
                 self.n_neighbors,
                 self.rng_state,
@@ -1198,10 +1323,9 @@ class NNDescent:
                 init_graph=_init_graph,
                 leaf_array=leaf_array,
                 verbose=verbose,
-                kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
-        if np.any(self._neighbor_graph[0] < 0):
+        if np.any(self._neighbor_graph[0][:, :-1] < 0):
             warn(
                 "Failed to correctly find n_neighbors for some samples."
                 " Results may be less than ideal. Try re-running with"
@@ -1493,6 +1617,17 @@ class NNDescent:
                     diversified_rows, diversified_data = diversify_alternative_dot(
                         rows, dists, self._raw_data, self.rng_state, self.diversify_prob
                     )
+                elif self._distance_func is pynnd_dist.proxy_inner_product:
+                    diversified_rows, diversified_data = diversify_proxy_inner_product(
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                    )
+                elif self._distance_func is pynnd_dist.alternative_inner_product:
+                    diversified_rows, diversified_data = (
+                        diversify_alternative_inner_product(
+                            rows, dists, self._raw_data, self.rng_state,
+                            self.diversify_prob,
+                        )
+                    )
                 else:
                     diversified_rows, diversified_data = diversify(
                         rows,
@@ -1578,6 +1713,10 @@ class NNDescent:
 
         numba.set_num_threads(self._original_num_threads)
 
+    @staticmethod
+    def _compute_max_data_norm(data):
+        return np.float32(np.sqrt(np.max(np.einsum("ij,ij->i", data, data))))
+
     def _init_cached_search_function(self):
         """Use the shared, disk-cached search function where it applies.
 
@@ -1599,9 +1738,15 @@ class NNDescent:
             and data.flags.c_contiguous
         ):
             return False
-        kernel = select_kernel(self._distance_func, data)
-        if kernel == 0:
-            return False
+        min_distance = self._min_distance
+        if self.metric == "proxy_inner_product":
+            kernel = KERNEL_PROXY_IP_QUERY
+            self._max_data_norm = self._compute_max_data_norm(data)
+            min_distance = np.float32(0.0)
+        else:
+            kernel = select_kernel(self._distance_func, data)
+            if kernel == 0:
+                return False
 
         angular_query = self.metric in ("cosine", "direct_cosine", "dot")
         self._search_function = make_cached_search_function(
@@ -1611,7 +1756,7 @@ class NNDescent:
             self._search_forest,
             self.search_tree_leaf_budget,
             self.n_neighbors,
-            self._min_distance,
+            min_distance,
             angular_query,
             angular_query,
             kernel,
@@ -1848,6 +1993,16 @@ class NNDescent:
             def distance_func(a, b, inv_norm_a, inv_norm_b):
                 return int8_dist(a, b, inv_norm_a, inv_norm_b)
 
+        elif self.metric == "proxy_inner_product":
+            # Search ranks by inner product; query() passes 1 / (|q| * max |y|)
+            data_inv_norms = np.ones(data.shape[0], dtype=np.float32)
+            self._max_data_norm = self._compute_max_data_norm(data)
+            query_dist = pynnd_dist.proxy_inner_product_query
+
+            @numba.njit(inline="always", fastmath=True)
+            def distance_func(a, b, inv_scale_a, inv_norm_b):
+                return query_dist(a, b, inv_scale_a)
+
         else:
             data_inv_norms = np.ones(data.shape[0], dtype=np.float32)
 
@@ -1859,7 +2014,11 @@ class NNDescent:
         indices = self._search_graph.indices
         n_neighbors = self.n_neighbors
         parallel_search = self.parallel_batch_queries
-        min_distance = self._min_distance
+        if self.metric == "proxy_inner_product":
+            # The query distance is never below 0, unlike the graph's proxy
+            min_distance = np.float32(0.0)
+        else:
+            min_distance = self._min_distance
 
         if dist == pynnd_dist.bit_hamming or dist == pynnd_dist.bit_jaccard:
             data_type = numba.types.uint8[::1]
@@ -2735,7 +2894,9 @@ class NNDescent:
         rerank_width: int or None (optional, default=None)
             Number of proxy finalists to score with the exact distance. Defaults
             to all proxy candidates. Set to zero to return proxy-ranked results
-            without retaining the cost of exact reranking.
+            without retaining the cost of exact reranking. For
+            ``proxy_inner_product`` these results are ranked, and their distances
+            given, by ``-log2(<q, y> / (|q| * max |y|))``.
 
         return_distances: bool (optional, default=True)
             When False, return only neighbor IDs and skip final distance
@@ -2791,8 +2952,7 @@ class NNDescent:
                             query_data, csr_array
                         ):
                             query_data = csr_array(query_data, dtype=np.float32)
-                    if not query_data.has_sorted_indices:
-                        query_data.sort_indices()
+                    query_data = _canonicalize_sparse_data(query_data)
                     indices, dists, _ = search_function(
                         query_data.indices,
                         query_data.indptr,
@@ -2908,8 +3068,19 @@ class NNDescent:
             else:
                 proxy_query_data = query_data
 
-            if self.quantization != "int8":
-                # Only int8 searches read these; reuse one array of ones.
+            if self.metric == "proxy_inner_product":
+                query_scale = (
+                    np.sqrt(np.sum(query_data * query_data, axis=1))
+                    * self._max_data_norm
+                )
+                query_inv_norms = np.divide(
+                    np.float32(1.0),
+                    query_scale,
+                    out=np.zeros_like(query_scale),
+                    where=query_scale > 0,
+                )
+            elif self.quantization != "int8":
+                # Only int8 and proxy_inner_product searches read these; reuse ones.
                 query_inv_norms = self._ones_for_queries(query_data.shape[0])
 
             workspace_shape = (query_data.shape[0], search_k)
@@ -2949,8 +3120,7 @@ class NNDescent:
             query_data = check_array(query_data, accept_sparse="csr", dtype=np.float32)
             if not isspmatrix_csr(query_data) and not isinstance(query_data, csr_array):
                 query_data = csr_array(query_data, dtype=np.float32)
-            if not query_data.has_sorted_indices:
-                query_data.sort_indices()
+            query_data = _canonicalize_sparse_data(query_data)
 
             indices, dists, _ = self._search_function(
                 query_data.indices,
@@ -3135,20 +3305,21 @@ class NNDescent:
                     self._raw_data[updated_indices], norm="l2"
                 )
             self._raw_data = np.ascontiguousarray(np.vstack([self._raw_data, xs_fresh]))
-            ns, ds = self._neighbor_graph
-            n_examples, n_neighbors = ns.shape
-            indices_set = set(updated_indices)  # for fast "is element" checks
-            for i in range(n_examples):
-                # maybe update whole row
-                if i in indices_set:
-                    ns[i] = -1
-                    ds[i] = np.inf
-                    continue
-                # maybe update some columns
-                for j in range(n_neighbors):
-                    if ns[i, j] in indices_set:
-                        ns[i, j] = -1
-                        ds[i, j] = np.inf
+            if updated_indices:
+                ns, ds = self._neighbor_graph
+                n_examples, n_neighbors = ns.shape
+                indices_set = set(updated_indices)  # for fast "is element" checks
+                for i in range(n_examples):
+                    # maybe update whole row
+                    if i in indices_set:
+                        ns[i] = -1
+                        ds[i] = np.inf
+                        continue
+                    # maybe update some columns
+                    for j in range(n_neighbors):
+                        if ns[i, j] in indices_set:
+                            ns[i, j] = -1
+                            ds[i, j] = np.inf
         # update neighbors
         if self._is_sparse:
             raise error_sparse_to_do
@@ -3168,7 +3339,7 @@ class NNDescent:
             else:
                 effective_max_candidates = self.max_candidates
 
-            self._neighbor_graph = nn_descent(
+            self._neighbor_graph = run_nn_descent(
                 self._raw_data,
                 self.n_neighbors,
                 self.rng_state,
@@ -3181,7 +3352,6 @@ class NNDescent:
                 rp_tree_init=False,
                 leaf_array=np.array([[-1], [-1]]),
                 verbose=self.verbose,
-                kernel=select_kernel(self._distance_func, self._raw_data),
             )
 
             # Remove search graph and search function
@@ -3477,7 +3647,14 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             n_samples_transform = X.shape[0]
 
         if X is None:
-            indices, distances = self.index_.neighbor_graph
+            neighbor_graph = self.index_.neighbor_graph
+            if neighbor_graph is None:
+                raise ValueError(
+                    "transform(None) needs the neighbor graph of the training data, "
+                    "which a compressed index discards once it is queried. Call "
+                    "fit(X, compress_index=False) to keep it, or use fit_transform."
+                )
+            indices, distances = neighbor_graph
         else:
             indices, distances = self.index_.query(
                 X, k=self.n_neighbors, epsilon=self.search_epsilon

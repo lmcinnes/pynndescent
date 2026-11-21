@@ -48,6 +48,7 @@ dummy_cost = np.zeros((2, 2), dtype=np.float64)
 # Invalid Arc num
 INVALID = -1
 
+
 # Problem Status
 class ProblemStatus(Enum):
     OPTIMAL = 0
@@ -105,6 +106,7 @@ NodeArcData = namedtuple(
 LeavingArcData = namedtuple(
     "LeavingArcData", ["u_in", "u_out", "v_in", "delta", "change"]
 )
+
 
 # Just reproduce a simpler version of numpy isclose (not numba supported yet)
 @numba.njit()
@@ -933,14 +935,15 @@ def network_simplex_core(node_arc_data, spanning_tree, graph, max_iter):
 
 @numba.njit(
     fastmath=True,
-    parallel=True,
     locals={"diff": numba.float32, "result": numba.float32},
     cache=False,
 )
 def right_marginal_error(u, K, v, y):
+    # Scalar Sinkhorn helpers run inside NNDescent parallel regions.
+    # Keep them serial: the workqueue backend cannot nest parallel launches.
     uK = u @ K
     result = 0.0
-    for i in numba.prange(uK.shape[0]):
+    for i in range(uK.shape[0]):
         diff = y[i] - uK[i] * v[i]
         result += diff * diff
     return np.sqrt(result)
@@ -962,24 +965,24 @@ def right_marginal_error_batch(u, K, v, y):
     return np.sqrt(result)
 
 
-@numba.njit(fastmath=True, parallel=True, cache=False)
+@numba.njit(fastmath=True, cache=False)
 def transport_plan(K, u, v):
     i_dim = K.shape[0]
     j_dim = K.shape[1]
     result = np.empty_like(K)
-    for i in numba.prange(i_dim):
+    for i in range(i_dim):
         for j in range(j_dim):
             result[i, j] = u[i] * K[i, j] * v[j]
 
     return result
 
 
-@numba.njit(fastmath=True, parallel=True, locals={"result": numba.float32}, cache=False)
+@numba.njit(fastmath=True, locals={"result": numba.float32}, cache=False)
 def relative_change_in_plan(old_u, old_v, new_u, new_v):
     i_dim = old_u.shape[0]
     j_dim = old_v.shape[0]
     result = 0.0
-    for i in numba.prange(i_dim):
+    for i in range(i_dim):
         for j in range(j_dim):
             old_uv = old_u[i] * old_v[j]
             result += np.float32(np.abs(old_uv - new_u[i] * new_v[j]) / old_uv)
@@ -987,12 +990,12 @@ def relative_change_in_plan(old_u, old_v, new_u, new_v):
     return result / (i_dim * j_dim)
 
 
-@numba.njit(fastmath=True, parallel=True, cache=False)
+@numba.njit(fastmath=True, cache=False)
 def precompute_K_prime(K, x):
     i_dim = K.shape[0]
     j_dim = K.shape[1]
     result = np.empty_like(K)
-    for i in numba.prange(i_dim):
+    for i in range(i_dim):
         if x[i] > 0.0:
             x_i_inverse = 1.0 / x[i]
         else:
@@ -1003,12 +1006,12 @@ def precompute_K_prime(K, x):
     return result
 
 
-@numba.njit(fastmath=True, parallel=True, cache=False)
+@numba.njit(fastmath=True, cache=False)
 def K_from_cost(cost, regularization):
     i_dim = cost.shape[0]
     j_dim = cost.shape[1]
     result = np.empty_like(cost)
-    for i in numba.prange(i_dim):
+    for i in range(i_dim):
         for j in range(j_dim):
             scaled_cost = cost[i, j] / regularization
             result[i, j] = np.exp(-scaled_cost)

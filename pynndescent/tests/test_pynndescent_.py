@@ -1,4 +1,7 @@
 import os
+import subprocess
+import sys
+import warnings
 import io
 import re
 import pathlib
@@ -28,6 +31,91 @@ from pynndescent.pynndescent_ import _int8_code_inv_norms, _quantize_int8_rows
 from pynndescent.kernels import select_kernel
 
 
+@pytest.mark.parametrize(
+    "sparse_type", [scipy.sparse.csr_matrix, scipy.sparse.csr_array]
+)
+@pytest.mark.parametrize(
+    "representation,metric",
+    [
+        ("duplicates", "euclidean"),
+        ("stored_zeros", "jaccard"),
+        ("unsorted", "euclidean"),
+    ],
+)
+@pytest.mark.parametrize("entry_point", ["training", "fast_query", "fallback_query"])
+def test_sparse_storage_preserves_distances(
+    sparse_type, representation, metric, entry_point
+):
+    data = np.vstack((np.eye(6), 1 - np.eye(6))).astype(np.float32)
+    canonical = sparse_type(data)
+    if representation == "duplicates":
+        supplied = sparse_type(
+            (
+                np.repeat(canonical.data / 2, 2),
+                np.repeat(canonical.indices, 2),
+                canonical.indptr * 2,
+            ),
+            shape=data.shape,
+        )
+    elif representation == "unsorted":
+        order = np.concatenate(
+            [
+                np.arange(stop - 1, start - 1, -1)
+                for start, stop in zip(canonical.indptr[:-1], canonical.indptr[1:])
+            ]
+        )
+        supplied = sparse_type(
+            (canonical.data[order], canonical.indices[order], canonical.indptr.copy()),
+            shape=data.shape,
+        )
+    else:
+        supplied = sparse_type(
+            (
+                data.ravel().copy(),
+                np.tile(np.arange(6), len(data)),
+                np.arange(0, data.size + 1, 6),
+            ),
+            shape=data.shape,
+        )
+    query_rows = np.arange(6, 9)
+    if entry_point != "training":
+        supplied = supplied[query_rows]
+    saved_storage = tuple(
+        array.copy() for array in (supplied.data, supplied.indices, supplied.indptr)
+    )
+    index = NNDescent(
+        supplied if entry_point == "training" else canonical,
+        metric=metric,
+        n_neighbors=6,
+        n_trees=0,
+        n_iters=1,
+        init_graph=np.tile(np.arange(len(data), dtype=np.int32), (len(data), 1)),
+        random_state=42,
+        n_jobs=1,
+    )
+    expected = scipy.spatial.distance.cdist(data, data, metric=metric)
+    if entry_point == "training":
+        indices, distances = index.neighbor_graph
+    else:
+        options = {"candidate_width": 4} if entry_point == "fallback_query" else {}
+        indices, distances = index.query(supplied, k=4, **options)
+    assert np.all((indices >= 0) & (indices < len(data)))
+    np.testing.assert_allclose(
+        distances,
+        expected[
+            (np.arange(len(data)) if entry_point == "training" else query_rows)[
+                :, None
+            ],
+            indices,
+        ],
+        atol=1e-6,
+    )
+    for current, saved in zip(
+        (supplied.data, supplied.indices, supplied.indptr), saved_storage
+    ):
+        np.testing.assert_array_equal(current, saved)
+
+
 def test_haversine_antipodal_neighbor_graph():
     data = np.deg2rad(
         np.array(
@@ -36,21 +124,49 @@ def test_haversine_antipodal_neighbor_graph():
         )
     )
     init_graph = np.tile(np.arange(len(data), dtype=np.int32), (len(data), 1))
-    index = NNDescent(
-        data,
-        metric="haversine",
-        n_neighbors=len(data),
-        n_trees=0,
-        n_iters=2,
-        init_graph=init_graph,
-        n_jobs=1,
-        random_state=0,
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        index = NNDescent(
+            data,
+            metric="haversine",
+            n_neighbors=len(data),
+            n_trees=0,
+            n_iters=2,
+            init_graph=init_graph,
+            n_jobs=1,
+            random_state=0,
+        )
+    assert not any(
+        "Failed to correctly find n_neighbors" in str(warning.message)
+        for warning in caught_warnings
     )
 
     indices, distances = index.neighbor_graph
     assert np.isfinite(distances).all()
     np.testing.assert_array_equal(np.sort(indices, axis=1), init_graph)
     np.testing.assert_allclose(distances[:, -1], np.pi, rtol=0, atol=1e-6)
+
+
+
+def test_transformer_no_warning_when_n_neighbors_equals_n_samples():
+    data = np.array(
+        [[0, 0], [1, 0], [0, 1], [1, 1]],
+        dtype=np.float32,
+    )
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always")
+        graph = PyNNDescentTransformer(
+            n_neighbors=len(data) - 1,
+            random_state=0,
+            n_jobs=1,
+        ).fit_transform(data)
+
+    assert not any(
+        "Failed to correctly find n_neighbors" in str(warning.message)
+        for warning in caught_warnings
+    )
+    assert graph.shape == (len(data), len(data))
+    assert graph.nnz == len(data) * len(data)
 
 
 def test_nn_descent_neighbor_accuracy(nn_data, seed):
@@ -456,6 +572,30 @@ def test_proxy_only_results_survive_later_queries(nn_data):
     np.testing.assert_array_equal(distances, expected_distances)
 
 
+@pytest.mark.parametrize("parallel_batch_queries", [False, True])
+@pytest.mark.parametrize("scale", [1.0, 1e-3])
+def test_proxy_inner_product_search_ranks_by_inner_product(
+    scale, parallel_batch_queries
+):
+    # Varied norms, as in attention keys: best angles are not best inner products
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(300, 8)) * rng.uniform(0.2, 3.0, size=(300, 1))
+    data = (data * scale).astype(np.float32)
+    queries = rng.normal(size=(20, 8)).astype(np.float32)
+    index = NNDescent(
+        data,
+        "proxy_inner_product",
+        n_neighbors=15,
+        random_state=42,
+        parallel_batch_queries=parallel_batch_queries,
+    )
+
+    indices, _ = index.query(queries, k=10, epsilon=0.5, rerank_width=0)
+
+    expected = np.argsort(-(queries @ data.T), axis=1)[:, :10]
+    np.testing.assert_array_equal(indices, expected)
+
+
 def test_direct_cosine_int8_quantized_query(nn_data):
     train = nn_data[200:]
     queries = nn_data[:50]
@@ -551,6 +691,19 @@ def test_bitpacked_nn_descent_query_accuracy(nn_data):
     assert (
         percent_correct >= 0.80
     ), "Sparse NN-descent query did not get 95% accuracy on nearest neighbors"
+
+
+def test_cosine_distances_are_not_negative():
+    # Duplicate rows give a cosine a hair above 1 in float32, which came out as
+    # a distance of about -2e-7 and made sklearn reject the graph (#214).
+    rng = np.random.default_rng(0)
+    data = np.repeat(rng.normal(size=(300, 50)).astype(np.float32), 10, axis=0)
+    index = NNDescent(data, "cosine", n_neighbors=10, random_state=42)
+
+    assert index.neighbor_graph[1].min() >= 0.0
+    assert index.query(data[:500], k=10)[1].min() >= 0.0
+    graph = PyNNDescentTransformer(metric="cosine", random_state=42).fit_transform(data)
+    assert graph.data.min() >= 0.0
 
 
 def test_transformer_equivalence(nn_data):
@@ -1000,6 +1153,9 @@ def test_dot_update_distances(mode, prepared):
 
     normalized = normalize(expected_data.astype(np.float64))
     expected = 1 - np.maximum(normalized @ normalized.T, 0)
+    # neighbor_graph lists each point as its own first neighbor at distance 0,
+    # including the all-zero row (whose dot distance to everything else is 1)
+    np.fill_diagonal(expected, 0.0)
     indices, distances = index.neighbor_graph
     assert np.all(indices >= 0)
     np.testing.assert_allclose(
@@ -1247,6 +1403,7 @@ def test_bad_data():
         ("cosine", {}),
         ("euclidean", {"search_tree_leaf_budget": 4}),
         ("euclidean", {"parallel_batch_queries": True}),
+        ("proxy_inner_product", {}),
     ],
 )
 def test_cached_search_matches_closure(nn_data, metric, kwargs):
@@ -1267,6 +1424,24 @@ def test_cached_search_matches_closure(nn_data, metric, kwargs):
 
     np.testing.assert_array_equal(cached_indices, closure_indices)
     np.testing.assert_allclose(cached_dists, closure_dists, rtol=1e-6)
+
+
+def test_proxy_cached_search_matches_closure_without_rerank(nn_data):
+    index = NNDescent(
+        nn_data[:300], metric="proxy_inner_product", n_neighbors=10, random_state=42
+    )
+    index.prepare(compile_search=False)
+    assert index._uses_cached_search
+    queries = nn_data[300:350]
+    cached = index.query(queries, k=8, epsilon=0.1, rerank_width=0)
+
+    index._init_cached_search_function = lambda: False
+    index._init_search_function()
+    assert not index._uses_cached_search
+    closure = index.query(queries, k=8, epsilon=0.1, rerank_width=0)
+
+    np.testing.assert_array_equal(cached[0], closure[0])
+    np.testing.assert_array_equal(cached[1], closure[1])
 
 
 def test_query_rejects_wrong_shape(nn_data):
@@ -1305,3 +1480,138 @@ def test_prepare_compile_search_option(nn_data):
     # And switching back
     index.prepare(compile_search=True)
     assert not index._uses_cached_search
+
+
+def test_hellinger_distances_are_not_nan():
+    # Duplicate and proportional rows can give a float32 overlap a hair above 1,
+    # which came out of the square root as NaN.
+    rng = np.random.default_rng(0)
+    base = rng.random((300, 10)).astype(np.float32)
+    data = np.vstack([base, base, 3 * base])
+    index = NNDescent(data, "hellinger", n_neighbors=10, random_state=42)
+
+    assert not np.isnan(index.neighbor_graph[1]).any()
+    assert not np.isnan(index.query(data[:100], k=10)[1]).any()
+
+
+@pytest.mark.parametrize(
+    "metric", ["euclidean", "cosine", "proxy_inner_product", "inner_product"]
+)
+def test_build_matches_generic_nn_descent(metric):
+    from pynndescent.pynndescent_ import nn_descent, INT32_MIN, INT32_MAX
+
+    data = np.random.RandomState(0).normal(size=(300, 10)).astype(np.float32)
+    index = NNDescent(data, metric=metric, n_neighbors=10, random_state=42)
+
+    rng_state = (
+        np.random.RandomState(42).randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
+    )
+    expected = nn_descent(
+        index._raw_data,
+        index.n_neighbors,
+        rng_state,
+        10,
+        index._distance_func,
+        index.n_iters,
+        index.delta,
+        leaf_array=index._rp_forest,
+        kernel=select_kernel(index._distance_func, index._raw_data),
+    )
+    np.testing.assert_array_equal(index._neighbor_graph[0], expected[0])
+    np.testing.assert_array_equal(index._neighbor_graph[1], expected[1])
+
+
+CACHE_HITS_IN_FRESH_PROCESS = """
+import numpy as np
+from pynndescent import NNDescent, pynndescent_
+
+data = np.random.RandomState(0).normal(size=(300, 10)).astype(np.float32)
+for metric in ("euclidean", "cosine", "proxy_inner_product", "inner_product"):
+    NNDescent(data, metric=metric, n_neighbors=10, random_state=42).prepare()
+cache_hits = [
+    sum(getattr(pynndescent_, name).stats.cache_hits.values())
+    for name in (
+        "nn_descent_squared_euclidean",
+        "nn_descent_alternative_dot",
+        "nn_descent_proxy_inner_product",
+        "nn_descent_alternative_inner_product",
+        "diversify_squared_euclidean",
+        "diversify_alternative_dot",
+        "diversify_proxy_inner_product",
+        "diversify_alternative_inner_product",
+    )
+]
+print("RESULT", pynndescent_.__file__, *cache_hits)
+"""
+
+
+@pytest.mark.skipif(
+    "NUMBA_DISABLE_JIT" in os.environ, reason="Caching needs Numba compilation"
+)
+def test_dense_build_is_reused_from_disk_cache():
+    from pynndescent import pynndescent_
+
+    data = np.random.RandomState(0).normal(size=(300, 10)).astype(np.float32)
+    for metric in ("euclidean", "cosine", "proxy_inner_product", "inner_product"):
+        NNDescent(data, metric=metric, n_neighbors=10, random_state=42).prepare()
+
+    checkout = str(pathlib.Path(pynndescent_.__file__).parents[1])
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([checkout, os.environ.get("PYTHONPATH", "")])}
+    output = subprocess.run(
+        [sys.executable, "-c", CACHE_HITS_IN_FRESH_PROCESS],
+        env=env, capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    _, child_module, *cache_hits = next(line for line in output if line.startswith("RESULT ")).split()
+
+    assert child_module == pynndescent_.__file__
+    assert [int(hits) > 0 for hits in cache_hits] == [True] * 8
+
+
+@pytest.mark.parametrize(
+    "data, match",
+    [
+        (np.zeros(10, dtype=np.float32), "Expected 2D array"),
+        (np.zeros((0, 5), dtype=np.float32), "0 sample"),
+        (np.zeros((5, 0), dtype=np.float32), "0 feature"),
+        ([[1.0, 2.0], [3.0]], "inhomogeneous|sequence"),
+    ],
+)
+def test_invalid_data_raises_value_error(data, match):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (11)"""
+    with pytest.raises(ValueError, match=match):
+        NNDescent(data, n_neighbors=5)
+
+
+@pytest.mark.parametrize("n_neighbors", [0, -3])
+def test_invalid_n_neighbors_raises_value_error(nn_data, n_neighbors):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (11)"""
+    with pytest.raises(ValueError, match="n_neighbors must be at least 1"):
+        NNDescent(nn_data[:50], n_neighbors=n_neighbors)
+
+
+def test_list_input_is_accepted():
+    data = np.random.RandomState(0).normal(size=(50, 4)).tolist()
+    indices, _ = NNDescent(data, n_neighbors=5, random_state=0).neighbor_graph
+    assert indices.shape == (50, 5)
+
+
+def test_transformer_transform_none_after_query(nn_data):
+    """https://github.com/lmcinnes/pynndescent/issues/294 (10)"""
+    data = nn_data[:200]
+
+    # An uncompressed index keeps the training graph, so transform(None) keeps working.
+    transformer = PyNNDescentTransformer(n_neighbors=5, random_state=0)
+    transformer.fit(data, compress_index=False)
+    expected = transformer.transform(None)
+    transformer.transform(data[:10])
+    np.testing.assert_array_equal(
+        transformer.transform(None).toarray(), expected.toarray()
+    )
+
+    # A compressed index discards it on the first query: fail with a clear error.
+    transformer = PyNNDescentTransformer(n_neighbors=5, random_state=0).fit(data)
+    transformer.transform(data[:10])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="compress_index=False"):
+            transformer.transform(None)

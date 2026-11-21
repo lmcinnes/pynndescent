@@ -703,8 +703,10 @@ def correct_alternative_cosine(d):
 
     .. math::
         D(x, y) = 1 - 2^{-D_{alt}(x, y)}
+
+    Clamped at 0, as float32 rounding can put a cosine just above 1.
     """
-    return 1.0 - pow(2.0, -d)
+    return max(0.0, 1.0 - pow(2.0, -d))
 
 
 @numba.njit(
@@ -812,11 +814,45 @@ def proxy_inner_product(x, y):
     if norm_x == 0 or norm_y == 0:
         return np.float32(FLOAT32_MAX)
 
-    cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
-    if ip_result >= 0:
-        return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
-    else:
+    if ip_result <= 0:
         return np.float32(FLOAT32_MAX)
+
+    cosine_result = -np.log2(ip_result / np.sqrt(norm_x * norm_y))
+    return np.float32(cosine_result + 1.0 / np.sqrt(ip_result))
+
+
+@numba.njit(
+    fastmath=True,
+    locals={
+        "ip_result": numba.types.float32,
+        "dim": numba.types.intp,
+    },
+    cache=True,
+)
+def proxy_inner_product_query(x, y, inv_scale):
+    r"""Query-time distance for ``proxy_inner_product`` searches.
+
+    With ``inv_scale = 1 / (|x| * max_y |y|)`` this is non-negative and, for a
+    fixed query ``x``, orders points ``y`` with a positive inner product by
+    that inner product, where ``proxy_inner_product`` orders them mostly by
+    angle. It keeps the logarithmic scale of the proxy.
+
+    .. math::
+        D(x, y) = -\log_2(\min(\langle x, y \rangle \cdot \mathrm{inv\_scale}, 1))
+
+    Non-positive inner products are treated as maximally distant, as in
+    ``proxy_inner_product``.
+    """
+    ip_result = 0.0
+    dim = x.shape[0]
+    for i in range(dim):
+        ip_result += x[i] * y[i]
+
+    if ip_result <= 0:
+        return np.float32(FLOAT32_MAX)
+
+    # Rounding can put the best point just past the bound of 1
+    return np.float32(-np.log2(min(ip_result * inv_scale, 1.0)))
 
 
 @numba.vectorize(fastmath=True)
@@ -1182,12 +1218,13 @@ def true_angular(x, y):
     r"""True angular distance.
 
     The actual angle between two vectors, normalized to [0, 1].
-    Unlike cosine distance which uses 1 - cos(θ), this returns 1 - θ/π.
+    Unlike cosine distance which uses 1 - cos(θ), this returns θ/π.
 
     .. math::
-        D(x, y) = 1 - \frac{\arccos\left(\frac{\langle x, y \rangle}{\|x\| \|y\|}\right)}{\pi}
+        D(x, y) = \frac{\arccos\left(\frac{\langle x, y \rangle}{\|x\| \|y\|}\right)}{\pi}
 
-    Returns 0 for identical directions, approaches 1 for opposite directions.
+    Returns 0 for identical directions. Non-positive inner products are treated
+    as infinitely far, as in alternative_cosine.
     """
     result = 0.0
     norm_x = 0.0
@@ -1206,7 +1243,7 @@ def true_angular(x, y):
         return FLOAT32_MAX
     else:
         result = result / np.sqrt(norm_x * norm_y)
-        return 1.0 - (np.arccos(result) / np.pi)
+        return np.arccos(result) / np.pi
 
 
 @numba.vectorize(fastmath=True)
@@ -1214,9 +1251,9 @@ def true_angular_from_alt_cosine(d):
     r"""Convert alternative cosine distance to true angular distance.
 
     .. math::
-        D_{angular}(x, y) = 1 - \frac{\arccos(2^{-D_{alt}})}{\pi}
+        D_{angular}(x, y) = \frac{\arccos(2^{-D_{alt}})}{\pi}
     """
-    return 1.0 - (np.arccos(pow(2.0, -d)) / np.pi)
+    return np.arccos(pow(2.0, -d)) / np.pi
 
 
 @numba.njit(fastmath=True)
@@ -1296,7 +1333,11 @@ def hellinger(x, y):
     elif l1_norm_x == 0 or l1_norm_y == 0:
         return np.float32(1.0)
     else:
-        return np.float32(np.sqrt(1 - result / np.sqrt(l1_norm_x * l1_norm_y)))
+        sqrt_norm_prod = np.sqrt(l1_norm_x * l1_norm_y)
+        # float32 rounding can push the overlap of proportional rows above 1
+        if result > sqrt_norm_prod:
+            return np.float32(0.0)
+        return np.float32(np.sqrt(1 - result / sqrt_norm_prod))
 
 
 @numba.njit(
@@ -1347,8 +1388,11 @@ def correct_alternative_hellinger(d):
 
     .. math::
         D(x, y) = \sqrt{1 - 2^{-D_{alt}(x, y)}}
+
+    Clamped at 0, as float32 rounding can make the alternative distance of
+    proportional rows slightly negative.
     """
-    return np.sqrt(1.0 - pow(2.0, -d))
+    return np.sqrt(max(0.0, 1.0 - pow(2.0, -d)))
 
 
 @numba.njit()
@@ -1508,17 +1552,17 @@ def sinkhorn(x, y, cost=_dummy_cost, regularization=1.0):
     a /= a_sum
     b /= b_sum
 
-    sub_cost = cost[row_mask, :][:, col_mask]
+    sub_cost = cost[row_mask, :][:, col_mask].astype(np.float64)
 
     transport_plan = sinkhorn_transport_plan(
-        x, y, cost=sub_cost, regularization=regularization
+        a, b, cost=sub_cost, regularization=regularization
     )
     dim_i = transport_plan.shape[0]
     dim_j = transport_plan.shape[1]
     result = 0.0
     for i in range(dim_i):
         for j in range(dim_j):
-            result += transport_plan[i, j] * cost[i, j]
+            result += transport_plan[i, j] * sub_cost[i, j]
 
     return result
 
@@ -1738,7 +1782,7 @@ def bit_jaccard(x, y):
     with the bounded-radius search algorithm.
 
     .. math::
-        D(x, y) = -\log\left(\frac{\text{popcount}(x \land y)}{\text{popcount}(x \lor y)}\right)
+        D(x, y) = -\log_2\left(\frac{\text{popcount}(x \land y)}{\text{popcount}(x \lor y)}\right)
 
     More efficient than standard Jaccard for binary data.
     """
@@ -1755,7 +1799,7 @@ def bit_jaccard(x, y):
     if denom == 0:
         return np.float32(0.0)
     else:
-        return np.float32(-np.log(np.float32(result) / np.float32(denom)))
+        return np.float32(-np.log2(np.float32(result) / np.float32(denom)))
 
 
 @numba.njit(
@@ -2274,6 +2318,7 @@ fast_distance_alternatives = {
         "correction": correct_alternative_hellinger,
     },
     "jaccard": {"dist": alternative_jaccard, "correction": correct_alternative_jaccard},
+    "bit_jaccard": {"dist": bit_jaccard, "correction": correct_alternative_jaccard},
 }
 
 proxy_distances = {

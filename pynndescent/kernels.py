@@ -13,6 +13,8 @@ Kernel ids
 0 : generic -- use the pairwise ``dist`` function
 1 : squared euclidean (``distances.squared_euclidean``)
 2 : alternative dot (``distances.alternative_dot``), i.e. -log2(<x, y>)
+3 : proxy inner product query (``distances.proxy_inner_product_query``), used
+    only by graph search
 """
 import numpy as np
 import numba
@@ -25,6 +27,7 @@ FLOAT32_MAX = np.finfo(np.float32).max
 KERNEL_GENERIC = 0
 KERNEL_SQEUCLIDEAN = 1
 KERNEL_ALT_DOT = 2
+KERNEL_PROXY_IP_QUERY = 3
 
 
 def select_kernel(dist, data):
