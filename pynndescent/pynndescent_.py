@@ -2110,7 +2110,7 @@ class NNDescent:
                     if norm > 0.0:
                         current_query = query_points[i] / norm
                     else:
-                        continue
+                        current_query = query_points[i]
                 else:
                     current_query = query_points[i]
 
