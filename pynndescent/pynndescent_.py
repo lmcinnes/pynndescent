@@ -65,7 +65,14 @@ from pynndescent.kernels import (
 from pynndescent.hybrid_forest import make_hybrid_leaf_array
 from pynndescent.hub_tree import make_hub_search_tree
 from pynndescent.search_graph import build_search_graph, permute_graph, permute_rows
+from pynndescent.quantized_search import (
+    SQ_MODES,
+    encode as sq_encode,
+    fit_scalar_quantizer,
+    make_quantized_search_function,
+)
 from pynndescent.search import (
+    _distance_bound,
     make_cached_search_function,
     deheap_sort_serial,
     deheap_sort_parallel,
@@ -541,12 +548,16 @@ def _prune_edge(prune_probability, seed, i, j, m):
 
 
 @numba.njit(parallel=True)
-def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
+def diversify(
+    indices, distances, data, dist, rng_state, prune_probability=1.0, relax=1.0
+):
     """Relative-neighbourhood pruning of each row of a k-NN graph, in place.
 
     Each row is scanned in order of increasing distance; a candidate u is dropped
     if some already retained neighbour c (other than an exact duplicate of the
-    row's point) is closer to u than the row's point is, with probability
+    row's point) is closer to u than the row's point is -- by a factor
+    ``relax`` (``relax * dist(u, c) < dist(row, u)``, so ``relax > 1`` keeps
+    more of the longer edges, as in alpha-pruning) -- with probability
     ``prune_probability`` per such c. Retained neighbours keep their order and
     the row is padded with (-1, inf).
     """
@@ -563,7 +574,7 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
             keep = True
             for m in range(n_retained):
                 if distances[i, m] > FLOAT32_EPS:
-                    if dist(data[u], data[indices[i, m]]) < d_iu:
+                    if relax * dist(data[u], data[indices[i, m]]) < d_iu:
                         if _prune_edge(prune_probability, seed, i, j, m):
                             keep = False
                             break
@@ -583,18 +594,22 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
 # on-disk cache (its argument type differs between processes), so these fix the
 # distance at compile time; other distances compile diversify per process.
 @numba.njit(cache=True)
-def diversify_squared_euclidean(indices, distances, data, rng_state, prune_probability):
+def diversify_squared_euclidean(
+    indices, distances, data, rng_state, prune_probability, relax=1.0
+):
     return diversify(
         indices, distances, data, pynnd_dist.squared_euclidean, rng_state,
-        prune_probability,
+        prune_probability, relax,
     )
 
 
 @numba.njit(cache=True)
-def diversify_alternative_dot(indices, distances, data, rng_state, prune_probability):
+def diversify_alternative_dot(
+    indices, distances, data, rng_state, prune_probability, relax=1.0
+):
     return diversify(
         indices, distances, data, pynnd_dist.alternative_dot, rng_state,
-        prune_probability,
+        prune_probability, relax,
     )
 
 
@@ -936,6 +951,13 @@ class NNDescent:
         up to about 10% more edges than standard diversification, 3.0 up to
         about 25%).
 
+    diversify_alpha: float (optional, default=1.0)
+        Relaxation of the standard diversification for dense euclidean, cosine
+        and dot data: an edge to a neighbor is only pruned when a retained
+        neighbor is closer to it by a factor of ``diversify_alpha`` (as in
+        alpha-pruning). Values above 1.0 keep more long edges, giving a denser
+        but easier to navigate search graph.
+
     n_search_trees: int (optional, default=None)
         No longer has any effect; a single search tree is always used.
 
@@ -962,6 +984,12 @@ class NNDescent:
               l2, cosine and dot metrics.
             * ``"int8"``: symmetric signed 8-bit codes with a per-row scale;
               cosine, direct_cosine and dot metrics on dense data.
+            * ``"sq8"`` / ``"sq4"``: per-feature affine codes of 8 or 4 bits
+              (two 4-bit codes per byte), searched with the float32 query
+              against the codes, with the best candidates reranked exactly in
+              the same compiled call; euclidean, cosine and dot metrics on dense
+              data. The fastest quantized search: ``candidate_width`` plays the
+              role of a search beam width.
 
         Quantization is applied when the index is prepared. The full precision
         data is kept for reranking, so it does not reduce memory use.
@@ -1064,6 +1092,7 @@ class NNDescent:
         diversify_prob=1.0,
         diversify_method="standard",
         degree_prune_aggressiveness=1.0,
+        diversify_alpha=1.0,
         n_search_trees=None,
         search_tree_leaf_size=None,
         max_search_tree_depth=None,
@@ -1125,6 +1154,9 @@ class NNDescent:
         self.diversify_prob = diversify_prob
         self.diversify_method = diversify_method
         self.degree_prune_aggressiveness = degree_prune_aggressiveness
+        if diversify_alpha < 1.0:
+            raise ValueError("diversify_alpha must be at least 1")
+        self.diversify_alpha = diversify_alpha
         if n_search_trees is not None:
             warn(
                 "n_search_trees no longer has any effect and will be removed in "
@@ -1463,6 +1495,7 @@ class NNDescent:
         result.pop("_query_finisher_fn", None)
         result.pop("_query_ones", None)
         result.pop("_fast_plan", None)
+        result.pop("_sq_workspace", None)
         if "_query_workspace" in result:
             del result["_query_workspace"]
         result["_search_forest"] = tuple(
@@ -1476,7 +1509,7 @@ class NNDescent:
         if self._is_sparse:
             # _set_distance_func only knows the dense distances
             self._set_sparse_distance_func()
-        if self.quantization is not None:
+        if self.quantization is not None and self.quantization not in SQ_MODES:
             # _set_distance_func resets the proxy state that prepare() set up
             self._is_proxy_distance = True
             self._true_distance_func = self._distance_func
@@ -1609,13 +1642,18 @@ class NNDescent:
                     rows = self._neighbor_graph[0].copy()
                     dists = self._neighbor_graph[1].copy()
                 kernel = select_kernel(self._distance_func, self._raw_data)
+                # Both distances behave like squared distances, so an alpha
+                # relaxation of the (unsquared) distance is alpha**2 here.
+                relax = np.float32(getattr(self, "diversify_alpha", 1.0)) ** 2
                 if kernel == KERNEL_SQEUCLIDEAN:
                     diversified_rows, diversified_data = diversify_squared_euclidean(
-                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob,
+                        relax,
                     )
                 elif kernel == KERNEL_ALT_DOT:
                     diversified_rows, diversified_data = diversify_alternative_dot(
-                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob,
+                        relax,
                     )
                 elif self._distance_func is pynnd_dist.proxy_inner_product:
                     diversified_rows, diversified_data = diversify_proxy_inner_product(
@@ -1761,6 +1799,7 @@ class NNDescent:
             angular_query,
             kernel,
             self.parallel_batch_queries,
+            prefetch_lines=getattr(self, "_prefetch_lines", None),
         )
         self._uses_cached_search = True
         self._deheap_function = (
@@ -1792,6 +1831,10 @@ class NNDescent:
 
         if self.verbose:
             print(ts(), "Building and compiling search function")
+
+        if self.quantization in SQ_MODES:
+            self._init_sq_search_function()
+            return
 
         # The shared, disk-cached search function is used unless
         # prepare(compile_search=True) asked for a specialised one; this also
@@ -2209,8 +2252,8 @@ class NNDescent:
                             heapq.heappush(seed_set, (d, candidate))
 
                 ############ Search ##############
-                distance_bound = heap_priorities[0] + (
-                    epsilon * (heap_priorities[0] - min_distance)
+                distance_bound = _distance_bound(
+                    heap_priorities, heap_indices, epsilon, min_distance
                 )
 
                 # Find smallest seed point
@@ -2247,9 +2290,8 @@ class NNDescent:
                                                 pending[r],
                                             )
                                             heapq.heappush(seed_set, (d, pending[r]))
-                                            distance_bound = heap_priorities[0] + (
-                                                epsilon
-                                                * (heap_priorities[0] - min_distance)
+                                            distance_bound = _distance_bound(
+                                                heap_priorities, heap_indices, epsilon, min_distance
                                             )
                                     n_pending = 0
                         for r in range(n_pending):
@@ -2259,8 +2301,8 @@ class NNDescent:
                                     heap_priorities, heap_indices, d, pending[r]
                                 )
                                 heapq.heappush(seed_set, (d, pending[r]))
-                                distance_bound = heap_priorities[0] + (
-                                    epsilon * (heap_priorities[0] - min_distance)
+                                distance_bound = _distance_bound(
+                                    heap_priorities, heap_indices, epsilon, min_distance
                                 )
                     else:
                         for j in range(indptr[vertex], indptr[vertex + 1]):
@@ -2280,8 +2322,8 @@ class NNDescent:
                                     )
                                     heapq.heappush(seed_set, (d, candidate))
                                     # Update bound
-                                    distance_bound = heap_priorities[0] + (
-                                        epsilon * (heap_priorities[0] - min_distance)
+                                    distance_bound = _distance_bound(
+                                        heap_priorities, heap_indices, epsilon, min_distance
                                     )
 
                     # find new smallest seed point
@@ -2654,7 +2696,7 @@ class NNDescent:
             del self._search_function
         self._compile_search = compile_search
 
-        if self.quantization is not None:
+        if self.quantization is not None and self.quantization not in SQ_MODES:
             if self.quantization == "binary":
                 # Quantize data to binary and set bit-based distance functions
                 self._quantized_data = np.packbits(
@@ -2851,6 +2893,115 @@ class NNDescent:
             self._query_finisher_fn = finisher
         return finisher
 
+    def _init_sq_search_function(self):
+        """Fit the scalar quantizer (once) and bind the cached quantized search."""
+        data = self._raw_data
+        kernel = select_kernel(self._distance_func, data)
+        if (
+            self._is_sparse
+            or not self.tree_init
+            or kernel not in (KERNEL_SQEUCLIDEAN, KERNEL_ALT_DOT)
+        ):
+            raise ValueError(
+                f"{self.quantization} quantization supports dense float32 data with "
+                "euclidean, cosine or dot metrics and tree initialisation"
+            )
+        bits = 8 if self.quantization == "sq8" else 4
+        if not hasattr(self, "_sq_codes"):
+            # The data has already been reordered to match the search tree.
+            clip = getattr(self, "_sq_clip_quantile", None)
+            self._sq_offsets, self._sq_scales = fit_scalar_quantizer(
+                data,
+                bits,
+                clip_quantile=clip,
+                random_state=int(self.rng_state[0]) & 0x7FFFFFFF,
+            )
+            self._sq_codes = sq_encode(data, self._sq_offsets, self._sq_scales, bits)
+
+        angular = self.metric in ("cosine", "direct_cosine", "dot")
+        min_distance = self._min_distance if kernel == KERNEL_SQEUCLIDEAN else 0.0
+        self._search_function = make_quantized_search_function(
+            self._sq_codes,
+            data,
+            self._sq_offsets,
+            self._sq_scales,
+            self._search_graph.indptr,
+            self._search_graph.indices,
+            self._search_forest,
+            self.search_tree_leaf_budget,
+            self.n_neighbors,
+            min_distance,
+            angular,
+            angular,
+            kernel,
+            bits,
+            prefetch_lines=getattr(self, "_prefetch_lines", None),
+        )
+        self._uses_cached_search = True
+        self._deheap_function = deheap_sort_serial
+        self._fast_plan = None
+        finisher = self._query_finisher()
+        heap_indices, heap_distances, _ = make_heap(1, 1)
+        finisher(heap_indices, heap_distances, self._vertex_order)  # compile
+
+    def _sq_query(
+        self,
+        query_data,
+        k,
+        epsilon,
+        proxy_beam_size,
+        candidate_width,
+        rerank_width,
+        return_distances,
+        pre_normalized,
+    ):
+        if pre_normalized and not self._uses_normalized_data():
+            raise ValueError(
+                "pre_normalized is only supported for dense cosine, direct_cosine "
+                "and dot"
+            )
+        if candidate_width is None:
+            candidate_width = proxy_beam_size * k if proxy_beam_size is not None else 2 * k
+        if candidate_width < k:
+            raise ValueError("candidate_width must be at least k")
+        if rerank_width is None or rerank_width == candidate_width:
+            rerank_width = 0  # all candidates
+        elif not k <= rerank_width <= candidate_width:
+            raise ValueError(
+                f"with {self.quantization} quantization rerank_width must be between k "
+                "and candidate_width"
+            )
+
+        query_data = np.asarray(query_data).astype(np.float32, order="C")
+        if query_data.ndim != 2 or query_data.shape[1] != self._raw_data.shape[1]:
+            raise ValueError(
+                "query_data must be a 2-D array with "
+                f"{self._raw_data.shape[1]} features, got shape {query_data.shape}"
+            )
+        n_queries = query_data.shape[0]
+        key = (n_queries, int(candidate_width), int(k))
+        workspace = getattr(self, "_sq_workspace", None)
+        if workspace is None or workspace[0] != key:
+            workspace = (key, make_heap(n_queries, candidate_width), make_heap(n_queries, k))
+            self._sq_workspace = workspace
+        _, candidates, result = workspace
+        self._search_function(
+            query_data,
+            query_data,
+            candidates,
+            result,
+            k,
+            epsilon,
+            rerank_width,
+            self._visited,
+            pre_normalized,
+            self.search_rng_state,
+        )
+        indices, dists = self._query_finisher()(result[0], result[1], self._vertex_order)
+        if not return_distances:
+            return indices
+        return indices, dists
+
     def query(
         self,
         query_data,
@@ -2888,13 +3039,14 @@ class NNDescent:
             Absolute number of proxy candidates retained before exact reranking.
             Only applies to proxy and quantized searches and must be at least
             ``k``. Defaults to ``proxy_beam_size * k`` if ``proxy_beam_size`` is
-            given, otherwise ``int(1.66 * k)`` for int8 quantization and
-            ``4 * k`` for other proxy searches.
+            given, otherwise ``int(1.66 * k)`` for int8 quantization, ``2 * k``
+            for sq8/sq4 quantization and ``4 * k`` for other proxy searches.
 
         rerank_width: int or None (optional, default=None)
             Number of proxy finalists to score with the exact distance. Defaults
             to all proxy candidates. Set to zero to return proxy-ranked results
-            without retaining the cost of exact reranking. For
+            without retaining the cost of exact reranking (not available with
+            sq8/sq4 quantization, which needs ``k <= rerank_width``). For
             ``proxy_inner_product`` these results are ranked, and their distances
             given, by ``-log2(<q, y> / (|q| * max |y|))``.
 
@@ -2925,6 +3077,18 @@ class NNDescent:
         """
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
+
+        if self.quantization in SQ_MODES:
+            return self._sq_query(
+                query_data,
+                k,
+                epsilon,
+                proxy_beam_size,
+                candidate_width,
+                rerank_width,
+                return_distances,
+                pre_normalized,
+            )
 
         # Fast path for plain dense and sparse queries; every per-index decision
         # (including whether the index is sparse) is made once, in the plan.
@@ -3369,6 +3533,9 @@ class NNDescent:
 
                 if hasattr(self, "_search_function"):
                     del self._search_function
+                for attribute in ("_sq_codes", "_sq_offsets", "_sq_scales", "_sq_workspace"):
+                    if hasattr(self, attribute):
+                        delattr(self, attribute)
 
                 self.prepare()
 

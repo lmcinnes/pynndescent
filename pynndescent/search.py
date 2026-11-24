@@ -41,13 +41,14 @@ from pynndescent.kernels import (
     KERNEL_ALT_DOT,
     KERNEL_PROXY_IP_QUERY,
     KERNEL_SQEUCLIDEAN,
-    four_distances,
+    four_distances_at,
 )
 from pynndescent.rp_trees import select_side
 from pynndescent.utils import (
     check_and_mark_visited,
     make_heap,
     mark_visited,
+    prefetch_row,
     simple_heap_push,
     siftdown,
     tau_rand_int,
@@ -91,6 +92,8 @@ _SEARCH_INDEX_FIELDS = [
     "normalize_query",
     "tree_normalize_query",
     "kernel",
+    "max_degree",
+    "prefetch_lines",
 ]
 structref.define_proxy(SearchIndex, SearchIndexType, _SEARCH_INDEX_FIELDS)
 
@@ -162,6 +165,21 @@ def _tree_spill_leaves(point, rng_state, leaves, tree_hyperplanes, tree_offsets,
     return leaf_count
 
 
+@numba.njit(inline="always")
+def _distance_bound(heap_priorities, heap_indices, epsilon, min_distance):
+    """Search radius: the worst retained distance, relaxed by epsilon.
+
+    Until the result heap is full its root is an empty slot (index -1 and an
+    infinite priority) and there is no bound; returning that priority directly
+    avoids computing epsilon * inf, which is NaN (ending the search) when
+    epsilon is 0.
+    """
+    top = heap_priorities[0]
+    if heap_indices[0] < 0:
+        return top
+    return top + epsilon * (top - min_distance)
+
+
 @numba.njit(
     inline="always",
     fastmath=True,
@@ -195,6 +213,8 @@ def _search_one(
     n_neighbors,
     min_distance,
     kernel,
+    max_degree,
+    prefetch_lines,
 ):
     # seed_set is pushed to directly throughout: passing the list to a helper
     # (even an inlined one) adds reference counting to every push, which cost
@@ -245,47 +265,48 @@ def _search_one(
         return
 
     # Graph search
-    distance_bound = heap_priorities[0] + (
-        epsilon * (heap_priorities[0] - min_distance)
-    )
+    distance_bound = _distance_bound(heap_priorities, heap_indices, epsilon, min_distance)
     d_vertex, vertex = heapq.heappop(seed_set)
-    pending = np.empty(4, dtype=np.int32)
+    pending = np.empty(max_degree + 4, dtype=np.int32)
     pending_d = np.empty(4, dtype=np.float32)
 
     while d_vertex < distance_bound:
-        # Unvisited neighbours are compared four at a time and then considered
-        # in their original order, so the search path is unchanged.
+        # Gather the unvisited neighbours first, prefetching their vectors, then
+        # compare them four at a time. They are considered in their original
+        # order, so the search path is unchanged.
         n_pending = 0
         for j in range(indptr[vertex], indptr[vertex + 1]):
             candidate = indices[j]
             if check_and_mark_visited(visited, candidate) == 0:
                 pending[n_pending] = candidate
                 n_pending += 1
-                if n_pending == 4:
-                    if kernel == KERNEL_PROXY_IP_QUERY:
-                        for r in range(4):
-                            pending_d[r] = _distance(
-                                kernel, current_query, data[pending[r]], query_inv_norm
-                            )
-                    else:
-                        four_distances(current_query, data, pending, pending_d, kernel)
-                    for r in range(4):
-                        d = pending_d[r]
-                        if d < distance_bound:
-                            simple_heap_push(heap_priorities, heap_indices, d, pending[r])
-                            heapq.heappush(seed_set, (d, pending[r]))
-                            distance_bound = heap_priorities[0] + (
-                                epsilon * (heap_priorities[0] - min_distance)
-                            )
-                    n_pending = 0
-        for r in range(n_pending):
-            d = np.float32(_distance(kernel, current_query, data[pending[r]], query_inv_norm))
+                if prefetch_lines > 0:
+                    prefetch_row(data, candidate, prefetch_lines)
+
+        r = 0
+        if kernel != KERNEL_PROXY_IP_QUERY:
+            while r + 4 <= n_pending:
+                four_distances_at(current_query, data, pending, r, pending_d, kernel)
+                for s in range(4):
+                    d = pending_d[s]
+                    if d < distance_bound:
+                        candidate = pending[r + s]
+                        simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                        heapq.heappush(seed_set, (d, candidate))
+                        distance_bound = _distance_bound(
+                            heap_priorities, heap_indices, epsilon, min_distance
+                        )
+                r += 4
+        while r < n_pending:
+            candidate = pending[r]
+            d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
             if d < distance_bound:
-                simple_heap_push(heap_priorities, heap_indices, d, pending[r])
-                heapq.heappush(seed_set, (d, pending[r]))
-                distance_bound = heap_priorities[0] + (
-                    epsilon * (heap_priorities[0] - min_distance)
+                simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                heapq.heappush(seed_set, (d, candidate))
+                distance_bound = _distance_bound(
+                    heap_priorities, heap_indices, epsilon, min_distance
                 )
+            r += 1
 
         if len(seed_set) == 0:
             break
@@ -335,6 +356,8 @@ def _search_dense_serial(
     min_distance = index.min_distance
     normalize_query = index.normalize_query
     tree_normalize_query = index.tree_normalize_query
+    max_degree = index.max_degree
+    prefetch_lines = index.prefetch_lines
     internal_rng_state = np.copy(rng_state)
     for i in range(query_points.shape[0]):
         visited[:] = 0
@@ -354,6 +377,7 @@ def _search_dense_serial(
             epsilon, visited, internal_rng_state, data, indptr, indices,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
+            max_degree, prefetch_lines,
         )
     return result
 
@@ -409,6 +433,8 @@ def search_dense_parallel(
     min_distance = index.min_distance
     normalize_query = index.normalize_query
     tree_normalize_query = index.tree_normalize_query
+    max_degree = index.max_degree
+    prefetch_lines = index.prefetch_lines
     kernel = index.kernel
     internal_rng_state = np.copy(rng_state)
     for i in numba.prange(query_points.shape[0]):
@@ -430,6 +456,7 @@ def search_dense_parallel(
             epsilon, visited_nodes, internal_rng_state, data, indptr, indices,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
+            max_degree, prefetch_lines,
         )
     return result
 
@@ -438,14 +465,14 @@ def search_dense_parallel(
 def _new_search_index(
     data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
     tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
-    normalize_query, tree_normalize_query, kernel,
+    normalize_query, tree_normalize_query, kernel, max_degree, prefetch_lines,
 ):
     # Constructing the structref in a cached function avoids compiling its
     # constructor in every process.
     return SearchIndex(
         data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
         tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
-        normalize_query, tree_normalize_query, kernel,
+        normalize_query, tree_normalize_query, kernel, max_degree, prefetch_lines,
     )
 
 
@@ -473,9 +500,21 @@ def stack_search_forest(search_forest, n_points):
     return hyperplanes, offsets, children, indices
 
 
+def default_prefetch_lines(data):
+    """Cache lines to prefetch per candidate vector.
+
+    Whole rows up to 1KB; for longer rows only the first 8 lines (the hardware
+    prefetcher follows the rest, and prefetching whole long rows measured 4-8%
+    slower than this on 768- and 1024-dimensional float32 data).
+    """
+    lines = -(-data.shape[1] * data.itemsize // 64)
+    return lines if lines <= 16 else 8
+
+
 def make_cached_search_function(
     data, indptr, indices, search_forest, tree_leaf_budget, n_neighbors,
     min_distance, normalize_query, tree_normalize_query, kernel, parallel,
+    prefetch_lines=None,
 ):
     """Bind an index's arrays to the cached search function.
 
@@ -509,6 +548,8 @@ def make_cached_search_function(
         bool(normalize_query),
         bool(tree_normalize_query),
         np.int64(kernel),
+        np.int64(max(int(np.max(np.diff(indptr))), 0) if indptr.shape[0] > 1 else 0),
+        np.int64(default_prefetch_lines(data) if prefetch_lines is None else prefetch_lines),
     )
     signature = (
         numba.typeof(index),  # index arrays and settings

@@ -1615,3 +1615,98 @@ def test_transformer_transform_none_after_query(nn_data):
         warnings.simplefilter("ignore")
         with pytest.raises(ValueError, match="compress_index=False"):
             transformer.transform(None)
+
+
+@pytest.mark.parametrize("compile_search", [False, True])
+def test_zero_epsilon_searches_past_the_seed_leaf(compile_search):
+    # With k larger than the search tree leaf the result heap is not full after
+    # seeding; epsilon=0 must still search the graph (inf + 0 * inf is NaN,
+    # which used to end the search at once).
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(3000, 16)).astype(np.float32)
+    queries = rng.normal(size=(40, 16)).astype(np.float32)
+    index = NNDescent(data, n_neighbors=15, random_state=42)
+    index.prepare(compile_search=compile_search)
+    indices = index.query_indices(queries, k=60, epsilon=0.0)
+    true = np.argsort(((queries[:, None] - data[None]) ** 2).sum(-1), axis=1)[:, :60]
+    recall = np.mean([len(set(a) & set(b)) / 60 for a, b in zip(indices, true)])
+    assert recall > 0.8
+
+
+@pytest.mark.parametrize("quantization", ["sq8", "sq4"])
+@pytest.mark.parametrize("metric", ["euclidean", "cosine", "dot"])
+def test_scalar_quantized_search(quantization, metric):
+    rng = np.random.default_rng(0)
+    centers = rng.normal(size=(30, 24)).astype(np.float32) * 4
+    data = centers[rng.integers(0, 30, 4000)] + rng.normal(size=(4000, 24))
+    queries = centers[rng.integers(0, 30, 60)] + rng.normal(size=(60, 24))
+    data = data.astype(np.float32)
+    queries = queries.astype(np.float32)
+    index = NNDescent(
+        data, metric=metric, n_neighbors=15, random_state=42, quantization=quantization
+    )
+    indices, dists = index.query(queries, k=10, epsilon=0.05, candidate_width=40)
+
+    if metric == "euclidean":
+        true_dists = np.sqrt(((queries[:, None] - data[None]) ** 2).sum(-1))
+        returned = np.sqrt(((queries[:, None] - data[indices]) ** 2).sum(-1))
+    else:
+        true_dists = cosine_distances(queries, data)
+        returned = np.take_along_axis(true_dists, indices, axis=1)
+    true = np.argsort(true_dists, axis=1)[:, :10]
+    recall = np.mean([len(set(a) & set(b)) / 10 for a, b in zip(indices, true)])
+    assert recall > (0.9 if quantization == "sq8" else 0.6)
+    # Candidates are reranked exactly, so the returned distances are exact.
+    np.testing.assert_allclose(dists, returned, atol=1e-4)
+    assert np.all(np.diff(dists, axis=1) >= -1e-6)
+
+    single = np.vstack(
+        [index.query_indices(q[None], k=10, epsilon=0.05, candidate_width=40) for q in queries]
+    )
+    np.testing.assert_array_equal(single, indices)
+
+    restored = pickle.loads(pickle.dumps(index))
+    np.testing.assert_array_equal(
+        restored.query_indices(queries, k=10, epsilon=0.05, candidate_width=40), indices
+    )
+    with pytest.raises(ValueError):
+        index.query(queries, k=10, candidate_width=5)
+
+
+def test_scalar_quantization_rejects_unsupported_metric(nn_data):
+    index = NNDescent(
+        nn_data[:300].astype(np.float32),
+        metric="manhattan",
+        n_neighbors=10,
+        random_state=42,
+        quantization="sq8",
+    )
+    with pytest.raises(ValueError):
+        index.prepare()
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_diversify_alpha_keeps_more_edges(metric):
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(3000, 16)).astype(np.float32)
+    queries = rng.normal(size=(40, 16)).astype(np.float32)
+    graphs = {}
+    for alpha in (None, 1.0, 1.3):
+        kwargs = {} if alpha is None else {"diversify_alpha": alpha}
+        index = NNDescent(data, metric=metric, n_neighbors=15, random_state=42, **kwargs)
+        index.prepare()
+        graphs[alpha] = index
+    default, one, relaxed = graphs[None], graphs[1.0], graphs[1.3]
+    np.testing.assert_array_equal(default._search_graph.indices, one._search_graph.indices)
+    assert relaxed._search_graph.nnz > 1.2 * default._search_graph.nnz
+    if metric == "euclidean":
+        true = np.argsort(((queries[:, None] - data[None]) ** 2).sum(-1), axis=1)[:, :10]
+    else:
+        true = np.argsort(cosine_distances(queries, data), axis=1)[:, :10]
+    found = relaxed.query_indices(queries, k=10, epsilon=0.1)
+    assert np.mean([len(set(a) & set(b)) / 10 for a, b in zip(found, true)]) > 0.9
+
+
+def test_diversify_alpha_below_one_rejected(nn_data):
+    with pytest.raises(ValueError):
+        NNDescent(nn_data[:200], n_neighbors=10, diversify_alpha=0.9)

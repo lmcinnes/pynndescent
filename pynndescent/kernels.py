@@ -257,3 +257,30 @@ def four_distances(query, data, candidates, out, kernel):
     out[1] = d1
     out[2] = d2
     out[3] = d3
+
+
+@numba.njit(fastmath=True, inline="always")
+def four_distances_at(query, data, candidates, start, out, kernel):
+    """Distances from ``query`` to ``data[candidates[start:start + 4]]`` (kernels 1, 2)."""
+    if kernel == 1:
+        d0, d1, d2, d3 = _four_sqeuclidean(
+            query,
+            data,
+            candidates[start],
+            candidates[start + 1],
+            candidates[start + 2],
+            candidates[start + 3],
+        )
+    else:
+        d0, d1, d2, d3 = _four_alt_dot(
+            query,
+            data,
+            candidates[start],
+            candidates[start + 1],
+            candidates[start + 2],
+            candidates[start + 3],
+        )
+    out[0] = d0
+    out[1] = d1
+    out[2] = d2
+    out[3] = d3
