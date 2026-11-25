@@ -26,7 +26,12 @@ from numba import types
 from numba.experimental import structref
 
 from pynndescent.distances import alternative_dot, squared_euclidean
-from pynndescent.kernels import KERNEL_ALT_DOT, KERNEL_SQEUCLIDEAN, four_distances_at
+from pynndescent.kernels import (
+    KERNEL_ALT_DOT,
+    KERNEL_SQEUCLIDEAN,
+    alt_dot_from_dot,
+    four_distances_at,
+)
 from pynndescent.search import (
     _HEAP_TYPE,
     _array,
@@ -35,10 +40,18 @@ from pynndescent.search import (
     _readonly,
     _tree_leaf,
     _tree_spill_leaves,
+    default_adjacency_lines,
     default_prefetch_lines,
+    padded_adjacency,
     stack_search_forest,
 )
-from pynndescent.utils import check_and_mark_visited, prefetch_row, simple_heap_push, siftdown
+from pynndescent.utils import (
+    check_and_mark_visited,
+    float16_bits_as_float32,
+    prefetch_row,
+    simple_heap_push,
+    siftdown,
+)
 
 SQ_MODES = ("sq8", "sq4")
 
@@ -128,6 +141,23 @@ def encode(data, offsets, scales, bits):
     return codes
 
 
+def encode_float16(data):
+    """A float16 copy of ``data / scale`` for reranking, as uint16 bits, and ``scale``.
+
+    ``scale`` is the largest absolute value, so every stored value lies in
+    [-1, 1]: nothing overflows and only negligible values become subnormal.
+    """
+    max_abs = float(np.abs(data).max()) if data.size else 0.0
+    scale = np.float32(max_abs if max_abs > 0.0 and np.isfinite(max_abs) else 1.0)
+    rerank16 = np.empty(data.shape, dtype=np.float16)
+    block = 16384
+    for start in range(0, data.shape[0], block):
+        rerank16[start : start + block] = np.asarray(
+            data[start : start + block], dtype=np.float32
+        ) / scale
+    return rerank16.view(np.uint16), scale
+
+
 # --------------------------------------------------------------------------
 # Search index (one pointer for all arrays, as in search.py)
 # --------------------------------------------------------------------------
@@ -146,10 +176,12 @@ class QuantizedSearchIndex(structref.StructRefProxy):
 _FIELDS = [
     "codes",
     "data",
+    "rerank16",
+    "rerank_scale",
+    "rerank_half",
     "q_offsets",
     "q_scales",
-    "indptr",
-    "indices",
+    "adjacency",
     "tree_hyperplanes",
     "tree_offsets",
     "tree_children",
@@ -163,22 +195,25 @@ _FIELDS = [
     "max_degree",
     "prefetch_lines",
     "rerank_prefetch_lines",
+    "adjacency_lines",
 ]
 structref.define_proxy(QuantizedSearchIndex, QuantizedSearchIndexType, _FIELDS)
 
 
 @numba.njit(cache=True)
 def _new_quantized_search_index(
-    codes, data, q_offsets, q_scales, indptr, indices, tree_hyperplanes, tree_offsets,
+    codes, data, rerank16, rerank_scale, rerank_half, q_offsets, q_scales, adjacency,
+    tree_hyperplanes, tree_offsets,
     tree_children, tree_indices, n_search_trees, tree_leaf_budget, n_neighbors,
     min_distance, normalize_query, tree_normalize_query, max_degree, prefetch_lines,
-    rerank_prefetch_lines,
+    rerank_prefetch_lines, adjacency_lines,
 ):
     return QuantizedSearchIndex(
-        codes, data, q_offsets, q_scales, indptr, indices, tree_hyperplanes, tree_offsets,
+        codes, data, rerank16, rerank_scale, rerank_half, q_offsets, q_scales, adjacency,
+        tree_hyperplanes, tree_offsets,
         tree_children, tree_indices, n_search_trees, tree_leaf_budget, n_neighbors,
         min_distance, normalize_query, tree_normalize_query, max_degree, prefetch_lines,
-        rerank_prefetch_lines,
+        rerank_prefetch_lines, adjacency_lines,
     )
 
 
@@ -404,9 +439,9 @@ def _transform_query(kernel, bits, query, q_offsets, q_scales):
 )
 def _search_codes(
     a, b, base, tree_current_query, heap_priorities, heap_indices, k, epsilon, visited,
-    rng_state, codes, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
+    rng_state, codes, adjacency, tree_hyperplanes, tree_offsets, tree_children,
     tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
-    bits, max_degree, prefetch_lines,
+    bits, max_degree, prefetch_lines, adjacency_lines,
 ):
     # a and b are 2-D for every code type (1 x dim for sq8, 2 x n_bytes for
     # sq4) so that all branches type the same.
@@ -448,13 +483,21 @@ def _search_codes(
 
     distance_bound = _distance_bound(heap_priorities, heap_indices, epsilon, min_distance)
     d_vertex, vertex = heapq.heappop(seed_set)
-    pending = np.empty(max_degree + 4, dtype=np.int32)
+    pending = np.empty(adjacency.shape[1] + 4, dtype=np.int32)
     pending_d = np.empty(4, dtype=np.float32)
 
     while d_vertex < distance_bound:
+        if adjacency_lines > 0 and len(seed_set) > 0:
+            # The closest remaining candidate is likely expanded next: fetch its
+            # adjacency row (at a fixed, cache-aligned offset) while this vertex
+            # is processed.
+            prefetch_row(adjacency, seed_set[0][1], adjacency_lines)
         n_pending = 0
-        for j in range(indptr[vertex], indptr[vertex + 1]):
-            candidate = indices[j]
+        row = adjacency[vertex]
+        for j in range(row.shape[0]):
+            candidate = row[j]
+            if candidate < 0:
+                break
             if check_and_mark_visited(visited, candidate) == 0:
                 pending[n_pending] = candidate
                 n_pending += 1
@@ -515,6 +558,81 @@ def _rerank(
         r += 1
 
 
+@numba.njit(fastmath=True, inline="always", boundscheck=False)
+def _four_half_sums(kernel, x, y0, y1, y2, y3):
+    """Squared euclidean distances or dot products of x with four float16 rows."""
+    s0 = s1 = s2 = s3 = np.float32(0.0)
+    if kernel == KERNEL_SQEUCLIDEAN:
+        for t in range(x.shape[0]):
+            xv = x[t]
+            e = xv - float16_bits_as_float32(y0[t])
+            s0 += e * e
+            e = xv - float16_bits_as_float32(y1[t])
+            s1 += e * e
+            e = xv - float16_bits_as_float32(y2[t])
+            s2 += e * e
+            e = xv - float16_bits_as_float32(y3[t])
+            s3 += e * e
+    else:
+        for t in range(x.shape[0]):
+            xv = x[t]
+            s0 += xv * float16_bits_as_float32(y0[t])
+            s1 += xv * float16_bits_as_float32(y1[t])
+            s2 += xv * float16_bits_as_float32(y2[t])
+            s3 += xv * float16_bits_as_float32(y3[t])
+    return s0, s1, s2, s3
+
+
+@numba.njit(fastmath=True, inline="always")
+def _half_distance(kernel, s, factor):
+    if kernel == KERNEL_SQEUCLIDEAN:
+        return np.float32(s * factor)
+    return alt_dot_from_dot(s)
+
+
+@numba.njit(inline="always", fastmath=True)
+def _rerank_half(
+    query, candidates, n_rerank, rerank16, scale, out_priorities, out_indices, kernel,
+    prefetch_lines,
+):
+    """As ``_rerank``, from the float16 copy ``rerank16`` (= data / scale)."""
+    if prefetch_lines > 0:
+        for j in range(n_rerank):
+            prefetch_row(rerank16, candidates[j], prefetch_lines)
+    # Fold the scale into the query: |q - s y|^2 = s^2 |q / s - y|^2 and
+    # <q, s y> = <s q, y>.
+    x = np.empty(query.shape[0], dtype=np.float32)
+    if kernel == KERNEL_SQEUCLIDEAN:
+        inv_scale = np.float32(1.0) / scale
+        for t in range(query.shape[0]):
+            x[t] = query[t] * inv_scale
+        factor = scale * scale
+    else:
+        for t in range(query.shape[0]):
+            x[t] = query[t] * scale
+        factor = np.float32(1.0)
+    r = 0
+    while r + 4 <= n_rerank:
+        c0 = candidates[r]
+        c1 = candidates[r + 1]
+        c2 = candidates[r + 2]
+        c3 = candidates[r + 3]
+        s0, s1, s2, s3 = _four_half_sums(
+            kernel, x, rerank16[c0], rerank16[c1], rerank16[c2], rerank16[c3]
+        )
+        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s0, factor), c0)
+        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s1, factor), c1)
+        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s2, factor), c2)
+        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s3, factor), c3)
+        r += 4
+    while r < n_rerank:
+        c = candidates[r]
+        row = rerank16[c]
+        s0, _, _, _ = _four_half_sums(kernel, x, row, row, row, row)
+        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s0, factor), c)
+        r += 1
+
+
 @numba.njit(inline="always", fastmath=True)
 def _search_quantized_serial(
     index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
@@ -545,11 +663,11 @@ def _search_quantized_serial(
         a, b, base = _transform_query(kernel, bits, current_query, q_offsets, q_scales)
         _search_codes(
             a, b, base, tree_current_query, cand_priorities, cand_indices, n_candidates,
-            epsilon, visited, internal_rng_state, codes, index.indptr, index.indices,
+            epsilon, visited, internal_rng_state, codes, index.adjacency,
             index.tree_hyperplanes, index.tree_offsets, index.tree_children,
             index.tree_indices, index.n_search_trees, index.tree_leaf_budget,
             index.n_neighbors, index.min_distance, kernel, bits, index.max_degree,
-            index.prefetch_lines,
+            index.prefetch_lines, index.adjacency_lines,
         )
         # Keep the best rerank_width candidates (by code distance), then rerank.
         n_valid = 0
@@ -564,10 +682,16 @@ def _search_quantized_serial(
             best = cand_indices[:n_valid][order[:rerank_width]].copy()
             cand_indices[:rerank_width] = best
             n_rerank = rerank_width
-        _rerank(
-            current_query, cand_indices, n_rerank, data, out_priorities, out_indices, kernel,
-            index.rerank_prefetch_lines,
-        )
+        if index.rerank_half:
+            _rerank_half(
+                current_query, cand_indices, n_rerank, index.rerank16, index.rerank_scale,
+                out_priorities, out_indices, kernel, index.rerank_prefetch_lines,
+            )
+        else:
+            _rerank(
+                current_query, cand_indices, n_rerank, data, out_priorities, out_indices,
+                kernel, index.rerank_prefetch_lines,
+            )
     return result
 
 
@@ -627,10 +751,16 @@ def default_code_prefetch_lines(codes):
     return default_prefetch_lines(codes)
 
 
+def full_row_prefetch_lines(data):
+    """Cache lines spanned by one (possibly unaligned) row of ``data``."""
+    return (data.shape[1] * data.itemsize + 63) // 64 + 1
+
+
 def make_quantized_search_function(
     codes, data, q_offsets, q_scales, indptr, indices, search_forest, tree_leaf_budget,
     n_neighbors, min_distance, normalize_query, tree_normalize_query, kernel, bits,
-    prefetch_lines=None, rerank_prefetch_lines=None,
+    prefetch_lines=None, rerank_prefetch_lines=None, adjacency_lines=None,
+    rerank16=None, rerank_scale=1.0,
 ):
     """Bind an index's arrays to the cached quantized search function.
 
@@ -638,22 +768,36 @@ def make_quantized_search_function(
     epsilon, rerank_width, visited, query_is_normalized, rng_state) -> result``
     where ``candidates`` is a (n_queries, candidate_width) heap workspace and
     ``result`` a (n_queries, k) heap that receives the exactly-scored neighbors.
+    With ``rerank16`` (float16 bits of ``data / rerank_scale``, from
+    ``encode_float16``) the candidates are reranked from that copy instead.
     """
     dispatcher = _DISPATCH[(bits, kernel)]
     hyperplanes, offsets, children, tree_indices = stack_search_forest(
         search_forest, data.shape[0]
     )
+    adjacency = padded_adjacency(indptr, indices)
+    if adjacency_lines is None:
+        adjacency_lines = default_adjacency_lines(adjacency)
     if prefetch_lines is None:
         prefetch_lines = default_code_prefetch_lines(codes)
+    rerank_half = rerank16 is not None
+    if not rerank_half:
+        rerank16 = np.empty((0, data.shape[1]), dtype=np.uint16)
     if rerank_prefetch_lines is None:
-        rerank_prefetch_lines = default_prefetch_lines(data)
+        # Whole float16 rows pay off (they are half the size, so all the
+        # finalists fit in flight); for float32 rows that is too many lines.
+        rerank_prefetch_lines = (
+            full_row_prefetch_lines(rerank16) if rerank_half else default_prefetch_lines(data)
+        )
     index = _new_quantized_search_index(
         _readonly(codes, np.uint8),
         _readonly(data, np.float32),
+        _readonly(rerank16, np.uint16),
+        np.float32(rerank_scale),
+        bool(rerank_half),
         _readonly(q_offsets, np.float32),
         _readonly(q_scales, np.float32),
-        _readonly(indptr, np.int32),
-        _readonly(indices, np.int32),
+        _readonly(adjacency, np.int32),
         _readonly(hyperplanes, np.float32),
         _readonly(offsets, np.float32),
         _readonly(children, np.int32),
@@ -664,9 +808,10 @@ def make_quantized_search_function(
         np.float32(min_distance),
         bool(normalize_query),
         bool(tree_normalize_query),
-        np.int64(int(np.max(np.diff(indptr))) if indptr.shape[0] > 1 else 0),
+        np.int64(adjacency.shape[1]),
         np.int64(prefetch_lines),
         np.int64(rerank_prefetch_lines),
+        np.int64(adjacency_lines),
     )
     signature = (
         numba.typeof(index),

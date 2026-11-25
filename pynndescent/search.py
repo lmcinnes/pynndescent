@@ -79,8 +79,7 @@ class SearchIndex(structref.StructRefProxy):
 
 _SEARCH_INDEX_FIELDS = [
     "data",
-    "indptr",
-    "indices",
+    "adjacency",
     "tree_hyperplanes",
     "tree_offsets",
     "tree_children",
@@ -94,6 +93,7 @@ _SEARCH_INDEX_FIELDS = [
     "kernel",
     "max_degree",
     "prefetch_lines",
+    "adjacency_lines",
 ]
 structref.define_proxy(SearchIndex, SearchIndexType, _SEARCH_INDEX_FIELDS)
 
@@ -202,8 +202,7 @@ def _search_one(
     visited,
     rng_state,
     data,
-    indptr,
-    indices,
+    adjacency,
     tree_hyperplanes,
     tree_offsets,
     tree_children,
@@ -215,6 +214,7 @@ def _search_one(
     kernel,
     max_degree,
     prefetch_lines,
+    adjacency_lines,
 ):
     # seed_set is pushed to directly throughout: passing the list to a helper
     # (even an inlined one) adds reference counting to every push, which cost
@@ -267,16 +267,24 @@ def _search_one(
     # Graph search
     distance_bound = _distance_bound(heap_priorities, heap_indices, epsilon, min_distance)
     d_vertex, vertex = heapq.heappop(seed_set)
-    pending = np.empty(max_degree + 4, dtype=np.int32)
+    pending = np.empty(adjacency.shape[1] + 4, dtype=np.int32)
     pending_d = np.empty(4, dtype=np.float32)
 
     while d_vertex < distance_bound:
+        if adjacency_lines > 0 and len(seed_set) > 0:
+            # The closest remaining candidate is likely expanded next: fetch its
+            # adjacency row (at a fixed, cache-aligned offset) while this vertex
+            # is processed.
+            prefetch_row(adjacency, seed_set[0][1], adjacency_lines)
         # Gather the unvisited neighbours first, prefetching their vectors, then
         # compare them four at a time. They are considered in their original
         # order, so the search path is unchanged.
         n_pending = 0
-        for j in range(indptr[vertex], indptr[vertex + 1]):
-            candidate = indices[j]
+        row = adjacency[vertex]
+        for j in range(row.shape[0]):
+            candidate = row[j]
+            if candidate < 0:
+                break
             if check_and_mark_visited(visited, candidate) == 0:
                 pending[n_pending] = candidate
                 n_pending += 1
@@ -344,8 +352,7 @@ def _search_dense_serial(
     visited, query_is_normalized, rng_state, kernel,
 ):
     data = index.data
-    indptr = index.indptr
-    indices = index.indices
+    adjacency = index.adjacency
     tree_hyperplanes = index.tree_hyperplanes
     tree_offsets = index.tree_offsets
     tree_children = index.tree_children
@@ -358,6 +365,7 @@ def _search_dense_serial(
     tree_normalize_query = index.tree_normalize_query
     max_degree = index.max_degree
     prefetch_lines = index.prefetch_lines
+    adjacency_lines = index.adjacency_lines
     internal_rng_state = np.copy(rng_state)
     for i in range(query_points.shape[0]):
         visited[:] = 0
@@ -374,10 +382,10 @@ def _search_dense_serial(
         _search_one(
             current_query, query_inv_norms[i], tree_current_query, heap_priorities,
             heap_indices, k,
-            epsilon, visited, internal_rng_state, data, indptr, indices,
+            epsilon, visited, internal_rng_state, data, adjacency,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
-            max_degree, prefetch_lines,
+            max_degree, prefetch_lines, adjacency_lines,
         )
     return result
 
@@ -421,8 +429,7 @@ def search_dense_parallel(
     visited, query_is_normalized, rng_state,
 ):
     data = index.data
-    indptr = index.indptr
-    indices = index.indices
+    adjacency = index.adjacency
     tree_hyperplanes = index.tree_hyperplanes
     tree_offsets = index.tree_offsets
     tree_children = index.tree_children
@@ -435,6 +442,7 @@ def search_dense_parallel(
     tree_normalize_query = index.tree_normalize_query
     max_degree = index.max_degree
     prefetch_lines = index.prefetch_lines
+    adjacency_lines = index.adjacency_lines
     kernel = index.kernel
     internal_rng_state = np.copy(rng_state)
     for i in numba.prange(query_points.shape[0]):
@@ -453,26 +461,28 @@ def search_dense_parallel(
         _search_one(
             current_query, query_inv_norms[i], tree_current_query, heap_priorities,
             heap_indices, k,
-            epsilon, visited_nodes, internal_rng_state, data, indptr, indices,
+            epsilon, visited_nodes, internal_rng_state, data, adjacency,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
-            max_degree, prefetch_lines,
+            max_degree, prefetch_lines, adjacency_lines,
         )
     return result
 
 
 @numba.njit(cache=True)
 def _new_search_index(
-    data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
+    data, adjacency, tree_hyperplanes, tree_offsets, tree_children,
     tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
     normalize_query, tree_normalize_query, kernel, max_degree, prefetch_lines,
+    adjacency_lines,
 ):
     # Constructing the structref in a cached function avoids compiling its
     # constructor in every process.
     return SearchIndex(
-        data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
+        data, adjacency, tree_hyperplanes, tree_offsets, tree_children,
         tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
         normalize_query, tree_normalize_query, kernel, max_degree, prefetch_lines,
+        adjacency_lines,
     )
 
 
@@ -500,6 +510,39 @@ def stack_search_forest(search_forest, n_points):
     return hyperplanes, offsets, children, indices
 
 
+@numba.njit(cache=True)
+def _fill_padded_adjacency(indptr, indices, out):
+    for i in range(out.shape[0]):
+        start = indptr[i]
+        degree = indptr[i + 1] - start
+        for j in range(degree):
+            out[i, j] = indices[start + j]
+        for j in range(degree, out.shape[1]):
+            out[i, j] = -1
+
+
+def padded_adjacency(indptr, indices, alignment=64):
+    """The CSR graph as fixed-width rows, -1 padded, each row starting on a cache line.
+
+    Row ``v`` lives at a fixed offset, so the search can locate (and prefetch) a
+    vertex's neighbours without first reading ``indptr[v]``.
+    """
+    n = indptr.shape[0] - 1
+    per_line = alignment // 4
+    max_degree = int(np.max(np.diff(indptr))) if n > 0 else 0
+    slots = max(per_line, -(-max_degree // per_line) * per_line)
+    buffer = np.empty(n * slots + per_line, dtype=np.int32)
+    offset = (-buffer.ctypes.data % alignment) // 4
+    adjacency = buffer[offset : offset + n * slots].reshape(n, slots)
+    _fill_padded_adjacency(indptr, indices, adjacency)
+    return adjacency
+
+
+def default_adjacency_lines(adjacency):
+    """Cache lines of the next vertex's adjacency row to prefetch (at most 2)."""
+    return min(2, adjacency.shape[1] * adjacency.itemsize // 64)
+
+
 def default_prefetch_lines(data):
     """Cache lines to prefetch per candidate vector.
 
@@ -515,6 +558,7 @@ def make_cached_search_function(
     data, indptr, indices, search_forest, tree_leaf_budget, n_neighbors,
     min_distance, normalize_query, tree_normalize_query, kernel, parallel,
     prefetch_lines=None,
+    adjacency_lines=None,
 ):
     """Bind an index's arrays to the cached search function.
 
@@ -533,10 +577,12 @@ def make_cached_search_function(
     hyperplanes, offsets, children, tree_indices = stack_search_forest(
         search_forest, data.shape[0]
     )
+    adjacency = padded_adjacency(indptr, indices)
+    if adjacency_lines is None:
+        adjacency_lines = default_adjacency_lines(adjacency)
     index = _new_search_index(
         _readonly(data, np.float32),
-        _readonly(indptr, np.int32),
-        _readonly(indices, np.int32),
+        _readonly(adjacency, np.int32),
         _readonly(hyperplanes, np.float32),
         _readonly(offsets, np.float32),
         _readonly(children, np.int32),
@@ -548,8 +594,9 @@ def make_cached_search_function(
         bool(normalize_query),
         bool(tree_normalize_query),
         np.int64(kernel),
-        np.int64(max(int(np.max(np.diff(indptr))), 0) if indptr.shape[0] > 1 else 0),
+        np.int64(adjacency.shape[1]),
         np.int64(default_prefetch_lines(data) if prefetch_lines is None else prefetch_lines),
+        np.int64(adjacency_lines),
     )
     signature = (
         numba.typeof(index),  # index arrays and settings

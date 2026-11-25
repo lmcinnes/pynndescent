@@ -68,6 +68,7 @@ from pynndescent.search_graph import build_search_graph, permute_graph, permute_
 from pynndescent.quantized_search import (
     SQ_MODES,
     encode as sq_encode,
+    encode_float16,
     fit_scalar_quantizer,
     make_quantized_search_function,
 )
@@ -994,6 +995,13 @@ class NNDescent:
         Quantization is applied when the index is prepared. The full precision
         data is kept for reranking, so it does not reduce memory use.
 
+    rerank_precision: string (optional, default="float32")
+        With ``"sq8"`` or ``"sq4"`` quantization, the precision of the data the
+        best candidates are reranked with. ``"float16"`` keeps an extra half
+        precision copy (2 bytes per feature) and reranks from it: half the
+        memory traffic for the reranking step, which dominates its cost, with
+        distances accurate to about three significant digits.
+
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
 
@@ -1113,6 +1121,7 @@ class NNDescent:
         bit_metric=False,
         angular_trees=False,
         search_tree_leaf_budget=1,
+        rerank_precision="float32",
     ):
 
         if n_neighbors < 1:
@@ -1172,6 +1181,13 @@ class NNDescent:
         self.max_rptree_depth = max_rptree_depth
         self.max_candidates = max_candidates
         self.quantization = quantization
+        if rerank_precision not in ("float32", "float16"):
+            raise ValueError(
+                f"rerank_precision must be 'float32' or 'float16', got {rerank_precision!r}"
+            )
+        if rerank_precision == "float16" and quantization not in SQ_MODES:
+            raise ValueError("rerank_precision='float16' requires sq8 or sq4 quantization")
+        self.rerank_precision = rerank_precision
         self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
@@ -1800,6 +1816,7 @@ class NNDescent:
             kernel,
             self.parallel_batch_queries,
             prefetch_lines=getattr(self, "_prefetch_lines", None),
+            adjacency_lines=getattr(self, "_adjacency_lines", None),
         )
         self._uses_cached_search = True
         self._deheap_function = (
@@ -2917,6 +2934,13 @@ class NNDescent:
                 random_state=int(self.rng_state[0]) & 0x7FFFFFFF,
             )
             self._sq_codes = sq_encode(data, self._sq_offsets, self._sq_scales, bits)
+        rerank16 = None
+        rerank_scale = 1.0
+        if getattr(self, "rerank_precision", "float32") == "float16":
+            if not hasattr(self, "_sq_rerank16"):
+                self._sq_rerank16, self._sq_rerank_scale = encode_float16(data)
+            rerank16 = self._sq_rerank16
+            rerank_scale = self._sq_rerank_scale
 
         angular = self.metric in ("cosine", "direct_cosine", "dot")
         min_distance = self._min_distance if kernel == KERNEL_SQEUCLIDEAN else 0.0
@@ -2936,6 +2960,9 @@ class NNDescent:
             kernel,
             bits,
             prefetch_lines=getattr(self, "_prefetch_lines", None),
+            adjacency_lines=getattr(self, "_adjacency_lines", None),
+            rerank16=rerank16,
+            rerank_scale=rerank_scale,
         )
         self._uses_cached_search = True
         self._deheap_function = deheap_sort_serial
@@ -3533,7 +3560,14 @@ class NNDescent:
 
                 if hasattr(self, "_search_function"):
                     del self._search_function
-                for attribute in ("_sq_codes", "_sq_offsets", "_sq_scales", "_sq_workspace"):
+                for attribute in (
+                    "_sq_codes",
+                    "_sq_offsets",
+                    "_sq_scales",
+                    "_sq_rerank16",
+                    "_sq_rerank_scale",
+                    "_sq_workspace",
+                ):
                     if hasattr(self, attribute):
                         delattr(self, attribute)
 

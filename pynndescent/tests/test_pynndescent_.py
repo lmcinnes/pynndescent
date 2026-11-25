@@ -1685,6 +1685,46 @@ def test_scalar_quantization_rejects_unsupported_metric(nn_data):
         index.prepare()
 
 
+@pytest.mark.parametrize("metric", ["euclidean", "cosine", "dot"])
+def test_float16_rerank_matches_float32(metric):
+    rng = np.random.default_rng(0)
+    centers = rng.normal(size=(30, 24)).astype(np.float32) * 4
+    data = (centers[rng.integers(0, 30, 4000)] + rng.normal(size=(4000, 24))).astype(np.float32)
+    queries = (centers[rng.integers(0, 30, 60)] + rng.normal(size=(60, 24))).astype(np.float32)
+    if metric == "euclidean":
+        # Far outside the float16 range unless the copy is rescaled.
+        data *= np.float32(1e5)
+        queries *= np.float32(1e5)
+    results = {}
+    for precision in ("float32", "float16"):
+        index = NNDescent(
+            data,
+            metric=metric,
+            n_neighbors=15,
+            random_state=42,
+            quantization="sq8",
+            rerank_precision=precision,
+        )
+        results[precision] = index.query(queries, k=10, epsilon=0.05, candidate_width=40)
+    (i32, d32), (i16, d16) = results["float32"], results["float16"]
+    assert np.all(np.isfinite(d16))
+    overlap = np.mean([len(set(a) & set(b)) / 10 for a, b in zip(i32, i16)])
+    assert overlap > 0.97
+    np.testing.assert_allclose(d16, d32, rtol=2e-3, atol=1e-3)
+
+    restored = pickle.loads(pickle.dumps(index))
+    np.testing.assert_array_equal(
+        restored.query_indices(queries, k=10, epsilon=0.05, candidate_width=40), i16
+    )
+
+
+def test_float16_rerank_rejects_invalid_settings(nn_data):
+    with pytest.raises(ValueError):
+        NNDescent(nn_data[:200], n_neighbors=10, rerank_precision="float16")
+    with pytest.raises(ValueError):
+        NNDescent(nn_data[:200], n_neighbors=10, quantization="sq8", rerank_precision="half")
+
+
 @pytest.mark.parametrize("metric", ["euclidean", "cosine"])
 def test_diversify_alpha_keeps_more_edges(metric):
     rng = np.random.default_rng(0)

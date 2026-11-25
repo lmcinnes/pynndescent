@@ -47,6 +47,41 @@ def float32_bits_as_int32(typingctx, x):
 
 
 @_nb_intrinsic
+def float16_bits_as_float32(typingctx, x):
+    """Widen IEEE half precision bits (stored as uint16) to float32.
+
+    numba has no CPU float16 type; this bitcasts to LLVM ``half`` and extends,
+    which vectorizes to ``vcvtph2ps`` on CPUs with F16C.
+    """
+    if x != _nb_types.uint16:
+        return None
+
+    def codegen(context, builder, sig, args):
+        half = builder.bitcast(args[0], _llvm_ir.HalfType())
+        return builder.fpext(half, _llvm_ir.FloatType())
+
+    return _nb_types.float32(x), codegen
+
+
+def _emit_prefetch(context, builder, pointer):
+    from numba.core import cgutils
+
+    byte_pointer = _llvm_ir.IntType(8).as_pointer()
+    int32 = _llvm_ir.IntType(32)
+    function_type = _llvm_ir.FunctionType(
+        _llvm_ir.VoidType(), [byte_pointer, int32, int32, int32]
+    )
+    prefetch = cgutils.get_or_insert_function(
+        builder.module, function_type, "llvm.prefetch.p0"
+    )
+    # read access, high temporal locality, data cache
+    builder.call(
+        prefetch,
+        [builder.bitcast(pointer, byte_pointer), int32(0), int32(3), int32(1)],
+    )
+
+
+@_nb_intrinsic
 def prefetch_element(typingctx, data, row, col):
     """Hint the CPU to fetch the cache line holding ``data[row, col]`` (2-D C array)."""
     if not isinstance(data, _nb_types.Array) or data.ndim != 2:
@@ -62,24 +97,7 @@ def prefetch_element(typingctx, data, row, col):
         pointer = cgutils.get_item_pointer(
             context, builder, array_type, array, [r, c], wraparound=False
         )
-        byte_pointer = _llvm_ir.IntType(8).as_pointer()
-        int32 = _llvm_ir.IntType(32)
-        function_type = _llvm_ir.FunctionType(
-            _llvm_ir.VoidType(), [byte_pointer, int32, int32, int32]
-        )
-        prefetch = cgutils.get_or_insert_function(
-            builder.module, function_type, "llvm.prefetch.p0"
-        )
-        # read access, high temporal locality, data cache
-        builder.call(
-            prefetch,
-            [
-                builder.bitcast(pointer, byte_pointer),
-                int32(0),
-                int32(3),
-                int32(1),
-            ],
-        )
+        _emit_prefetch(context, builder, pointer)
         return context.get_dummy_value()
 
     return _nb_types.void(data, row, col), codegen

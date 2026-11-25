@@ -169,3 +169,23 @@ def test_partial_diversify_is_deterministic():
     n_half = (single[0] >= 0).sum()
     n_none = (run(0.0)[0] >= 0).sum()
     assert n_full < n_half < n_none == (rows >= 0).sum()
+
+
+def test_padded_adjacency_rows_are_cache_aligned_and_match_csr():
+    from pynndescent.search import padded_adjacency
+
+    rng = np.random.default_rng(0)
+    degrees = rng.integers(0, 41, size=500)
+    degrees[7] = 0
+    indptr = np.concatenate([[0], np.cumsum(degrees)]).astype(np.int32)
+    indices = rng.integers(0, 500, size=indptr[-1]).astype(np.int32)
+
+    adjacency = padded_adjacency(indptr, indices)
+
+    assert adjacency.dtype == np.int32 and adjacency.flags.c_contiguous
+    assert adjacency.ctypes.data % 64 == 0
+    assert adjacency.shape == (500, 48)  # max degree 40 rounded up to 16 slots
+    for i in range(500):
+        row = adjacency[i]
+        np.testing.assert_array_equal(row[: degrees[i]], indices[indptr[i] : indptr[i + 1]])
+        assert np.all(row[degrees[i] :] == -1)
