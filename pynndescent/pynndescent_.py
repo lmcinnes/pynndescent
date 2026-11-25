@@ -3,6 +3,7 @@
 # License: BSD 2 clause
 
 from warnings import warn
+import numbers
 
 import numba
 import numpy as np
@@ -16,6 +17,7 @@ from scipy.sparse import (
     vstack as sparse_vstack,
     issparse,
 )
+from scipy.sparse.csgraph import reverse_cuthill_mckee
 
 import heapq
 
@@ -69,8 +71,15 @@ from pynndescent.quantized_search import (
     SQ_MODES,
     encode as sq_encode,
     encode_float16,
+    fit_pca_projection,
     fit_scalar_quantizer,
     make_quantized_search_function,
+    project_rows,
+)
+from pynndescent.query_sample import (
+    merge_edge_rows,
+    query_induced_edges,
+    query_search_tree,
 )
 from pynndescent.search import (
     _distance_bound,
@@ -798,12 +807,15 @@ def compute_degrees_csr(graph_indptr, graph_indices):
 
 
 def resort_tree_indices(tree, tree_order):
-    """Given a new data indexing, resort the tree indices to match"""
+    """Given a new data indexing, resort the tree indices to match
+
+    ``tree_order[old]`` is the new index of old point ``old``.
+    """
     new_tree = FlatTree(
         tree.hyperplanes,
         tree.offsets,
         tree.children,
-        tree.indices[tree_order].astype(np.int32, order="C"),
+        np.asarray(tree_order)[tree.indices].astype(np.int32, order="C"),
         tree.leaf_size,
     )
     return new_tree
@@ -1002,6 +1014,19 @@ class NNDescent:
         memory traffic for the reranking step, which dominates its cost, with
         distances accurate to about three significant digits.
 
+    quantization_dims: int, float or None (optional, default=None)
+        With ``"sq8"`` or ``"sq4"`` quantization, search over codes of the data
+        projected onto its top principal components rather than over every
+        feature; candidates are still reranked with all features. An integer
+        is the number of components; a float in (0, 1) keeps the fewest
+        components that explain that fraction of the variance. Shorter codes
+        make each search step cheaper, at the cost of a less exact search
+        distance (so a larger ``candidate_width`` may be needed) and of
+        projecting each query. This pays off for high dimensional data whose
+        variance is concentrated in fewer directions (such as many text
+        embeddings); if more than two thirds of the features would be kept no
+        projection is used. None (the default) searches every feature.
+
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
 
@@ -1122,6 +1147,7 @@ class NNDescent:
         angular_trees=False,
         search_tree_leaf_budget=1,
         rerank_precision="float32",
+        quantization_dims=None,
     ):
 
         if n_neighbors < 1:
@@ -1188,6 +1214,22 @@ class NNDescent:
         if rerank_precision == "float16" and quantization not in SQ_MODES:
             raise ValueError("rerank_precision='float16' requires sq8 or sq4 quantization")
         self.rerank_precision = rerank_precision
+        if quantization_dims is not None:
+            if quantization not in SQ_MODES:
+                raise ValueError("quantization_dims requires sq8 or sq4 quantization")
+            if isinstance(quantization_dims, (bool, np.bool_)) or not (
+                (isinstance(quantization_dims, numbers.Integral) and quantization_dims >= 1)
+                or (
+                    isinstance(quantization_dims, numbers.Real)
+                    and not isinstance(quantization_dims, numbers.Integral)
+                    and 0.0 < quantization_dims < 1.0
+                )
+            ):
+                raise ValueError(
+                    "quantization_dims must be a positive integer or a fraction of "
+                    f"variance in (0, 1), got {quantization_dims!r}"
+                )
+        self.quantization_dims = quantization_dims
         self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
@@ -1556,6 +1598,34 @@ class NNDescent:
             else self.max_rptree_depth
         )
 
+        query_sample = getattr(self, "_query_sample", None)
+        query_tree = False
+        if (
+            query_sample is not None
+            and self.tree_init
+            and self._query_tree_leaf_size
+            and not hasattr(self, "_search_forest")
+        ):
+            if self.verbose:
+                print(ts(), "Building search tree over the query sample")
+            self._search_forest = [
+                query_search_tree(
+                    query_sample,
+                    self._query_neighbors,
+                    self._raw_data.shape[0],
+                    self._query_tree_leaf_size,
+                    self._query_tree_entries,
+                    self._query_tree_ranks,
+                    self._angular_trees,
+                    self.rng_state,
+                    check_random_state(self.random_state),
+                    self.n_jobs,
+                )
+            ]
+            query_tree = True
+            if hasattr(self, "_rp_forest"):
+                del self._rp_forest
+
         if not hasattr(self, "_search_forest"):
             if self._rp_forest is None:
                 if self.tree_init:
@@ -1692,6 +1762,24 @@ class NNDescent:
                         self.diversify_prob,
                     )
 
+        if query_sample is not None and self._query_edges > 0:
+            if self.verbose:
+                print(ts(), "Adding query-induced edges")
+            extra_indices, extra_distances = query_induced_edges(
+                self._raw_data,
+                self._distance_func,
+                self._query_neighbors,
+                self._query_edge_candidates,
+                self._query_edges,
+                self._query_edge_pivots,
+            )
+            diversified_rows, diversified_data = merge_edge_rows(
+                np.ascontiguousarray(diversified_rows, dtype=np.int32),
+                np.ascontiguousarray(diversified_data, dtype=np.float32),
+                extra_indices,
+                extra_distances,
+            )
+
         # Preserve any distance 0 points
         diversified_data[diversified_data == 0.0] = FLOAT32_EPS
 
@@ -1702,6 +1790,20 @@ class NNDescent:
         graph_indptr, graph_indices, self._min_distance = build_search_graph(
             diversified_rows, diversified_data, max_degree
         )
+
+        if query_sample is not None:
+            if (
+                self._query_pca
+                and self.quantization in SQ_MODES
+                and getattr(self, "quantization_dims", None) is not None
+            ):
+                # Kept (a sample of it) until the quantization projection is fitted
+                rng = np.random.default_rng(int(self.rng_state[0]) & 0x7FFFFFFF)
+                rows = np.arange(query_sample.shape[0])
+                if rows.shape[0] > 100_000:
+                    rows = np.sort(rng.choice(rows.shape[0], 100_000, replace=False))
+                self._query_pca_sample = query_sample[rows]
+            del self._query_sample, self._query_neighbors
 
         if self.verbose:
             print(
@@ -1716,12 +1818,27 @@ class NNDescent:
             (self._raw_data.shape[0] // 8) + 1, dtype=np.uint8, order="C"
         )
 
-        # reorder according to the search tree leaf order
+        # reorder: vertices are numbered so that graph neighbours get nearby indices
+        # (reverse Cuthill-McKee on the search graph), so the rows a search touches
+        # when it expands a vertex sit close together in memory. The rp-tree leaf
+        # order (``_vertex_order_method = "tree"``) is kept as an alternative.
         if self.verbose:
-            print(ts(), "Resorting data and graph based on tree order")
+            print(ts(), "Resorting data and graph")
 
         if self.tree_init:
             self._vertex_order = self._search_forest[0].indices
+            # A query search tree's leaves need not list every point once, so its
+            # order cannot be the vertex order.
+            if getattr(self, "_vertex_order_method", "rcm") == "rcm" or query_tree:
+                graph = csr_array(
+                    (
+                        np.ones(graph_indices.shape[0], dtype=np.uint8),
+                        graph_indices,
+                        graph_indptr,
+                    ),
+                    shape=(self._raw_data.shape[0], self._raw_data.shape[0]),
+                )
+                self._vertex_order = reverse_cuthill_mckee(graph, symmetric_mode=False)
             graph_indptr, graph_indices = permute_graph(
                 graph_indptr, graph_indices, self._vertex_order
             )
@@ -2682,7 +2799,80 @@ class NNDescent:
         gc.collect()
         return
 
-    def prepare(self, compile_search=False):
+    # How a query_sample adapts the index (see pynndescent.query_sample):
+    # query-induced edges kept per point (0: none), the nearest data points of each
+    # sample query offered them, and the neighbours of each sample query they
+    # are drawn from; sample queries per query search tree leaf (0: no query
+    # tree), the most data points a leaf lists, and how many of each sample
+    # query's nearest data points leaves draw from; and whether a
+    # quantization_dims projection is fitted to the queries as well as the data.
+    _query_edges = 16
+    _query_edge_pivots = 4
+    _query_edge_candidates = 64
+    _query_tree_leaf_size = 30
+    _query_tree_entries = 32
+    _query_tree_ranks = 10
+    _query_pca = True
+
+    def _set_query_sample(self, query_sample, query_neighbors):
+        if hasattr(self, "_search_graph"):
+            raise ValueError(
+                "query_sample must be given before the search index is built: call "
+                "prepare(query_sample=...) before the index is first queried"
+            )
+        if self._is_sparse:
+            raise NotImplementedError("query_sample is not supported for sparse data")
+        if self.quantization is not None and self.quantization not in SQ_MODES:
+            raise NotImplementedError(
+                f"query_sample is not supported with {self.quantization} quantization"
+            )
+        query_sample = check_array(query_sample, dtype=np.float32, order="C")
+        if query_sample.shape[1] != self._raw_data.shape[1]:
+            raise ValueError(
+                f"query_sample must have {self._raw_data.shape[1]} features, "
+                f"got {query_sample.shape[1]}"
+            )
+        if self._normalized_data:
+            norms = np.linalg.norm(query_sample, axis=1, keepdims=True)
+            query_sample = query_sample / np.where(norms > 0, norms, 1).astype(np.float32)
+        if query_neighbors is None:
+            query_neighbors = self._query_sample_neighbors(
+                query_sample, self._query_edge_candidates
+            )
+        query_neighbors = np.asarray(query_neighbors)
+        if query_neighbors.ndim != 2 or query_neighbors.shape[0] != query_sample.shape[0]:
+            raise ValueError(
+                "query_neighbors must be a 2-D array with a row for each sample query"
+            )
+        if not np.issubdtype(query_neighbors.dtype, np.integer):
+            raise ValueError("query_neighbors must hold integer indices")
+        if query_neighbors.size and query_neighbors.max() >= self._raw_data.shape[0]:
+            raise ValueError("query_neighbors holds indices beyond the indexed data")
+        self._query_sample = np.ascontiguousarray(query_sample, dtype=np.float32)
+        self._query_neighbors = np.ascontiguousarray(query_neighbors, dtype=np.int32)
+
+    def _query_sample_neighbors(self, query_sample, k):
+        """Approximate nearest neighbours of the sample queries, found with a
+        temporary copy of the index prepared without them."""
+        helper = NNDescent.__new__(NNDescent)
+        helper.__dict__.update(self.__dict__)
+        # Exact distances and a parallel batch search, sharing no state that
+        # preparing modifies with this index.
+        helper.quantization = None
+        helper.quantization_dims = None
+        helper.rerank_precision = "float32"
+        helper.compressed = False
+        helper.parallel_batch_queries = True
+        helper.verbose = False
+        helper.rng_state = self.rng_state.copy()
+        helper.search_rng_state = self.search_rng_state.copy()
+        helper.prepare()
+        indices, _ = helper.query(
+            query_sample, k=min(k, self._raw_data.shape[0]), epsilon=0.1
+        )
+        return indices
+
+    def prepare(self, compile_search=False, query_sample=None, query_neighbors=None):
         """Prepare the index for querying.
 
         Builds the search tree (a graph-informed "hub" tree, built in parallel)
@@ -2703,8 +2893,34 @@ class NNDescent:
             time an index is prepared. Other metrics and data types always use a
             compiled, specialised search function. The choice is kept when the
             index is pickled.
+
+        query_sample: array of shape (n_samples, n_features) (optional, default=None)
+            Example queries, drawn from the distribution of the queries the
+            index will answer. This matters most when that distribution differs
+            from the data's (text queries against image embeddings, say):
+            the search graph gains edges among each sample query's nearest data
+            points, and searches start from a random projection tree built over
+            the sample queries, whose leaves list their nearest data points.
+            With ``quantization_dims``, the projection is also fitted to the
+            queries as well as the data. Searches of queries like the sample
+            reach a given recall with less work; a few tens of thousands of
+            sample queries or more work best. Only dense data, and no
+            quantization or sq8/sq4 quantization, are supported. The sample
+            must be given before the search index is built, that is before
+            the index is first queried or prepared.
+
+        query_neighbors: array of shape (n_samples, n_query_neighbors) (optional, default=None)
+            The indices, nearest first, of each sample query's nearest
+            neighbours in the indexed data (as ``query`` would return them;
+            negative values are ignored); 64 or more are best. If None, they are
+            found with a search of the index prepared without the sample, which
+            adds that preparation and search to the cost of this one.
         """
         compile_search = bool(compile_search)
+        if query_sample is not None:
+            self._set_query_sample(query_sample, query_neighbors)
+        elif query_neighbors is not None:
+            raise ValueError("query_neighbors requires query_sample")
         if (
             hasattr(self, "_search_function")
             and getattr(self, "_compile_search", False) != compile_search
@@ -2926,14 +3142,34 @@ class NNDescent:
         bits = 8 if self.quantization == "sq8" else 4
         if not hasattr(self, "_sq_codes"):
             # The data has already been reordered to match the search tree.
+            encoded = data
+            self._sq_projection = None
+            dims = getattr(self, "quantization_dims", None)
+            if dims is not None:
+                # Search over codes of the top principal components only;
+                # reranking still uses every feature.
+                self._sq_projection = fit_pca_projection(
+                    data,
+                    dims,
+                    random_state=int(self.rng_state[0]) & 0x7FFFFFFF,
+                    extra=getattr(self, "_query_pca_sample", None),
+                )
+                if self._sq_projection is not None:
+                    encoded = project_rows(data, *self._sq_projection)
             clip = getattr(self, "_sq_clip_quantile", None)
             self._sq_offsets, self._sq_scales = fit_scalar_quantizer(
-                data,
+                encoded,
                 bits,
                 clip_quantile=clip,
                 random_state=int(self.rng_state[0]) & 0x7FFFFFFF,
             )
-            self._sq_codes = sq_encode(data, self._sq_offsets, self._sq_scales, bits)
+            self._sq_codes = sq_encode(encoded, self._sq_offsets, self._sq_scales, bits)
+            del encoded
+            self.__dict__.pop("_query_pca_sample", None)
+        projection = getattr(self, "_sq_projection", None)
+        projection_mean, projection8, projection_scale = (
+            projection if projection is not None else (None, None, None)
+        )
         rerank16 = None
         rerank_scale = 1.0
         if getattr(self, "rerank_precision", "float32") == "float16":
@@ -2963,6 +3199,9 @@ class NNDescent:
             adjacency_lines=getattr(self, "_adjacency_lines", None),
             rerank16=rerank16,
             rerank_scale=rerank_scale,
+            projection8=projection8,
+            projection_scale=projection_scale,
+            projection_mean=projection_mean,
         )
         self._uses_cached_search = True
         self._deheap_function = deheap_sort_serial
@@ -3566,6 +3805,7 @@ class NNDescent:
                     "_sq_scales",
                     "_sq_rerank16",
                     "_sq_rerank_scale",
+                    "_sq_projection",
                     "_sq_workspace",
                 ):
                     if hasattr(self, attribute):

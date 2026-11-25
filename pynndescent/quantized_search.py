@@ -16,9 +16,14 @@ alternative dot (dot, and cosine on normalized dense data). For squared
 euclidean the code distance is ``sum_i scale_i**2 * (z_i - c_i)**2`` with
 ``z = (q - offset) / scale``; for dot it is ``1 - (sum_i q_i offset_i +
 sum_i q_i scale_i c_i)``, which approximates ``1 - <q, x>``.
+
+Optionally (``quantization_dims``) the codes are of ``P^T (x - mean)`` for the
+top principal axes ``P`` instead of ``x``, and the query is projected the same
+way once (``<q, x> ~ <q, mean> + <P^T q, P^T (x - mean)>``); reranking still
+uses every feature.
 """
 import functools
-import heapq
+import numbers
 
 import numba
 import numpy as np
@@ -33,11 +38,15 @@ from pynndescent.kernels import (
     four_distances_at,
 )
 from pynndescent.search import (
+    SEED_CAPACITY,
     _HEAP_TYPE,
     _array,
     _distance_bound,
+    _grow_seeds,
     _prepare_queries,
     _readonly,
+    _seed_pop,
+    _seed_push,
     _tree_leaf,
     _tree_spill_leaves,
     default_adjacency_lines,
@@ -158,6 +167,77 @@ def encode_float16(data):
     return rerank16.view(np.uint16), scale
 
 
+MAX_PROJECTED_FRACTION = 2.0 / 3.0
+
+
+def n_projected_components(eigenvalues, dims):
+    """Components to keep: ``dims`` itself (int), or the fewest that keep a
+    ``dims`` fraction of the variance (float in (0, 1)); ``eigenvalues`` sorted
+    in decreasing order."""
+    if isinstance(dims, numbers.Integral):
+        return int(dims)
+    explained = np.cumsum(np.maximum(eigenvalues, 0.0))
+    if explained[-1] <= 0.0:
+        return eigenvalues.shape[0]
+    return int(np.searchsorted(explained / explained[-1], dims) + 1)
+
+
+def fit_pca_projection(data, dims, sample_size=100_000, random_state=None, extra=None):
+    """Project the codes onto the top principal axes of (a sample of) ``data``.
+
+    With ``extra`` (sample queries, say), the axes are those of the data sample
+    and (a sample of up to as many rows of) ``extra`` together.
+
+    Returns ``(mean, projection8, column_scale)``, the projection being stored
+    as an int8 (dim, n_components) matrix with a scale per column (column j is
+    ``column_scale[j] * projection8[:, j]``), which keeps projecting a query
+    cheap. Returns None when more than ``MAX_PROJECTED_FRACTION`` of the
+    features would be kept, as the projection would then cost more than the
+    shorter codes save.
+    """
+    dim = data.shape[1]
+    rng = np.random.default_rng(random_state)
+    n = data.shape[0]
+    rows = np.sort(rng.choice(n, sample_size, replace=False)) if n > sample_size else slice(None)
+    sample = np.asarray(data[rows], dtype=np.float64)
+    if extra is not None and extra.shape[0] > 0:
+        n_extra = extra.shape[0]
+        extra_rows = (
+            np.sort(rng.choice(n_extra, sample_size, replace=False))
+            if n_extra > sample_size
+            else slice(None)
+        )
+        sample = np.vstack([sample, np.asarray(extra[extra_rows], dtype=np.float64)])
+    mean = sample.mean(axis=0)
+    centered = sample - mean
+    eigenvalues, eigenvectors = np.linalg.eigh(centered.T @ centered)
+    order = np.argsort(eigenvalues)[::-1]
+    n_components = n_projected_components(eigenvalues[order], dims)
+    if n_components > MAX_PROJECTED_FRACTION * dim:
+        return None
+    projection = np.ascontiguousarray(eigenvectors[:, order[:n_components]], dtype=np.float32)
+    projection8, column_scale = _int8_columns(projection)
+    return mean.astype(np.float32), projection8, column_scale
+
+
+def project_rows(data, mean, projection8, column_scale, block=65536):
+    """``(data - mean) @ projection``, with the int8-stored projection the queries use."""
+    projection = projection8.astype(np.float32) * column_scale
+    out = np.empty((data.shape[0], projection.shape[1]), dtype=np.float32)
+    for start in range(0, data.shape[0], block):
+        rows = np.asarray(data[start : start + block], dtype=np.float32)
+        out[start : start + block] = (rows - mean) @ projection
+    return out
+
+
+def _int8_columns(projection):
+    """``projection`` as int8 with one scale per column: column j ~ scale[j] * int8[:, j]."""
+    max_abs = np.abs(projection).max(axis=0)
+    scale = np.where(max_abs > 0, max_abs / np.float32(127.0), np.float32(1.0)).astype(np.float32)
+    quantized = np.clip(np.rint(projection / scale), -127, 127).astype(np.int8)
+    return np.ascontiguousarray(quantized), scale
+
+
 # --------------------------------------------------------------------------
 # Search index (one pointer for all arrays, as in search.py)
 # --------------------------------------------------------------------------
@@ -179,6 +259,9 @@ _FIELDS = [
     "rerank16",
     "rerank_scale",
     "rerank_half",
+    "projection8",
+    "projection_scale",
+    "projection_mean",
     "q_offsets",
     "q_scales",
     "adjacency",
@@ -202,18 +285,18 @@ structref.define_proxy(QuantizedSearchIndex, QuantizedSearchIndexType, _FIELDS)
 
 @numba.njit(cache=True)
 def _new_quantized_search_index(
-    codes, data, rerank16, rerank_scale, rerank_half, q_offsets, q_scales, adjacency,
-    tree_hyperplanes, tree_offsets,
-    tree_children, tree_indices, n_search_trees, tree_leaf_budget, n_neighbors,
-    min_distance, normalize_query, tree_normalize_query, max_degree, prefetch_lines,
-    rerank_prefetch_lines, adjacency_lines,
+    codes, data, rerank16, rerank_scale, rerank_half, projection8,
+    projection_scale, projection_mean, q_offsets, q_scales, adjacency, tree_hyperplanes,
+    tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
+    n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
+    prefetch_lines, rerank_prefetch_lines, adjacency_lines,
 ):
     return QuantizedSearchIndex(
-        codes, data, rerank16, rerank_scale, rerank_half, q_offsets, q_scales, adjacency,
-        tree_hyperplanes, tree_offsets,
-        tree_children, tree_indices, n_search_trees, tree_leaf_budget, n_neighbors,
-        min_distance, normalize_query, tree_normalize_query, max_degree, prefetch_lines,
-        rerank_prefetch_lines, adjacency_lines,
+        codes, data, rerank16, rerank_scale, rerank_half, projection8,
+        projection_scale, projection_mean, q_offsets, q_scales, adjacency, tree_hyperplanes,
+        tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
+        n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
+        prefetch_lines, rerank_prefetch_lines, adjacency_lines,
     )
 
 
@@ -421,6 +504,28 @@ def _transform_query(kernel, bits, query, q_offsets, q_scales):
     return a, b, base
 
 
+@numba.njit(inline="always", fastmath=True)
+def _project_query(kernel, query, projection8, projection_scale, mean):
+    """The query in the projected code space, and the dot product term lost by
+    centring (zero for squared euclidean, where the query is centred instead)."""
+    dim = query.shape[0]
+    n_components = projection8.shape[1]
+    out = np.zeros(n_components, dtype=np.float32)
+    shift = np.float32(0.0)
+    for i in range(dim):
+        if kernel == KERNEL_SQEUCLIDEAN:
+            qi = query[i] - mean[i]
+        else:
+            qi = query[i]
+            shift += qi * mean[i]
+        row8 = projection8[i]
+        for j in range(n_components):
+            out[j] += qi * np.float32(row8[j])
+    for j in range(n_components):
+        out[j] *= projection_scale[j]
+    return out, shift
+
+
 # --------------------------------------------------------------------------
 # Search
 # --------------------------------------------------------------------------
@@ -447,7 +552,9 @@ def _search_codes(
     # sq4) so that all branches type the same.
     qa = a
     qb = b
-    seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
+    seed_d = np.empty(SEED_CAPACITY, dtype=np.float32)
+    seed_i = np.empty(SEED_CAPACITY, dtype=np.int32)
+    n_seeds = 0
 
     n_initial_points = 0
     if tree_leaf_budget == 1:
@@ -461,7 +568,9 @@ def _search_codes(
                 if check_and_mark_visited(visited, candidate) == 0:
                     d = np.float32(_code_distance(kernel, bits, qa, qb, base, codes[candidate]))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
+                    if n_seeds == seed_d.shape[0]:
+                        seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
+                    n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                     n_initial_points += 1
     else:
         leaf_bounds = np.empty((tree_leaf_budget, 2), dtype=np.int32)
@@ -475,23 +584,31 @@ def _search_codes(
                 if check_and_mark_visited(visited, candidate) == 0:
                     d = np.float32(_code_distance(kernel, bits, qa, qb, base, codes[candidate]))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
+                    if n_seeds == seed_d.shape[0]:
+                        seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
+                    n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                     n_initial_points += 1
 
-    if len(seed_set) == 0:
+    if n_seeds == 0:
         return
 
     distance_bound = _distance_bound(heap_priorities, heap_indices, epsilon, min_distance)
-    d_vertex, vertex = heapq.heappop(seed_set)
+    d_vertex = seed_d[0]
+    vertex = seed_i[0]
+    n_seeds = _seed_pop(seed_d, seed_i, n_seeds)
     pending = np.empty(adjacency.shape[1] + 4, dtype=np.int32)
     pending_d = np.empty(4, dtype=np.float32)
 
     while d_vertex < distance_bound:
-        if adjacency_lines > 0 and len(seed_set) > 0:
+        if n_seeds + adjacency.shape[1] > seed_d.shape[0]:
+            seed_d, seed_i = _grow_seeds(
+                seed_d, seed_i, n_seeds, n_seeds + adjacency.shape[1]
+            )
+        if adjacency_lines > 0 and n_seeds > 0:
             # The closest remaining candidate is likely expanded next: fetch its
             # adjacency row (at a fixed, cache-aligned offset) while this vertex
             # is processed.
-            prefetch_row(adjacency, seed_set[0][1], adjacency_lines)
+            prefetch_row(adjacency, seed_i[0], adjacency_lines)
         n_pending = 0
         row = adjacency[vertex]
         for j in range(row.shape[0]):
@@ -512,7 +629,7 @@ def _search_codes(
                 if d < distance_bound:
                     candidate = pending[r + s]
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
+                    n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                     distance_bound = _distance_bound(
                         heap_priorities, heap_indices, epsilon, min_distance
                     )
@@ -522,15 +639,17 @@ def _search_codes(
             d = np.float32(_code_distance(kernel, bits, qa, qb, base, codes[candidate]))
             if d < distance_bound:
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                heapq.heappush(seed_set, (d, candidate))
+                n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                 distance_bound = _distance_bound(
                     heap_priorities, heap_indices, epsilon, min_distance
                 )
             r += 1
 
-        if len(seed_set) == 0:
+        if n_seeds == 0:
             break
-        d_vertex, vertex = heapq.heappop(seed_set)
+        d_vertex = seed_d[0]
+        vertex = seed_i[0]
+        n_seeds = _seed_pop(seed_d, seed_i, n_seeds)
 
 
 @numba.njit(inline="always", fastmath=True)
@@ -660,7 +779,15 @@ def _search_quantized_serial(
         )
         if not ok:
             continue
-        a, b, base = _transform_query(kernel, bits, current_query, q_offsets, q_scales)
+        if index.projection8.shape[1] > 0:
+            projected, shift = _project_query(
+                kernel, current_query, index.projection8, index.projection_scale,
+                index.projection_mean,
+            )
+            a, b, base = _transform_query(kernel, bits, projected, q_offsets, q_scales)
+            base += shift
+        else:
+            a, b, base = _transform_query(kernel, bits, current_query, q_offsets, q_scales)
         _search_codes(
             a, b, base, tree_current_query, cand_priorities, cand_indices, n_candidates,
             epsilon, visited, internal_rng_state, codes, index.adjacency,
@@ -760,7 +887,8 @@ def make_quantized_search_function(
     codes, data, q_offsets, q_scales, indptr, indices, search_forest, tree_leaf_budget,
     n_neighbors, min_distance, normalize_query, tree_normalize_query, kernel, bits,
     prefetch_lines=None, rerank_prefetch_lines=None, adjacency_lines=None,
-    rerank16=None, rerank_scale=1.0,
+    rerank16=None, rerank_scale=1.0, projection8=None, projection_scale=None,
+    projection_mean=None,
 ):
     """Bind an index's arrays to the cached quantized search function.
 
@@ -783,6 +911,12 @@ def make_quantized_search_function(
     rerank_half = rerank16 is not None
     if not rerank_half:
         rerank16 = np.empty((0, data.shape[1]), dtype=np.uint16)
+    dim = data.shape[1]
+    if projection8 is None:
+        # (dim, 0): the codes are in the data's own coordinates.
+        projection8 = np.empty((dim, 0), dtype=np.int8)
+        projection_scale = np.ones(0, dtype=np.float32)
+        projection_mean = np.zeros(dim, dtype=np.float32)
     if rerank_prefetch_lines is None:
         # Whole float16 rows pay off (they are half the size, so all the
         # finalists fit in flight); for float32 rows that is too many lines.
@@ -795,6 +929,9 @@ def make_quantized_search_function(
         _readonly(rerank16, np.uint16),
         np.float32(rerank_scale),
         bool(rerank_half),
+        _readonly(projection8, np.int8),
+        _readonly(projection_scale, np.float32),
+        _readonly(projection_mean, np.float32),
         _readonly(q_offsets, np.float32),
         _readonly(q_scales, np.float32),
         _readonly(adjacency, np.int32),

@@ -21,11 +21,10 @@ keep them as fast as the closure:
   skipping the dispatcher's per-argument type resolution (which would otherwise
   cost one to two microseconds per single-vector query). Argument types are
   fixed when the search function is built, and query() validates the query;
-* the seed heap is pushed to directly rather than through a helper, which
-  would add reference counting to every push.
+* the seed heap is a pair of arrays rather than a list of tuples, so pushes
+  and pops involve no reference counting.
 """
 import functools
-import heapq
 
 import numba
 import numpy as np
@@ -165,6 +164,77 @@ def _tree_spill_leaves(point, rng_state, leaves, tree_hyperplanes, tree_offsets,
     return leaf_count
 
 
+# The seed (frontier) min-heap is held in a pair of arrays, ordered by
+# (distance, index) as heapq orders tuples, so the search visits vertices in
+# the same order heapq would; it avoids the reflected list's per-item overhead.
+SEED_CAPACITY = 1024
+
+
+@numba.njit(inline="always")
+def _seed_push(seed_d, seed_i, n_seeds, d, candidate):
+    """Push (d, candidate) onto the heap ``seed_d/seed_i[:n_seeds]``; return its size."""
+    j = n_seeds
+    while j > 0:
+        parent = (j - 1) >> 1
+        parent_d = seed_d[parent]
+        if parent_d < d or (parent_d == d and seed_i[parent] < candidate):
+            break
+        seed_d[j] = parent_d
+        seed_i[j] = seed_i[parent]
+        j = parent
+    seed_d[j] = d
+    seed_i[j] = candidate
+    return n_seeds + 1
+
+
+@numba.njit(inline="always")
+def _seed_pop(seed_d, seed_i, n_seeds):
+    """Remove the heap's root; return its new size.
+
+    As heapq does, the hole left at the root moves down to a leaf along the
+    smaller children, and the last entry is then sifted up from there.
+    """
+    n_seeds -= 1
+    d = seed_d[n_seeds]
+    candidate = seed_i[n_seeds]
+    j = 0
+    child = 1
+    while child < n_seeds:
+        right = child + 1
+        if right < n_seeds and (
+            seed_d[right] < seed_d[child]
+            or (seed_d[right] == seed_d[child] and seed_i[right] < seed_i[child])
+        ):
+            child = right
+        seed_d[j] = seed_d[child]
+        seed_i[j] = seed_i[child]
+        j = child
+        child = 2 * j + 1
+    while j > 0:
+        parent = (j - 1) >> 1
+        parent_d = seed_d[parent]
+        if parent_d < d or (parent_d == d and seed_i[parent] < candidate):
+            break
+        seed_d[j] = parent_d
+        seed_i[j] = seed_i[parent]
+        j = parent
+    seed_d[j] = d
+    seed_i[j] = candidate
+    return n_seeds
+
+
+@numba.njit
+def _grow_seeds(seed_d, seed_i, n_seeds, needed):
+    capacity = seed_d.shape[0]
+    while capacity < needed:
+        capacity *= 2
+    new_d = np.empty(capacity, dtype=np.float32)
+    new_i = np.empty(capacity, dtype=np.int32)
+    new_d[:n_seeds] = seed_d[:n_seeds]
+    new_i[:n_seeds] = seed_i[:n_seeds]
+    return new_d, new_i
+
+
 @numba.njit(inline="always")
 def _distance_bound(heap_priorities, heap_indices, epsilon, min_distance):
     """Search radius: the worst retained distance, relaxed by epsilon.
@@ -216,10 +286,9 @@ def _search_one(
     prefetch_lines,
     adjacency_lines,
 ):
-    # seed_set is pushed to directly throughout: passing the list to a helper
-    # (even an inlined one) adds reference counting to every push, which cost
-    # ~1.5% of query instructions.
-    seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
+    seed_d = np.empty(SEED_CAPACITY, dtype=np.float32)
+    seed_i = np.empty(SEED_CAPACITY, dtype=np.int32)
+    n_seeds = 0
 
     # Initialise from all retained trees (or several leaves of the first tree)
     n_initial_points = 0
@@ -234,7 +303,9 @@ def _search_one(
                 if check_and_mark_visited(visited, candidate) == 0:
                     d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
+                    if n_seeds == seed_d.shape[0]:
+                        seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
+                    n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                     n_initial_points += 1
     else:
         leaf_bounds = np.empty((tree_leaf_budget, 2), dtype=np.int32)
@@ -248,7 +319,9 @@ def _search_one(
                 if check_and_mark_visited(visited, candidate) == 0:
                     d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
+                    if n_seeds == seed_d.shape[0]:
+                        seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
+                    n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                     n_initial_points += 1
 
     # Random samples if needed
@@ -259,23 +332,31 @@ def _search_one(
             if check_and_mark_visited(visited, candidate) == 0:
                 d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                heapq.heappush(seed_set, (d, candidate))
+                if n_seeds == seed_d.shape[0]:
+                    seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
+                n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
 
-    if len(seed_set) == 0:
+    if n_seeds == 0:
         return
 
     # Graph search
     distance_bound = _distance_bound(heap_priorities, heap_indices, epsilon, min_distance)
-    d_vertex, vertex = heapq.heappop(seed_set)
+    d_vertex = seed_d[0]
+    vertex = seed_i[0]
+    n_seeds = _seed_pop(seed_d, seed_i, n_seeds)
     pending = np.empty(adjacency.shape[1] + 4, dtype=np.int32)
     pending_d = np.empty(4, dtype=np.float32)
 
     while d_vertex < distance_bound:
-        if adjacency_lines > 0 and len(seed_set) > 0:
+        if n_seeds + adjacency.shape[1] > seed_d.shape[0]:
+            seed_d, seed_i = _grow_seeds(
+                seed_d, seed_i, n_seeds, n_seeds + adjacency.shape[1]
+            )
+        if adjacency_lines > 0 and n_seeds > 0:
             # The closest remaining candidate is likely expanded next: fetch its
             # adjacency row (at a fixed, cache-aligned offset) while this vertex
             # is processed.
-            prefetch_row(adjacency, seed_set[0][1], adjacency_lines)
+            prefetch_row(adjacency, seed_i[0], adjacency_lines)
         # Gather the unvisited neighbours first, prefetching their vectors, then
         # compare them four at a time. They are considered in their original
         # order, so the search path is unchanged.
@@ -300,7 +381,7 @@ def _search_one(
                     if d < distance_bound:
                         candidate = pending[r + s]
                         simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                        heapq.heappush(seed_set, (d, candidate))
+                        n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                         distance_bound = _distance_bound(
                             heap_priorities, heap_indices, epsilon, min_distance
                         )
@@ -310,15 +391,17 @@ def _search_one(
             d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
             if d < distance_bound:
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                heapq.heappush(seed_set, (d, candidate))
+                n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                 distance_bound = _distance_bound(
                     heap_priorities, heap_indices, epsilon, min_distance
                 )
             r += 1
 
-        if len(seed_set) == 0:
+        if n_seeds == 0:
             break
-        d_vertex, vertex = heapq.heappop(seed_set)
+        d_vertex = seed_d[0]
+        vertex = seed_i[0]
+        n_seeds = _seed_pop(seed_d, seed_i, n_seeds)
 
 
 @numba.njit(inline="always")

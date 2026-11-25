@@ -134,6 +134,21 @@ set ``query_data`` you can do something like
 and that is pretty much all there is to it. You can find more details in the
 `documentation <https://pynndescent.readthedocs.org>`_.
 
+If the queries come from a different distribution than the data (text queries
+against image embeddings, for example) and you have a sample of them, you can
+prepare the index for them before querying; searches for queries like the
+sample then reach a given accuracy with less work:
+
+.. code:: python
+
+    index = NNDescent(data)
+    index.prepare(query_sample=sample_queries)
+    index.query(query_data, k=15)
+
+If you already know the sample queries' nearest neighbors in ``data`` pass them
+as well (``query_neighbors=...``); otherwise they are found with a search of the
+index.
+
 ----------
 Installing
 ----------

@@ -1725,6 +1725,100 @@ def test_float16_rerank_rejects_invalid_settings(nn_data):
         NNDescent(nn_data[:200], n_neighbors=10, quantization="sq8", rerank_precision="half")
 
 
+@pytest.mark.parametrize("quantization", [None, "sq8"])
+def test_rcm_vertex_order_keeps_graph_neighbours_close(quantization):
+    rng = np.random.default_rng(0)
+    centers = rng.normal(size=(30, 24)).astype(np.float32) * 3
+    data = (centers[rng.integers(0, 30, 6000)] + rng.normal(size=(6000, 24))).astype(np.float32)
+    queries = (centers[rng.integers(0, 30, 60)] + rng.normal(size=(60, 24))).astype(np.float32)
+    true = np.argsort(((queries[:, None] - data[None]) ** 2).sum(-1), axis=1)[:, :10]
+    kwargs = {} if quantization is None else dict(quantization=quantization)
+    query_kwargs = {} if quantization is None else dict(candidate_width=40)
+    spans, recalls = {}, {}
+    for method in ("tree", "rcm"):
+        index = NNDescent(data, n_neighbors=15, random_state=42, **kwargs)
+        index._vertex_order_method = method
+        index.prepare()
+        np.testing.assert_array_equal(np.sort(index._vertex_order), np.arange(len(data)))
+        graph = index._search_graph.tocoo()
+        spans[method] = np.abs(graph.row.astype(np.int64) - graph.col).mean()
+        indices = index.query_indices(queries, k=10, epsilon=0.05, **query_kwargs)
+        recalls[method] = np.mean([len(set(a) & set(b)) / 10 for a, b in zip(indices, true)])
+    assert spans["rcm"] < 0.5 * spans["tree"]
+    assert recalls["rcm"] > 0.9
+    assert abs(recalls["rcm"] - recalls["tree"]) < 0.02
+    # rcm is the default
+    default = NNDescent(data[:2000], n_neighbors=15, random_state=42, **kwargs)
+    default.prepare()
+    graph = default._search_graph.tocoo()
+    assert np.abs(graph.row.astype(np.int64) - graph.col).mean() < 0.1 * 2000
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "dot"])
+@pytest.mark.parametrize("dims", [32, 0.9])
+def test_quantization_dims_projects_low_rank_data(metric, dims):
+    rng = np.random.default_rng(0)
+    basis = rng.normal(size=(24, 96)).astype(np.float32)
+    data = (rng.normal(size=(4000, 24)) @ basis + 0.1 * rng.normal(size=(4000, 96))).astype(
+        np.float32
+    )
+    queries = (rng.normal(size=(60, 24)) @ basis + 0.1 * rng.normal(size=(60, 96))).astype(
+        np.float32
+    )
+    index = NNDescent(
+        data,
+        metric=metric,
+        n_neighbors=15,
+        random_state=42,
+        quantization="sq8",
+        quantization_dims=dims,
+    )
+    indices, dists = index.query(queries, k=10, epsilon=0.05, candidate_width=40)
+    assert index._sq_codes.shape[1] <= 32
+    if metric == "euclidean":
+        true_dists = np.sqrt(((queries[:, None] - data[None]) ** 2).sum(-1))
+        returned = np.sqrt(((queries[:, None] - data[indices]) ** 2).sum(-1))
+    else:
+        true_dists = cosine_distances(queries, data)
+        returned = np.take_along_axis(true_dists, indices, axis=1)
+    true = np.argsort(true_dists, axis=1)[:, :10]
+    recall = np.mean([len(set(a) & set(b)) / 10 for a, b in zip(indices, true)])
+    assert recall > 0.9
+    # Reranking uses every feature, so the returned distances stay exact.
+    np.testing.assert_allclose(dists, returned, atol=1e-3, rtol=1e-4)
+
+    restored = pickle.loads(pickle.dumps(index))
+    np.testing.assert_array_equal(
+        restored.query_indices(queries, k=10, epsilon=0.05, candidate_width=40), indices
+    )
+
+
+def test_quantization_dims_skips_projection_for_spread_variance():
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(3000, 32)).astype(np.float32)
+    queries = rng.normal(size=(30, 32)).astype(np.float32)
+    results = []
+    for dims in (None, 0.95):
+        index = NNDescent(
+            data, n_neighbors=15, random_state=42, quantization="sq8", quantization_dims=dims
+        )
+        results.append(index.query_indices(queries, k=10, epsilon=0.05, candidate_width=40))
+        # Isotropic data needs nearly every feature for 95% of the variance.
+        assert index._sq_codes.shape[1] == 32
+    np.testing.assert_array_equal(results[0], results[1])
+
+
+@pytest.mark.parametrize("dims", [0, 1.0, 1.5, -3, True])
+def test_quantization_dims_rejects_invalid_settings(nn_data, dims):
+    with pytest.raises(ValueError):
+        NNDescent(nn_data[:200], n_neighbors=10, quantization="sq8", quantization_dims=dims)
+
+
+def test_quantization_dims_requires_scalar_quantization(nn_data):
+    with pytest.raises(ValueError):
+        NNDescent(nn_data[:200], n_neighbors=10, quantization_dims=8)
+
+
 @pytest.mark.parametrize("metric", ["euclidean", "cosine"])
 def test_diversify_alpha_keeps_more_edges(metric):
     rng = np.random.default_rng(0)
@@ -1750,3 +1844,119 @@ def test_diversify_alpha_keeps_more_edges(metric):
 def test_diversify_alpha_below_one_rejected(nn_data):
     with pytest.raises(ValueError):
         NNDescent(nn_data[:200], n_neighbors=10, diversify_alpha=0.9)
+
+
+def _out_of_distribution_problem(seed=0, n=8000, dim=24, n_sample=4000, n_queries=80):
+    rng = np.random.default_rng(seed)
+    data = rng.normal(size=(n, dim)).astype(np.float32)
+    shift = rng.normal(size=dim).astype(np.float32)
+    sample = (rng.normal(size=(n_sample, dim)) * 0.7 + shift).astype(np.float32)
+    queries = (rng.normal(size=(n_queries, dim)) * 0.7 + shift).astype(np.float32)
+    return data, sample, queries
+
+
+def _exact_neighbors(data, queries, k, metric):
+    if metric == "cosine":
+        data, queries = normalize(data), normalize(queries)
+    nn = NearestNeighbors(n_neighbors=k).fit(data)
+    return nn.kneighbors(queries, return_distance=False)
+
+
+def _recall(found, true):
+    return np.mean([len(set(a) & set(b)) / len(b) for a, b in zip(found, true)])
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+@pytest.mark.parametrize("quantization", [None, "sq8"])
+def test_query_sample_improves_out_of_distribution_recall(metric, quantization):
+    data, sample, queries = _out_of_distribution_problem()
+    sample_neighbors = _exact_neighbors(data, sample, 64, metric)
+    true = _exact_neighbors(data, queries, 10, metric)
+    query_kwargs = {} if quantization is None else dict(candidate_width=30)
+    recalls = {}
+    for mode in ("none", "given", "found"):
+        index = NNDescent(
+            data, metric=metric, n_neighbors=15, random_state=42, quantization=quantization
+        )
+        if mode == "given":
+            index.prepare(query_sample=sample, query_neighbors=sample_neighbors)
+        elif mode == "found":
+            index.prepare(query_sample=sample)
+        found = index.query_indices(queries, k=10, epsilon=0.0, **query_kwargs)
+        recalls[mode] = _recall(found, true)
+    assert recalls["given"] > recalls["none"] + 0.1
+    assert recalls["found"] > recalls["none"] + 0.1
+    assert abs(recalls["found"] - recalls["given"]) < 0.05
+
+
+def test_query_sample_index_pickles_without_the_sample():
+    data, sample, queries = _out_of_distribution_problem(n_sample=1000)
+    index = NNDescent(data, n_neighbors=15, random_state=42, quantization="sq8",
+                      quantization_dims=0.9)
+    index.prepare(query_sample=sample, query_neighbors=_exact_neighbors(data, sample, 64, "euclidean"))
+    expected = index.query_indices(queries, k=10, candidate_width=30)
+    for name in ("_query_sample", "_query_neighbors", "_query_pca_sample"):
+        assert not hasattr(index, name)
+    restored = pickle.loads(pickle.dumps(index))
+    np.testing.assert_array_equal(restored.query_indices(queries, k=10, candidate_width=30), expected)
+
+
+def test_query_sample_fits_projection_to_queries():
+    # Data spread over 8 directions, queries over 8 others: a projection fitted to
+    # the data alone keeps none of the queries' directions.
+    rng = np.random.default_rng(0)
+    basis = np.linalg.qr(rng.normal(size=(64, 64)))[0].astype(np.float32)
+    data = (rng.normal(size=(5000, 8)) * 5 @ basis[:8] + rng.normal(size=(5000, 64)) * 0.3).astype(np.float32)
+    sample = (rng.normal(size=(2000, 8)) * 5 @ basis[8:16]).astype(np.float32)
+    neighbors = _exact_neighbors(data, sample, 64, "euclidean")
+    projections = {}
+    for query_pca in (False, True):
+        index = NNDescent(data, n_neighbors=10, random_state=42, quantization="sq8",
+                          quantization_dims=12)
+        index._query_pca = query_pca
+        index.prepare(query_sample=sample, query_neighbors=neighbors)
+        mean, projection8, scale = index._sq_projection
+        projections[query_pca] = projection8.astype(np.float32) * scale
+    # Share of the query directions' energy the projection keeps
+    kept = {k: np.linalg.norm(basis[8:16] @ p) ** 2 / 8 for k, p in projections.items()}
+    assert kept[True] > kept[False] + 0.2
+
+
+def test_query_sample_validation():
+    data, sample, _ = _out_of_distribution_problem(n=2000, n_sample=200)
+    neighbors = _exact_neighbors(data, sample, 20, "euclidean")
+    index = NNDescent(data, n_neighbors=10, random_state=42)
+    with pytest.raises(ValueError, match="features"):
+        index.prepare(query_sample=sample[:, :10])
+    with pytest.raises(ValueError, match="requires query_sample"):
+        index.prepare(query_neighbors=neighbors)
+    with pytest.raises(ValueError, match="row for each"):
+        index.prepare(query_sample=sample, query_neighbors=neighbors[:10])
+    with pytest.raises(ValueError, match="beyond"):
+        index.prepare(query_sample=sample, query_neighbors=neighbors + len(data))
+    index.prepare()
+    with pytest.raises(ValueError, match="before the search index is built"):
+        index.prepare(query_sample=sample, query_neighbors=neighbors)
+    sparse_index = NNDescent(scipy.sparse.csr_matrix(data), n_neighbors=10, random_state=42)
+    with pytest.raises(NotImplementedError):
+        sparse_index.prepare(query_sample=sample)
+
+
+def test_query_induced_edges_are_relative_neighbourhood_pruned():
+    from pynndescent.distances import squared_euclidean
+    from pynndescent.query_sample import query_induced_edges
+
+    data = np.arange(6, dtype=np.float32)[:, None]
+    # One query near point 0 (neighbours 0, 1, 2, 3) and one near point 4.
+    neighbors = np.array([[0, 1, 2, 3], [4, 5, 3, 2]])
+    indices, distances = query_induced_edges(
+        data, squared_euclidean, neighbors, n_candidates=4, max_edges=3, n_pivots=2
+    )
+    edges = {p: sorted(c for c in indices[p] if c >= 0) for p in range(6)}
+    # Point 0 is offered 1, 2 and 3, but 2 and 3 are closer to 1 than to 0.
+    assert edges[0] == [1]
+    # Point 1 (the first query's second nearest) is offered 0, 2 and 3.
+    assert edges[1] == [0, 2]
+    assert edges[4] == [3, 5]
+    assert edges[5] == [4]
+    assert distances[0, 0] == 1.0
