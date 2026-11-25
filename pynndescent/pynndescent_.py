@@ -67,6 +67,7 @@ from pynndescent.kernels import (
 from pynndescent.hybrid_forest import make_hybrid_leaf_array
 from pynndescent.hub_tree import make_hub_search_tree
 from pynndescent.search_graph import build_search_graph, permute_graph, permute_rows
+from pynndescent.integer_dot import aligned_padded_codes
 from pynndescent.quantized_search import (
     SQ_MODES,
     encode as sq_encode,
@@ -2814,6 +2815,12 @@ class NNDescent:
     _query_tree_ranks = 10
     _query_pca = True
 
+    # Quantized search: score candidates with integer dot products of the codes
+    # and int8 query weights (pynndescent.integer_dot), and keep code rows in
+    # whole, aligned cache lines (one line fewer per candidate).
+    _sq_integer_query = True
+    _sq_align_codes = True
+
     def _set_query_sample(self, query_sample, query_neighbors):
         if hasattr(self, "_search_graph"):
             raise ValueError(
@@ -3166,6 +3173,9 @@ class NNDescent:
             self._sq_codes = sq_encode(encoded, self._sq_offsets, self._sq_scales, bits)
             del encoded
             self.__dict__.pop("_query_pca_sample", None)
+        integer_query = bool(getattr(self, "_sq_integer_query", False))
+        if integer_query or getattr(self, "_sq_align_codes", False):
+            self._sq_codes = aligned_padded_codes(self._sq_codes)
         projection = getattr(self, "_sq_projection", None)
         projection_mean, projection8, projection_scale = (
             projection if projection is not None else (None, None, None)
@@ -3202,6 +3212,7 @@ class NNDescent:
             projection8=projection8,
             projection_scale=projection_scale,
             projection_mean=projection_mean,
+            integer_query=integer_query,
         )
         self._uses_cached_search = True
         self._deheap_function = deheap_sort_serial

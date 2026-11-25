@@ -1725,6 +1725,75 @@ def test_float16_rerank_rejects_invalid_settings(nn_data):
         NNDescent(nn_data[:200], n_neighbors=10, quantization="sq8", rerank_precision="half")
 
 
+@pytest.mark.parametrize("vnni", [True, False])
+def test_integer_code_dots_match_numpy(vnni, monkeypatch):
+    import numba
+
+    from pynndescent import integer_dot
+
+    if vnni and not integer_dot.TARGET_HAS_VNNI:
+        pytest.skip("no AVX-512 VNNI on this CPU")
+    # The intrinsics read TARGET_HAS_VNNI when a caller is compiled, so these
+    # (freshly defined) functions exercise the chosen code path.
+    monkeypatch.setattr(integer_dot, "TARGET_HAS_VNNI", vnni)
+
+    @numba.njit
+    def dots(codes, query, nibbles):
+        out = np.empty((codes.shape[0], 2), dtype=np.int64)
+        for i in range(0, codes.shape[0], 4):
+            if nibbles:
+                four = integer_dot.dot4_u4(codes, i, i + 1, i + 2, i + 3, query)
+            else:
+                four = integer_dot.dot4_u8(codes, i, i + 1, i + 2, i + 3, query)
+            for s in range(4):
+                out[i + s, 0] = four[s]
+                if nibbles:
+                    out[i + s, 1] = integer_dot.dot_u4(codes, i + s, query)
+                else:
+                    out[i + s, 1] = integer_dot.dot_u8(codes, i + s, query)
+        return out
+
+    rng = np.random.default_rng(0)
+    codes = integer_dot.aligned_padded_codes(rng.integers(0, 256, (40, 150), dtype=np.uint8))
+    assert codes.shape == (40, 192) and codes.ctypes.data % 64 == 0
+    assert not codes[:, 150:].any()
+    query = rng.integers(-127, 128, (2, 192), dtype=np.int8)
+    wide = codes.astype(np.int64)
+    expected8 = wide @ query[0].astype(np.int64)
+    expected4 = (wide & 15) @ query[0].astype(np.int64) + (wide >> 4) @ query[1].astype(np.int64)
+    for nibbles, expected in ((False, expected8), (True, expected4)):
+        got = dots(codes, query, nibbles)
+        np.testing.assert_array_equal(got[:, 0], expected)
+        np.testing.assert_array_equal(got[:, 1], expected)
+
+
+@pytest.mark.parametrize("quantization", ["sq8", "sq4"])
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_integer_query_matches_float_kernels(quantization, metric):
+    rng = np.random.default_rng(0)
+    centers = rng.normal(size=(30, 40)).astype(np.float32) * 4
+    data = (centers[rng.integers(0, 30, 4000)] + rng.normal(size=(4000, 40))).astype(np.float32)
+    queries = (centers[rng.integers(0, 30, 60)] + rng.normal(size=(60, 40))).astype(np.float32)
+    results = {}
+    for integer in (False, True):
+        index = NNDescent(
+            data, metric=metric, n_neighbors=15, random_state=42, quantization=quantization
+        )
+        index._sq_integer_query = integer
+        index._sq_align_codes = integer
+        results[integer] = index.query_indices(queries, k=10, epsilon=0.05, candidate_width=40)
+        codes = index._sq_codes
+        width = 40 if quantization == "sq8" else 20
+        if integer:
+            # Whole, aligned cache lines per code row; zero padding.
+            assert codes.shape[1] == 64 and codes.ctypes.data % 64 == 0
+            assert not codes[:, width:].any()
+        else:
+            assert codes.shape[1] == width
+    overlap = np.mean([len(set(a) & set(b)) / 10 for a, b in zip(results[False], results[True])])
+    assert overlap > 0.97
+
+
 @pytest.mark.parametrize("quantization", [None, "sq8"])
 def test_rcm_vertex_order_keeps_graph_neighbours_close(quantization):
     rng = np.random.default_rng(0)
@@ -1774,7 +1843,8 @@ def test_quantization_dims_projects_low_rank_data(metric, dims):
         quantization_dims=dims,
     )
     indices, dists = index.query(queries, k=10, epsilon=0.05, candidate_width=40)
-    assert index._sq_codes.shape[1] <= 32
+    # Code rows may be padded to whole cache lines; the projection keeps <= 32 components.
+    assert index._sq_projection[1].shape[1] <= 32
     if metric == "euclidean":
         true_dists = np.sqrt(((queries[:, None] - data[None]) ** 2).sum(-1))
         returned = np.sqrt(((queries[:, None] - data[indices]) ** 2).sum(-1))
@@ -1804,7 +1874,7 @@ def test_quantization_dims_skips_projection_for_spread_variance():
         )
         results.append(index.query_indices(queries, k=10, epsilon=0.05, candidate_width=40))
         # Isotropic data needs nearly every feature for 95% of the variance.
-        assert index._sq_codes.shape[1] == 32
+        assert index._sq_projection is None
     np.testing.assert_array_equal(results[0], results[1])
 
 

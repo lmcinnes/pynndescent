@@ -21,6 +21,13 @@ Optionally (``quantization_dims``) the codes are of ``P^T (x - mean)`` for the
 top principal axes ``P`` instead of ``x``, and the query is projected the same
 way once (``<q, x> ~ <q, mean> + <P^T q, P^T (x - mean)>``); reranking still
 uses every feature.
+
+By default the code distances are computed in integer arithmetic: both
+distances are linear in the codes (``sum_i u_i c_i`` plus per-query and, for
+squared euclidean, per-row constants), so the query is rounded once to int8
+weights ``u`` and each candidate costs an integer dot product
+(``pynndescent.integer_dot``; AVX-512 VNNI where available). Code rows are then
+padded to whole 64-byte cache lines and stored cache-line aligned.
 """
 import functools
 import numbers
@@ -31,6 +38,7 @@ from numba import types
 from numba.experimental import structref
 
 from pynndescent.distances import alternative_dot, squared_euclidean
+from pynndescent.integer_dot import aligned_padded_codes, dot4_u4, dot4_u8, dot_u4, dot_u8
 from pynndescent.kernels import (
     KERNEL_ALT_DOT,
     KERNEL_SQEUCLIDEAN,
@@ -57,6 +65,7 @@ from pynndescent.search import (
 from pynndescent.utils import (
     check_and_mark_visited,
     float16_bits_as_float32,
+    prefetch_element,
     prefetch_row,
     simple_heap_push,
     siftdown,
@@ -264,6 +273,8 @@ _FIELDS = [
     "projection_mean",
     "q_offsets",
     "q_scales",
+    "code_means",
+    "code_norms",
     "adjacency",
     "tree_hyperplanes",
     "tree_offsets",
@@ -286,18 +297,72 @@ structref.define_proxy(QuantizedSearchIndex, QuantizedSearchIndexType, _FIELDS)
 @numba.njit(cache=True)
 def _new_quantized_search_index(
     codes, data, rerank16, rerank_scale, rerank_half, projection8,
-    projection_scale, projection_mean, q_offsets, q_scales, adjacency, tree_hyperplanes,
+    projection_scale, projection_mean, q_offsets, q_scales, code_means, code_norms,
+    adjacency, tree_hyperplanes,
     tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
     n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
     prefetch_lines, rerank_prefetch_lines, adjacency_lines,
 ):
     return QuantizedSearchIndex(
         codes, data, rerank16, rerank_scale, rerank_half, projection8,
-        projection_scale, projection_mean, q_offsets, q_scales, adjacency, tree_hyperplanes,
+        projection_scale, projection_mean, q_offsets, q_scales, code_means, code_norms,
+        adjacency, tree_hyperplanes,
         tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
         n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
         prefetch_lines, rerank_prefetch_lines, adjacency_lines,
     )
+
+
+def code_layout_scales(q_scales, bits, width):
+    """Per-feature scales laid out like a code row: (1, width) for 8-bit codes,
+    (2, width) (low / high nibbles) for 4-bit; zero on padding."""
+    dim = q_scales.shape[0]
+    if bits == 8:
+        out = np.zeros((1, width), dtype=np.float32)
+        out[0, :dim] = q_scales
+    else:
+        out = np.zeros((2, width), dtype=np.float32)
+        out[0, : (dim + 1) // 2] = q_scales[0::2]
+        out[1, : dim // 2] = q_scales[1::2]
+    return out
+
+
+@numba.njit(parallel=True, cache=True)
+def _code_statistics(codes, layout_scales, with_norms):
+    """Mean code per (nibble, byte) and, if ``with_norms``, each row's
+    ``sum_j scale_j**2 * code_j**2`` (the squared norm of its centred decoding)."""
+    n, width = codes.shape
+    halves = layout_scales.shape[0]
+    n_chunks = max(1, min(n, 256))
+    chunk = (n + n_chunks - 1) // n_chunks
+    partial = np.zeros((n_chunks, halves, width), dtype=np.float64)
+    norms = np.zeros((n if with_norms else 0, 1), dtype=np.float32)
+    squares = layout_scales * layout_scales
+    for c in numba.prange(n_chunks):
+        for i in range(c * chunk, min(n, (c + 1) * chunk)):
+            total = np.float32(0.0)
+            for t in range(width):
+                byte = codes[i, t]
+                if halves == 1:
+                    v = np.float32(byte)
+                    partial[c, 0, t] += v
+                    total += squares[0, t] * v * v
+                else:
+                    lo = np.float32(byte & 15)
+                    hi = np.float32(byte >> 4)
+                    partial[c, 0, t] += lo
+                    partial[c, 1, t] += hi
+                    total += squares[0, t] * lo * lo + squares[1, t] * hi * hi
+            if with_norms:
+                norms[i, 0] = total
+    means = np.zeros((halves, width), dtype=np.float32)
+    for h in range(halves):
+        for t in range(width):
+            s = 0.0
+            for c in range(n_chunks):
+                s += partial[c, h, t]
+            means[h, t] = s / max(n, 1)
+    return means, norms
 
 
 # --------------------------------------------------------------------------
@@ -439,7 +504,7 @@ def _four_sq4_dot(u, base, c0, c1, c2, c3):
 
 
 @numba.njit(inline="always", fastmath=True)
-def _code_distance(kernel, bits, a, b, base, c):
+def _float_code_distance(kernel, bits, a, b, base, c):
     if bits == 8:
         if kernel == KERNEL_SQEUCLIDEAN:
             return _one_sq8_l2(a, b, c)
@@ -450,7 +515,7 @@ def _code_distance(kernel, bits, a, b, base, c):
 
 
 @numba.njit(inline="always", fastmath=True)
-def _four_code_distances(kernel, bits, a, b, base, codes, pending, r, out):
+def _four_float_code_distances(kernel, bits, a, b, base, codes, pending, r, out):
     c0 = codes[pending[r]]
     c1 = codes[pending[r + 1]]
     c2 = codes[pending[r + 2]]
@@ -505,6 +570,144 @@ def _transform_query(kernel, bits, query, q_offsets, q_scales):
 
 
 @numba.njit(inline="always", fastmath=True)
+def _integer_query(kernel, bits, query, shift, q_offsets, q_scales, code_means, code_norms):
+    """The query as int8 weights ``w`` with ``d ~ offset + scale * <w, c> (+ norm)``.
+
+    Both distances are linear in the codes: ``|q - x|^2 = |q - o|^2 - 2 <u, c> +
+    |s c|^2`` and ``1 - <q, x> = 1 - <q, o> - <u, c>``, with ``u = s (q - o)``
+    (euclidean) or ``s q`` (dot). ``u`` is rounded to ``step * w``; the rounding's
+    expected effect over the data, ``sum_j (step w_j - u_j) mean_j``, is
+    subtracted, so the rounding mostly adds the same amount to every candidate.
+    """
+    dim = query.shape[0]
+    halves = code_means.shape[0]
+    width = code_means.shape[1]
+    u = np.zeros((halves, width), dtype=np.float32)
+    total = np.float32(0.0)
+    for j in range(dim):
+        if bits == 8:
+            h = 0
+            t = j
+        else:
+            h = j & 1
+            t = j >> 1
+        if kernel == KERNEL_SQEUCLIDEAN:
+            e = query[j] - q_offsets[j]
+            total += e * e
+            u[h, t] = e * q_scales[j]
+        else:
+            total += query[j] * q_offsets[j]
+            u[h, t] = query[j] * q_scales[j]
+    max_abs = np.float32(0.0)
+    for h in range(halves):
+        for t in range(width):
+            max_abs = max(max_abs, abs(u[h, t]))
+    step = max_abs / np.float32(127.0) if max_abs > np.float32(0.0) else np.float32(1.0)
+    inv_step = np.float32(1.0) / step
+    weights = np.empty((halves, width), dtype=np.int8)
+    correction = np.float32(0.0)
+    for h in range(halves):
+        for t in range(width):
+            w = np.rint(u[h, t] * inv_step)
+            weights[h, t] = np.int8(w)
+            correction += (step * w - u[h, t]) * code_means[h, t]
+    if kernel == KERNEL_SQEUCLIDEAN:
+        return weights, total + np.float32(2.0) * correction, np.float32(-2.0) * step, code_norms
+    return weights, np.float32(1.0) - (total + shift) + correction, -step, code_norms
+
+
+@numba.njit(inline="always", fastmath=True)
+def _query_state(integer, kernel, bits, query, shift, index):
+    """The transformed query, ``(a, b, base, weights, offset, scale, norms)``: the
+    float kernels use ``(a, b, base)``, the integer kernels the rest (the unused
+    entries are empty)."""
+    if integer:
+        weights, offset, scale, norms = _integer_query(
+            kernel, bits, query, shift, index.q_offsets, index.q_scales, index.code_means,
+            index.code_norms,
+        )
+        a = np.zeros((1, 0), dtype=np.float32)
+        b = np.zeros((1, 0), dtype=np.float32)
+        base = np.float32(0.0)
+    else:
+        a, b, base = _transform_query(kernel, bits, query, index.q_offsets, index.q_scales)
+        base += shift
+        weights = np.zeros((1, 0), dtype=np.int8)
+        offset = np.float32(0.0)
+        scale = np.float32(0.0)
+        norms = index.code_norms
+    return a, b, base, weights, offset, scale, norms
+
+
+@numba.njit(inline="always", fastmath=True)
+def _integer_code_distance(kernel, bits, weights, offset, scale, norms, codes, candidate):
+    if bits == 8:
+        dot = dot_u8(codes, candidate, weights)
+    else:
+        dot = dot_u4(codes, candidate, weights)
+    d = offset + scale * np.float32(dot)
+    if kernel == KERNEL_SQEUCLIDEAN:
+        d += norms[candidate, 0]
+    return d
+
+
+@numba.njit(inline="always", fastmath=True)
+def _code_distance(kernel, bits, integer, state, codes, candidate):
+    """Code distance of ``codes[candidate]`` to the transformed query ``state``."""
+    if integer:
+        return _integer_code_distance(
+            kernel, bits, state[3], state[4], state[5], state[6], codes, candidate
+        )
+    return _float_code_distance(kernel, bits, state[0], state[1], state[2], codes[candidate])
+
+
+@numba.njit(inline="always", fastmath=True)
+def _four_integer_code_distances(
+    kernel, bits, weights, offset, scale, norms, codes, pending, r, out
+):
+    p0 = pending[r]
+    p1 = pending[r + 1]
+    p2 = pending[r + 2]
+    p3 = pending[r + 3]
+    if bits == 8:
+        s0, s1, s2, s3 = dot4_u8(codes, p0, p1, p2, p3, weights)
+    else:
+        s0, s1, s2, s3 = dot4_u4(codes, p0, p1, p2, p3, weights)
+    out[0] = offset + scale * np.float32(s0)
+    out[1] = offset + scale * np.float32(s1)
+    out[2] = offset + scale * np.float32(s2)
+    out[3] = offset + scale * np.float32(s3)
+    if kernel == KERNEL_SQEUCLIDEAN:
+        out[0] += norms[p0, 0]
+        out[1] += norms[p1, 0]
+        out[2] += norms[p2, 0]
+        out[3] += norms[p3, 0]
+
+
+@numba.njit(inline="always", fastmath=True)
+def _four_code_distances(kernel, bits, integer, state, codes, pending, r, out):
+    """Code distances of ``codes[pending[r:r + 4]]`` into ``out``."""
+    if integer:
+        _four_integer_code_distances(
+            kernel, bits, state[3], state[4], state[5], state[6], codes, pending, r, out
+        )
+    else:
+        _four_float_code_distances(
+            kernel, bits, state[0], state[1], state[2], codes, pending, r, out
+        )
+
+
+@numba.njit(inline="always")
+def _prefetch_code(integer, state, codes, candidate, n_lines):
+    """Prefetch what the code distance of ``candidate`` reads."""
+    prefetch_row(codes, candidate, n_lines)
+    if integer:
+        norms = state[6]
+        if norms.shape[0] > 0:
+            prefetch_element(norms, candidate, 0)
+
+
+@numba.njit(inline="always", fastmath=True)
 def _project_query(kernel, query, projection8, projection_scale, mean):
     """The query in the projected code space, and the dot product term lost by
     centring (zero for squared euclidean, where the query is centred instead)."""
@@ -543,15 +746,11 @@ def _project_query(kernel, query, projection8, projection_scale, mean):
     },
 )
 def _search_codes(
-    a, b, base, tree_current_query, heap_priorities, heap_indices, k, epsilon, visited,
+    state, tree_current_query, heap_priorities, heap_indices, k, epsilon, visited,
     rng_state, codes, adjacency, tree_hyperplanes, tree_offsets, tree_children,
     tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
-    bits, max_degree, prefetch_lines, adjacency_lines,
+    bits, max_degree, prefetch_lines, adjacency_lines, integer,
 ):
-    # a and b are 2-D for every code type (1 x dim for sq8, 2 x n_bytes for
-    # sq4) so that all branches type the same.
-    qa = a
-    qb = b
     seed_d = np.empty(SEED_CAPACITY, dtype=np.float32)
     seed_i = np.empty(SEED_CAPACITY, dtype=np.int32)
     n_seeds = 0
@@ -566,7 +765,7 @@ def _search_codes(
             for j in range(leaf_start, leaf_end):
                 candidate = tree_indices[tree_num, j]
                 if check_and_mark_visited(visited, candidate) == 0:
-                    d = np.float32(_code_distance(kernel, bits, qa, qb, base, codes[candidate]))
+                    d = np.float32(_code_distance(kernel, bits, integer, state, codes, candidate))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     if n_seeds == seed_d.shape[0]:
                         seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
@@ -582,7 +781,7 @@ def _search_codes(
             for j in range(leaf_bounds[leaf_num, 0], leaf_bounds[leaf_num, 1]):
                 candidate = tree_indices[0, j]
                 if check_and_mark_visited(visited, candidate) == 0:
-                    d = np.float32(_code_distance(kernel, bits, qa, qb, base, codes[candidate]))
+                    d = np.float32(_code_distance(kernel, bits, integer, state, codes, candidate))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
                     if n_seeds == seed_d.shape[0]:
                         seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
@@ -619,11 +818,11 @@ def _search_codes(
                 pending[n_pending] = candidate
                 n_pending += 1
                 if prefetch_lines > 0:
-                    prefetch_row(codes, candidate, prefetch_lines)
+                    _prefetch_code(integer, state, codes, candidate, prefetch_lines)
 
         r = 0
         while r + 4 <= n_pending:
-            _four_code_distances(kernel, bits, qa, qb, base, codes, pending, r, pending_d)
+            _four_code_distances(kernel, bits, integer, state, codes, pending, r, pending_d)
             for s in range(4):
                 d = pending_d[s]
                 if d < distance_bound:
@@ -636,7 +835,7 @@ def _search_codes(
             r += 4
         while r < n_pending:
             candidate = pending[r]
-            d = np.float32(_code_distance(kernel, bits, qa, qb, base, codes[candidate]))
+            d = np.float32(_code_distance(kernel, bits, integer, state, codes, candidate))
             if d < distance_bound:
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
                 n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
@@ -755,12 +954,10 @@ def _rerank_half(
 @numba.njit(inline="always", fastmath=True)
 def _search_quantized_serial(
     index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state, kernel, bits,
+    visited, query_is_normalized, rng_state, kernel, bits, integer,
 ):
     codes = index.codes
     data = index.data
-    q_offsets = index.q_offsets
-    q_scales = index.q_scales
     internal_rng_state = np.copy(rng_state)
     n_candidates = candidates[0].shape[1]
     for i in range(query_points.shape[0]):
@@ -784,17 +981,16 @@ def _search_quantized_serial(
                 kernel, current_query, index.projection8, index.projection_scale,
                 index.projection_mean,
             )
-            a, b, base = _transform_query(kernel, bits, projected, q_offsets, q_scales)
-            base += shift
+            state = _query_state(integer, kernel, bits, projected, shift, index)
         else:
-            a, b, base = _transform_query(kernel, bits, current_query, q_offsets, q_scales)
+            state = _query_state(integer, kernel, bits, current_query, np.float32(0.0), index)
         _search_codes(
-            a, b, base, tree_current_query, cand_priorities, cand_indices, n_candidates,
+            state, tree_current_query, cand_priorities, cand_indices, n_candidates,
             epsilon, visited, internal_rng_state, codes, index.adjacency,
             index.tree_hyperplanes, index.tree_offsets, index.tree_children,
             index.tree_indices, index.n_search_trees, index.tree_leaf_budget,
             index.n_neighbors, index.min_distance, kernel, bits, index.max_degree,
-            index.prefetch_lines, index.adjacency_lines,
+            index.prefetch_lines, index.adjacency_lines, integer,
         )
         # Keep the best rerank_width candidates (by code distance), then rerank.
         n_valid = 0
@@ -829,7 +1025,7 @@ def search_sq8_sqeuclidean(
 ):
     return _search_quantized_serial(
         index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 8,
+        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 8, False,
     )
 
 
@@ -840,7 +1036,7 @@ def search_sq8_alternative_dot(
 ):
     return _search_quantized_serial(
         index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 8,
+        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 8, False,
     )
 
 
@@ -851,7 +1047,7 @@ def search_sq4_sqeuclidean(
 ):
     return _search_quantized_serial(
         index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 4,
+        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 4, False,
     )
 
 
@@ -862,15 +1058,67 @@ def search_sq4_alternative_dot(
 ):
     return _search_quantized_serial(
         index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 4,
+        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 4, False,
+    )
+
+
+# The same searches over int8 query weights and integer code dot products
+# (``integer_dot``); these need codes from ``aligned_padded_codes``.
+
+
+@numba.njit(fastmath=True, cache=True)
+def search_sq8_sqeuclidean_int(
+    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
+    visited, query_is_normalized, rng_state,
+):
+    return _search_quantized_serial(
+        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
+        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 8, True,
+    )
+
+
+@numba.njit(fastmath=True, cache=True)
+def search_sq8_alternative_dot_int(
+    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
+    visited, query_is_normalized, rng_state,
+):
+    return _search_quantized_serial(
+        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
+        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 8, True,
+    )
+
+
+@numba.njit(fastmath=True, cache=True)
+def search_sq4_sqeuclidean_int(
+    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
+    visited, query_is_normalized, rng_state,
+):
+    return _search_quantized_serial(
+        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
+        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 4, True,
+    )
+
+
+@numba.njit(fastmath=True, cache=True)
+def search_sq4_alternative_dot_int(
+    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
+    visited, query_is_normalized, rng_state,
+):
+    return _search_quantized_serial(
+        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
+        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 4, True,
     )
 
 
 _DISPATCH = {
-    (8, KERNEL_SQEUCLIDEAN): search_sq8_sqeuclidean,
-    (8, KERNEL_ALT_DOT): search_sq8_alternative_dot,
-    (4, KERNEL_SQEUCLIDEAN): search_sq4_sqeuclidean,
-    (4, KERNEL_ALT_DOT): search_sq4_alternative_dot,
+    (8, KERNEL_SQEUCLIDEAN, False): search_sq8_sqeuclidean,
+    (8, KERNEL_ALT_DOT, False): search_sq8_alternative_dot,
+    (4, KERNEL_SQEUCLIDEAN, False): search_sq4_sqeuclidean,
+    (4, KERNEL_ALT_DOT, False): search_sq4_alternative_dot,
+    (8, KERNEL_SQEUCLIDEAN, True): search_sq8_sqeuclidean_int,
+    (8, KERNEL_ALT_DOT, True): search_sq8_alternative_dot_int,
+    (4, KERNEL_SQEUCLIDEAN, True): search_sq4_sqeuclidean_int,
+    (4, KERNEL_ALT_DOT, True): search_sq4_alternative_dot_int,
 }
 
 
@@ -888,7 +1136,7 @@ def make_quantized_search_function(
     n_neighbors, min_distance, normalize_query, tree_normalize_query, kernel, bits,
     prefetch_lines=None, rerank_prefetch_lines=None, adjacency_lines=None,
     rerank16=None, rerank_scale=1.0, projection8=None, projection_scale=None,
-    projection_mean=None,
+    projection_mean=None, integer_query=False,
 ):
     """Bind an index's arrays to the cached quantized search function.
 
@@ -898,8 +1146,23 @@ def make_quantized_search_function(
     ``result`` a (n_queries, k) heap that receives the exactly-scored neighbors.
     With ``rerank16`` (float16 bits of ``data / rerank_scale``, from
     ``encode_float16``) the candidates are reranked from that copy instead.
+    With ``integer_query`` the code distances are integer dot products with
+    int8 query weights (``codes`` are then aligned and padded if they are not
+    already, see ``aligned_padded_codes``).
     """
-    dispatcher = _DISPATCH[(bits, kernel)]
+    integer_query = bool(integer_query)
+    dispatcher = _DISPATCH[(bits, kernel, integer_query)]
+    if integer_query:
+        codes = aligned_padded_codes(codes)
+        layout_scales = code_layout_scales(
+            np.asarray(q_scales, dtype=np.float32), bits, codes.shape[1]
+        )
+        code_means, code_norms = _code_statistics(
+            codes, layout_scales, kernel == KERNEL_SQEUCLIDEAN
+        )
+    else:
+        code_means = np.zeros((1, 0), dtype=np.float32)
+        code_norms = np.zeros((0, 1), dtype=np.float32)
     hyperplanes, offsets, children, tree_indices = stack_search_forest(
         search_forest, data.shape[0]
     )
@@ -934,6 +1197,8 @@ def make_quantized_search_function(
         _readonly(projection_mean, np.float32),
         _readonly(q_offsets, np.float32),
         _readonly(q_scales, np.float32),
+        _readonly(code_means, np.float32),
+        _readonly(code_norms, np.float32),
         _readonly(adjacency, np.int32),
         _readonly(hyperplanes, np.float32),
         _readonly(offsets, np.float32),
