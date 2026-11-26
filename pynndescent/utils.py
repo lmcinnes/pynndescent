@@ -1370,6 +1370,38 @@ def l2_normalize_rows(X):
     return X
 
 
+# Corrections alone, for results that are already sorted and mapped (the
+# quantized search does both in its own compiled call): each matches the
+# distances (values and dtype) of the finish_query_* function of that name.
+
+
+@numba.njit(cache=True)
+def correct_sorted_sqrt(distances):
+    out = np.empty(distances.shape, dtype=np.float32)
+    for i in range(distances.shape[0]):
+        for j in range(distances.shape[1]):
+            out[i, j] = np.sqrt(distances[i, j])
+    return out
+
+
+@numba.njit(cache=True, fastmath=True)
+def correct_sorted_alternative_cosine(distances):
+    out = np.empty(distances.shape, dtype=np.float64)
+    for i in range(distances.shape[0]):
+        for j in range(distances.shape[1]):
+            out[i, j] = max(0.0, 1.0 - pow(2.0, -np.float64(distances[i, j])))
+    return out
+
+
+@numba.njit(cache=True, fastmath=True)
+def correct_sorted_alternative_hellinger(distances):
+    out = np.empty(distances.shape, dtype=np.float64)
+    for i in range(distances.shape[0]):
+        for j in range(distances.shape[1]):
+            out[i, j] = np.sqrt(max(0.0, 1.0 - pow(2.0, -np.float64(distances[i, j]))))
+    return out
+
+
 @numba.njit(cache=True, fastmath=True)
 def finish_query_alternative_hellinger(indices, distances, vertex_order):
     """As finish_query_no_correction, with distances mapped by sqrt(1 - 2**-d),

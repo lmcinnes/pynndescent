@@ -30,6 +30,9 @@ from pynndescent.utils import (
     finish_query_no_correction,
     finish_query_sqrt,
     finish_query_alternative_cosine,
+    correct_sorted_sqrt,
+    correct_sorted_alternative_cosine,
+    correct_sorted_alternative_hellinger,
     l2_normalize_rows,
     hash_uniform,
     int32_bits_as_float32,
@@ -1554,6 +1557,7 @@ class NNDescent:
         result.pop("_query_finisher_fn", None)
         result.pop("_query_ones", None)
         result.pop("_fast_plan", None)
+        result.pop("_sq_plan", None)
         result.pop("_sq_workspace", None)
         if "_query_workspace" in result:
             del result["_query_workspace"]
@@ -2820,6 +2824,10 @@ class NNDescent:
     # whole, aligned cache lines (one line fewer per candidate).
     _sq_integer_query = True
     _sq_align_codes = True
+    # Each feature's code range runs between these quantiles of the data (None:
+    # its full min to max range), by code bits: sixteen 4-bit levels are too few
+    # to spend on rare outliers. Setting _sq_clip_quantile overrides both.
+    _sq_clip_quantiles = {8: None, 4: 0.003}
 
     def _set_query_sample(self, query_sample, query_neighbors):
         if hasattr(self, "_search_graph"):
@@ -3163,7 +3171,7 @@ class NNDescent:
                 )
                 if self._sq_projection is not None:
                     encoded = project_rows(data, *self._sq_projection)
-            clip = getattr(self, "_sq_clip_quantile", None)
+            clip = getattr(self, "_sq_clip_quantile", self._sq_clip_quantiles[bits])
             self._sq_offsets, self._sq_scales = fit_scalar_quantizer(
                 encoded,
                 bits,
@@ -3213,13 +3221,47 @@ class NNDescent:
             projection_scale=projection_scale,
             projection_mean=projection_mean,
             integer_query=integer_query,
+            vertex_order=self._vertex_order,
         )
         self._uses_cached_search = True
         self._deheap_function = deheap_sort_serial
         self._fast_plan = None
-        finisher = self._query_finisher()
-        heap_indices, heap_distances, _ = make_heap(1, 1)
-        finisher(heap_indices, heap_distances, self._vertex_order)  # compile
+        # Per-index decisions for _sq_query, made once: the search function, the
+        # number of features, whether pre_normalized queries are allowed, and the
+        # distance correction (None when the search's distances need none).
+        self._sq_plan = (
+            self._search_function,
+            int(data.shape[1]),
+            bool(self._uses_normalized_data()),
+            self._sq_distance_correction(),
+        )
+
+    def _sq_distance_correction(self):
+        """The correction for sorted quantized-search distances: a compiled
+        function bound to the search's result type (skipping per-call type
+        resolution), the index's own correction if it has no compiled form, or
+        None when the distances need no correction."""
+        correction = self._distance_correction
+        if correction is None:
+            return None
+        if correction is np.sqrt:
+            corrector = correct_sorted_sqrt
+        elif (
+            correction is pynnd_dist.correct_alternative_cosine
+            or correction is pynnd_dist.correct_alternative_jaccard
+        ):
+            # Same formula (1 - 2**-d) as correct_alternative_cosine
+            corrector = correct_sorted_alternative_cosine
+        elif correction is pynnd_dist.correct_alternative_hellinger:
+            corrector = correct_sorted_alternative_hellinger
+        else:
+            return correction
+        sample = np.zeros((1, 1), dtype=np.float32)
+        corrector(sample)  # compile
+        try:
+            return corrector.overloads[(numba.typeof(sample),)].entry_point
+        except (AttributeError, KeyError, TypeError):
+            return corrector
 
     def _sq_query(
         self,
@@ -3232,7 +3274,8 @@ class NNDescent:
         return_distances,
         pre_normalized,
     ):
-        if pre_normalized and not self._uses_normalized_data():
+        search, n_features, normalizes, correct = self._sq_plan
+        if pre_normalized and not normalizes:
             raise ValueError(
                 "pre_normalized is only supported for dense cosine, direct_cosine "
                 "and dot"
@@ -3249,35 +3292,26 @@ class NNDescent:
                 "and candidate_width"
             )
 
-        query_data = np.asarray(query_data).astype(np.float32, order="C")
-        if query_data.ndim != 2 or query_data.shape[1] != self._raw_data.shape[1]:
+        # The search only reads the queries, so they need no copy.
+        query_data = np.ascontiguousarray(query_data, dtype=np.float32)
+        if query_data.ndim != 2 or query_data.shape[1] != n_features:
             raise ValueError(
                 "query_data must be a 2-D array with "
-                f"{self._raw_data.shape[1]} features, got shape {query_data.shape}"
+                f"{n_features} features, got shape {query_data.shape}"
             )
-        n_queries = query_data.shape[0]
-        key = (n_queries, int(candidate_width), int(k))
-        workspace = getattr(self, "_sq_workspace", None)
-        if workspace is None or workspace[0] != key:
-            workspace = (key, make_heap(n_queries, candidate_width), make_heap(n_queries, k))
-            self._sq_workspace = workspace
-        _, candidates, result = workspace
-        self._search_function(
+        indices, dists = search(
             query_data,
-            query_data,
-            candidates,
-            result,
             k,
+            candidate_width,
             epsilon,
             rerank_width,
             self._visited,
             pre_normalized,
             self.search_rng_state,
         )
-        indices, dists = self._query_finisher()(result[0], result[1], self._vertex_order)
         if not return_distances:
             return indices
-        return indices, dists
+        return indices, (dists if correct is None else correct(dists))
 
     def query(
         self,

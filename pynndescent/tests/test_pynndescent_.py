@@ -1794,6 +1794,24 @@ def test_integer_query_matches_float_kernels(quantization, metric):
     assert overlap > 0.97
 
 
+def test_sq4_code_range_clips_outliers_by_default():
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(3000, 8)).astype(np.float32)
+    data[:3, 0] = 1000.0  # rare outliers in feature 0
+    scales = {}
+    for quantization, clip in (("sq8", "default"), ("sq4", "default"), ("sq4", None)):
+        index = NNDescent(data, n_neighbors=10, random_state=42, quantization=quantization)
+        if clip is None:
+            index._sq_clip_quantile = None
+        index.prepare()
+        scales[quantization, clip] = index._sq_scales[0]
+    full_range = data[:, 0].max() - data[:, 0].min()
+    # sq8 and an explicit None span the full range; sq4 drops the outliers.
+    np.testing.assert_allclose(scales["sq8", "default"], full_range / 255, rtol=1e-5)
+    np.testing.assert_allclose(scales["sq4", None], full_range / 15, rtol=1e-5)
+    assert scales["sq4", "default"] < 10.0 / 15
+
+
 @pytest.mark.parametrize("quantization", [None, "sq8"])
 def test_rcm_vertex_order_keeps_graph_neighbours_close(quantization):
     rng = np.random.default_rng(0)

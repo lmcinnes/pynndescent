@@ -2,7 +2,9 @@
 
 ``NNDescent(..., quantization="sq8")`` (or ``"sq4"``) stores, next to the float32
 data, one code per feature: 8 bits, or 4 bits packed two to a byte. Each feature
-gets its own affine map ``x ~ offset + scale * code`` fitted to the data's range.
+gets its own affine map ``x ~ offset + scale * code`` fitted to the data's range
+(for 4-bit codes, the range between its 0.3% and 99.7% quantiles; values
+outside it get the end codes).
 
 A query is searched over the codes with an asymmetric distance (the query stays
 in float32 and is transformed once, so no per-candidate decoding table is
@@ -47,7 +49,6 @@ from pynndescent.kernels import (
 )
 from pynndescent.search import (
     SEED_CAPACITY,
-    _HEAP_TYPE,
     _array,
     _distance_bound,
     _grow_seeds,
@@ -63,6 +64,7 @@ from pynndescent.search import (
     stack_search_forest,
 )
 from pynndescent.utils import (
+    _deheap_rows_inplace,
     check_and_mark_visited,
     float16_bits_as_float32,
     prefetch_element,
@@ -271,6 +273,7 @@ _FIELDS = [
     "projection8",
     "projection_scale",
     "projection_mean",
+    "vertex_order",
     "q_offsets",
     "q_scales",
     "code_means",
@@ -297,16 +300,16 @@ structref.define_proxy(QuantizedSearchIndex, QuantizedSearchIndexType, _FIELDS)
 @numba.njit(cache=True)
 def _new_quantized_search_index(
     codes, data, rerank16, rerank_scale, rerank_half, projection8,
-    projection_scale, projection_mean, q_offsets, q_scales, code_means, code_norms,
-    adjacency, tree_hyperplanes,
+    projection_scale, projection_mean, vertex_order, q_offsets, q_scales, code_means,
+    code_norms, adjacency, tree_hyperplanes,
     tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
     n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
     prefetch_lines, rerank_prefetch_lines, adjacency_lines,
 ):
     return QuantizedSearchIndex(
         codes, data, rerank16, rerank_scale, rerank_half, projection8,
-        projection_scale, projection_mean, q_offsets, q_scales, code_means, code_norms,
-        adjacency, tree_hyperplanes,
+        projection_scale, projection_mean, vertex_order, q_offsets, q_scales, code_means,
+        code_norms, adjacency, tree_hyperplanes,
         tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
         n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
         prefetch_lines, rerank_prefetch_lines, adjacency_lines,
@@ -1018,47 +1021,81 @@ def _search_quantized_serial(
     return result
 
 
+@numba.njit(inline="always", fastmath=True)
+def _search_and_finish(
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state, kernel, bits, integer,
+):
+    """Search, then sort each row's results and map them to the original data order,
+    all in one compiled call (each call from Python costs microseconds).
+
+    Returns ``(indices, distances)``: per row the k neighbours in the original data
+    order, nearest first, and their uncorrected distances (the search kernel's).
+    """
+    n_queries = query_points.shape[0]
+    # The search resets every row before use.
+    candidates = (
+        np.empty((n_queries, candidate_width), dtype=np.int32),
+        np.empty((n_queries, candidate_width), dtype=np.float32),
+    )
+    result = (
+        np.empty((n_queries, k), dtype=np.int32),
+        np.empty((n_queries, k), dtype=np.float32),
+    )
+    _search_quantized_serial(
+        index, query_points, query_points, candidates, result, k, epsilon, rerank_width,
+        visited, query_is_normalized, rng_state, kernel, bits, integer,
+    )
+    _deheap_rows_inplace(result[0], result[1])
+    vertex_order = index.vertex_order
+    indices = np.empty((n_queries, k), dtype=vertex_order.dtype)
+    for i in range(n_queries):
+        for j in range(k):
+            indices[i, j] = vertex_order[result[0][i, j]]
+    return indices, result[1]
+
+
 @numba.njit(fastmath=True, cache=True)
 def search_sq8_sqeuclidean(
-    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state,
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
 ):
-    return _search_quantized_serial(
-        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 8, False,
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 8, False,
     )
 
 
 @numba.njit(fastmath=True, cache=True)
 def search_sq8_alternative_dot(
-    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state,
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
 ):
-    return _search_quantized_serial(
-        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 8, False,
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_ALT_DOT, 8, False,
     )
 
 
 @numba.njit(fastmath=True, cache=True)
 def search_sq4_sqeuclidean(
-    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state,
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
 ):
-    return _search_quantized_serial(
-        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 4, False,
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 4, False,
     )
 
 
 @numba.njit(fastmath=True, cache=True)
 def search_sq4_alternative_dot(
-    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state,
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
 ):
-    return _search_quantized_serial(
-        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 4, False,
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_ALT_DOT, 4, False,
     )
 
 
@@ -1068,45 +1105,45 @@ def search_sq4_alternative_dot(
 
 @numba.njit(fastmath=True, cache=True)
 def search_sq8_sqeuclidean_int(
-    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state,
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
 ):
-    return _search_quantized_serial(
-        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 8, True,
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 8, True,
     )
 
 
 @numba.njit(fastmath=True, cache=True)
 def search_sq8_alternative_dot_int(
-    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state,
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
 ):
-    return _search_quantized_serial(
-        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 8, True,
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_ALT_DOT, 8, True,
     )
 
 
 @numba.njit(fastmath=True, cache=True)
 def search_sq4_sqeuclidean_int(
-    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state,
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
 ):
-    return _search_quantized_serial(
-        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 4, True,
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_SQEUCLIDEAN, 4, True,
     )
 
 
 @numba.njit(fastmath=True, cache=True)
 def search_sq4_alternative_dot_int(
-    index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-    visited, query_is_normalized, rng_state,
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
 ):
-    return _search_quantized_serial(
-        index, query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state, KERNEL_ALT_DOT, 4, True,
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_ALT_DOT, 4, True,
     )
 
 
@@ -1136,14 +1173,15 @@ def make_quantized_search_function(
     n_neighbors, min_distance, normalize_query, tree_normalize_query, kernel, bits,
     prefetch_lines=None, rerank_prefetch_lines=None, adjacency_lines=None,
     rerank16=None, rerank_scale=1.0, projection8=None, projection_scale=None,
-    projection_mean=None, integer_query=False,
+    projection_mean=None, integer_query=False, vertex_order=None,
 ):
     """Bind an index's arrays to the cached quantized search function.
 
-    Returns ``search(query_points, tree_query_points, candidates, result, k,
-    epsilon, rerank_width, visited, query_is_normalized, rng_state) -> result``
-    where ``candidates`` is a (n_queries, candidate_width) heap workspace and
-    ``result`` a (n_queries, k) heap that receives the exactly-scored neighbors.
+    Returns ``search(query_points, k, candidate_width, epsilon, rerank_width,
+    visited, query_is_normalized, rng_state) -> (indices, distances)``: per query
+    the k exactly-scored nearest neighbours, nearest first, as indices into the
+    original data order (``vertex_order[i]`` is the original index of row i of
+    ``data``; the identity if None) and their uncorrected exact distances.
     With ``rerank16`` (float16 bits of ``data / rerank_scale``, from
     ``encode_float16``) the candidates are reranked from that copy instead.
     With ``integer_query`` the code distances are integer dot products with
@@ -1171,6 +1209,8 @@ def make_quantized_search_function(
         adjacency_lines = default_adjacency_lines(adjacency)
     if prefetch_lines is None:
         prefetch_lines = default_code_prefetch_lines(codes)
+    if vertex_order is None:
+        vertex_order = np.arange(data.shape[0], dtype=np.int64)
     rerank_half = rerank16 is not None
     if not rerank_half:
         rerank16 = np.empty((0, data.shape[1]), dtype=np.uint16)
@@ -1195,6 +1235,7 @@ def make_quantized_search_function(
         _readonly(projection8, np.int8),
         _readonly(projection_scale, np.float32),
         _readonly(projection_mean, np.float32),
+        _readonly(vertex_order, vertex_order.dtype),
         _readonly(q_offsets, np.float32),
         _readonly(q_scales, np.float32),
         _readonly(code_means, np.float32),
@@ -1218,10 +1259,8 @@ def make_quantized_search_function(
     signature = (
         numba.typeof(index),
         _array(types.float32, 2),  # query_points
-        _array(types.float32, 2),  # tree_query_points
-        _HEAP_TYPE,  # candidates
-        _HEAP_TYPE,  # result
         types.int64,  # k
+        types.int64,  # candidate_width
         types.float32,  # epsilon
         types.int64,  # rerank_width
         _array(types.uint8, 1),  # visited
@@ -1236,14 +1275,13 @@ def make_quantized_search_function(
         pass
 
     def search(
-        query_points, tree_query_points, candidates, result, k, epsilon, rerank_width,
-        visited, query_is_normalized, rng_state,
+        query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state,
     ):
         return dispatcher(
             index,
             np.ascontiguousarray(query_points, dtype=np.float32),
-            np.ascontiguousarray(tree_query_points, dtype=np.float32),
-            candidates, result, k, epsilon, rerank_width, visited,
+            k, candidate_width, epsilon, rerank_width, visited,
             bool(query_is_normalized), rng_state,
         )
 
