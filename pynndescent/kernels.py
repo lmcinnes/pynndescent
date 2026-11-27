@@ -173,7 +173,7 @@ def _join_row(
 @numba.njit(
     parallel=True,
     fastmath=True,
-    cache=False,
+    cache=True,
     locals={"p": numba.int32, "dist_thresh_p": numba.float32},
 )
 def generate_graph_update_array_batched(

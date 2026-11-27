@@ -34,6 +34,8 @@ from pynndescent.utils import (
     correct_sorted_alternative_cosine,
     correct_sorted_alternative_hellinger,
     l2_normalize_rows,
+    l2_normalize_rows_into,
+    rows_are_unit_norm,
     hash_uniform,
     int32_bits_as_float32,
     float32_bits_as_int32,
@@ -69,6 +71,13 @@ from pynndescent.kernels import (
     four_distances,
 )
 from pynndescent.hybrid_forest import make_hybrid_leaf_array
+from pynndescent.progressive_build import (
+    TREE_MULTIPLIER,
+    TREE_PROJECTION_MIN_DIMENSION,
+    progressive_build_applies,
+    progressive_nn_descent,
+    project_for_trees,
+)
 from pynndescent.hub_tree import make_hub_search_tree
 from pynndescent.search_graph import build_search_graph, permute_graph, permute_rows
 from pynndescent.integer_dot import aligned_padded_codes
@@ -533,9 +542,29 @@ def nn_descent_alternative_inner_product(
 
 def run_nn_descent(
     data, n_neighbors, rng_state, max_candidates, dist, n_iters, delta, init_graph,
-    rp_tree_init, leaf_array, low_memory, verbose,
+    rp_tree_init, leaf_array, low_memory, verbose, progressive="auto",
 ):
+    """NN-descent with the fastest available kernels.
+
+    With ``progressive`` ("auto", True or False) and a fresh build from an RP
+    forest on dense float32 squared euclidean / alternative dot data, the
+    early phases run on 8-bit codes (see ``progressive_build``); "auto" does so
+    from ``progressive_build.MIN_DIMENSION`` features up.
+    """
     kernel = select_kernel(dist, data)
+    if (
+        progressive is not False
+        and rp_tree_init
+        and init_graph[0].shape[0] == 1
+        and leaf_array is not None
+        and leaf_array.shape[1] > 1
+        and kernel in (KERNEL_SQEUCLIDEAN, KERNEL_ALT_DOT)
+        and (progressive is True or progressive_build_applies(kernel, data))
+    ):
+        return progressive_nn_descent(
+            data, n_neighbors, rng_state, max_candidates, kernel, n_iters, delta,
+            leaf_array, numba.get_num_threads(), verbose=verbose,
+        )
     if kernel == KERNEL_SQEUCLIDEAN:
         cached_nn_descent = nn_descent_squared_euclidean
     elif kernel == KERNEL_ALT_DOT:
@@ -1142,6 +1171,22 @@ class NNDescent:
         result in a significantly smaller index, particularly useful for saving,
         but will remove information that might otherwise be useful.
 
+    progressive_build: "auto", True or False (optional, default="auto")
+        Whether to build the graph progressively: the RP-tree leaf join and the
+        first NN-descent iterations run on 8-bit scalar-quantized codes (scored
+        with integer dot products, several times faster than float32 on wide
+        data) with somewhat wider neighbour lists, which are then re-scored
+        exactly and refined with float32 NN-descent. The final graph has exact
+        distances and typically equal or better recall. It applies to dense
+        float32 data with euclidean, cosine or dot metrics and tree
+        initialisation; "auto" uses it from 512 features up, where it is
+        faster (around 25% at 784 features, 45% at 4096). It needs about half
+        the data's memory again during the build. From 1024 features up the
+        initialisation forest is also built on a 128-dimensional random
+        projection of the data, with 1.5 times as many trees, which is several
+        times faster at equal graph quality. ``False`` keeps the original
+        build throughout.
+
     parallel_batch_queries: bool (optional, default=False)
         Whether to use parallelism of batched queries. This can be useful for large
         batches of queries on multicore machines, but results in performance degradation
@@ -1201,6 +1246,7 @@ class NNDescent:
         search_tree_leaf_budget=1,
         rerank_precision="float32",
         quantization_dims=None,
+        progressive_build="auto",
     ):
 
         if n_neighbors < 1:
@@ -1283,6 +1329,11 @@ class NNDescent:
                     f"variance in (0, 1), got {quantization_dims!r}"
                 )
         self.quantization_dims = quantization_dims
+        if progressive_build not in ("auto", True, False):
+            raise ValueError(
+                f"progressive_build must be 'auto', True or False, got {progressive_build!r}"
+            )
+        self.progressive_build = progressive_build
         self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
@@ -1347,7 +1398,13 @@ class NNDescent:
                 self._bit_trees = False
 
         if self._normalized_data:
-            data = normalize(data, norm="l2", copy=copy_on_normalize)
+            if issparse(data):
+                data = normalize(data, norm="l2", copy=copy_on_normalize)
+            elif not rows_are_unit_norm(data):
+                # Parallel; sklearn's normalize is single threaded (4s vs 0.2s
+                # for 8GB). Already unit-norm data skips this, and the copy.
+                out = np.empty_like(data) if copy_on_normalize else data
+                data = l2_normalize_rows_into(data, out)
             self._raw_data = data
 
         self._mips_max_norm = None
@@ -1475,6 +1532,7 @@ class NNDescent:
                 init_graph=_init_graph,
                 leaf_array=leaf_array,
                 verbose=verbose,
+                progressive=self.progressive_build,
             )
 
         if np.any(self._neighbor_graph[0][:, :-1] < 0):
@@ -1513,18 +1571,42 @@ class NNDescent:
             if self.leaf_size is not None
             else max(60, min(256, 5 * int(self.n_neighbors)))
         )
+        seed = int(random_state.randint(0, 2**62, dtype=np.int64))
+        tree_data = data
+        if self._projected_trees(data):
+            # Build the forest on a random projection (see
+            # progressive_build.project_for_trees), with more trees to make
+            # up for the slightly less accurate leaves.
+            tree_data = project_for_trees(
+                data, seed ^ 0x5DEECE66D, numba.get_num_threads()
+            )
+            n_trees = int(np.ceil(TREE_MULTIPLIER * n_trees))
         leaf_array = make_hybrid_leaf_array(
-            data,
+            tree_data,
             n_trees,
             forest_leaf_size,
-            int(random_state.randint(0, 2**62, dtype=np.int64)),
+            seed,
             angular=self._angular_trees,
             max_depth=self.max_rptree_depth,
         )
+        del tree_data
         # Only the leaves are kept; prepare() checks for a construction forest
         # before building its graph-informed search tree.
         self._rp_forest = leaf_array
         return leaf_array
+
+    def _projected_trees(self, data):
+        """Whether to build the initialisation forest on a random projection:
+        wide dense float32 data with a euclidean or angular metric, unless
+        ``progressive_build=False`` (which keeps the original build)."""
+        return (
+            getattr(self, "progressive_build", "auto") is not False
+            and isinstance(data, np.ndarray)
+            and data.ndim == 2
+            and data.shape[1] >= TREE_PROJECTION_MIN_DIMENSION
+            and select_kernel(self._distance_func, data)
+            in (KERNEL_SQEUCLIDEAN, KERNEL_ALT_DOT)
+        )
 
     def _set_sparse_distance_func(self):
         metric = self.metric
