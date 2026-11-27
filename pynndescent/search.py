@@ -48,6 +48,7 @@ from pynndescent.utils import (
     check_and_mark_visited,
     make_heap,
     mark_visited,
+    query_rng_state,
     simple_heap_push,
     siftdown,
     tau_rand_int,
@@ -410,10 +411,10 @@ def search_dense_parallel(
     normalize_query = index.normalize_query
     tree_normalize_query = index.tree_normalize_query
     kernel = index.kernel
-    internal_rng_state = np.copy(rng_state)
     for i in numba.prange(query_points.shape[0]):
         # Each query needs its own visited set when searched in parallel
         visited_nodes = np.zeros_like(visited)
+        internal_rng_state = query_rng_state(rng_state, i)
         heap_priorities = result[1][i]
         heap_indices = result[0][i]
         heap_priorities[:] = np.inf

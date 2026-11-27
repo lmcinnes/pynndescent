@@ -88,6 +88,20 @@ def _splitmix64(x, v):
 
 
 @numba.njit(inline="always", cache=True)
+def query_rng_state(rng_state, query_index):
+    """Derive a valid independent Tausworthe state for a batch position."""
+    x = _splitmix64(np.uint64(rng_state[0]), rng_state[1])
+    x = _splitmix64(x, rng_state[2])
+    x = _splitmix64(x, query_index)
+    state = np.empty(3, dtype=np.int64)
+    for j in range(3):
+        x = _splitmix64(x, j)
+        # Each component must exceed its respective minimum (1, 7, 15).
+        state[j] = np.int64((x & np.uint64(0xFFFFFFFF)) | np.uint64(16))
+    return state
+
+
+@numba.njit(inline="always", cache=True)
 def hash_uniform(seed, a, b, c):
     """A stateless uniform float in [0, 1) derived from (seed, a, b, c).
 

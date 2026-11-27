@@ -30,6 +30,7 @@ from pynndescent.utils import (
     finish_query_alternative_cosine,
     l2_normalize_rows,
     hash_uniform,
+    query_rng_state,
     int32_bits_as_float32,
     float32_bits_as_int32,
     tau_rand_int,
@@ -1031,7 +1032,10 @@ class NNDescent:
     parallel_batch_queries: bool (optional, default=False)
         Whether to use parallelism of batched queries. This can be useful for large
         batches of queries on multicore machines, but results in performance degradation
-        for single queries, so is poor for streaming use.
+        for single queries, so is poor for streaming use. For a fixed index and batch,
+        parallel results are reproducible across thread counts. They can differ from
+        serial results or earlier versions, and changing query order or batch boundaries
+        can change results.
 
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
@@ -2096,9 +2100,11 @@ class NNDescent:
                 # Avoid races on visited if parallel
                 if parallel_search:
                     visited_nodes = np.zeros_like(visited)
+                    query_state = query_rng_state(rng_state, i)
                 else:
                     visited_nodes = visited
                     visited_nodes[:] = 0
+                    query_state = internal_rng_state
 
                 heap_priorities = result[1][i]
                 heap_indices = result[0][i]
@@ -2138,7 +2144,7 @@ class NNDescent:
                 if tree_leaf_budget == 1:
                     for tree_num in range(n_search_trees):
                         index_bounds = tree_search_closure(
-                            tree_current_query, tree_num, internal_rng_state
+                            tree_current_query, tree_num, query_state
                         )
                         candidate_indices = tree_indices[
                             tree_num, index_bounds[0] : index_bounds[1]
@@ -2163,7 +2169,7 @@ class NNDescent:
                 else:
                     leaf_bounds = np.empty((tree_leaf_budget, 2), dtype=np.int32)
                     leaf_count = tree_spill_search_closure(
-                        tree_current_query, internal_rng_state, leaf_bounds
+                        tree_current_query, query_state, leaf_bounds
                     )
                     for leaf_num in range(leaf_count):
                         candidate_indices = tree_indices[
@@ -2192,7 +2198,7 @@ class NNDescent:
                 if n_random_samples > 0:
                     for j in range(n_random_samples):
                         candidate = np.int32(
-                            np.abs(tau_rand_int(internal_rng_state)) % data.shape[0]
+                            np.abs(tau_rand_int(query_state)) % data.shape[0]
                         )
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
                             d = np.float32(
@@ -2428,9 +2434,11 @@ class NNDescent:
                 # Avoid races on visited if parallel
                 if parallel_search:
                     visited_nodes = np.zeros_like(visited)
+                    query_state = query_rng_state(rng_state, i)
                 else:
                     visited_nodes = visited
                     visited_nodes[:] = 0
+                    query_state = internal_rng_state
 
                 current_query_inds = query_inds[query_indptr[i] : query_indptr[i + 1]]
                 current_query_data = query_data[query_indptr[i] : query_indptr[i + 1]]
@@ -2449,7 +2457,7 @@ class NNDescent:
 
                 ############ Init ################
                 index_bounds = sparse_tree_search_closure(
-                    current_query_inds, current_query_data, internal_rng_state
+                    current_query_inds, current_query_data, query_state
                 )
                 candidate_indices = tree_indices[index_bounds[0] : index_bounds[1]]
 
@@ -2457,7 +2465,7 @@ class NNDescent:
                 n_random_samples = min(k, n_neighbors) - n_initial_points
 
                 for j in range(n_initial_points):
-                    candidate = candidate_indices[j]
+                    candidate = np.int32(candidate_indices[j])
 
                     from_inds = data_inds[
                         data_indptr[candidate] : data_indptr[candidate + 1]
@@ -2479,7 +2487,7 @@ class NNDescent:
                 if n_random_samples > 0:
                     for j in range(n_random_samples):
                         candidate = np.int32(
-                            np.abs(tau_rand_int(internal_rng_state)) % n_index_points
+                            np.abs(tau_rand_int(query_state)) % n_index_points
                         )
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
                             from_inds = data_inds[
@@ -2513,7 +2521,7 @@ class NNDescent:
 
                     for j in range(indptr[vertex], indptr[vertex + 1]):
 
-                        candidate = indices[j]
+                        candidate = np.int32(indices[j])
 
                         if check_and_mark_visited(visited_nodes, candidate) == 0:
 
@@ -3512,7 +3520,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
     parallel_batch_queries: bool (optional, default=False)
         Whether to use parallelism of batched queries. This can be useful for large
         batches of queries on multicore machines, but results in performance degradation
-        for single queries, so is poor for streaming use.
+        for single queries, so is poor for streaming use. For a fixed index and batch,
+        parallel results are reproducible across thread counts. They can differ from
+        serial results or earlier versions, and changing query order or batch boundaries
+        can change results.
 
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
