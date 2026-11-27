@@ -90,6 +90,55 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 FLOAT32_EPS = np.finfo(np.float32).eps
 
 
+def _init_distances_to_internal(metric, distances):
+    """Convert dense ``init_dist`` values from corrected to build units."""
+    if not isinstance(metric, str):
+        return distances
+
+    max_distance = pynnd_dist.FLOAT32_MAX
+    internal_distances = np.asarray(distances, dtype=np.float64).copy()
+
+    if metric in ("euclidean", "l2"):
+        np.square(internal_distances, out=internal_distances)
+    elif metric in ("cosine", "dot"):
+        saturated = internal_distances >= 1.0
+        internal_distances[saturated] = max_distance
+        invertible = ~saturated
+        internal_distances[invertible] = -np.log2(
+            1.0 - internal_distances[invertible]
+        )
+    elif metric == "true_angular":
+        saturated = internal_distances >= 0.5
+        internal_distances[saturated] = max_distance
+        invertible = ~saturated
+        internal_distances[invertible] = -np.log2(
+            np.cos(np.pi * internal_distances[invertible])
+        )
+    elif metric == "hellinger":
+        saturated = internal_distances >= 1.0
+        internal_distances[saturated] = max_distance
+        invertible = ~saturated
+        internal_distances[invertible] = -np.log2(
+            1.0 - internal_distances[invertible] ** 2
+        )
+    elif metric in ("jaccard", "bit_jaccard"):
+        saturated = internal_distances >= 1.0
+        internal_distances[saturated] = max_distance
+        invertible = ~saturated
+        internal_distances[invertible] = -np.log2(
+            1.0 - internal_distances[invertible]
+        )
+    elif metric == "inner_product":
+        saturated = internal_distances >= 0.0
+        internal_distances[saturated] = max_distance
+        invertible = ~saturated
+        internal_distances[invertible] = np.minimum(
+            -1.0 / internal_distances[invertible], max_distance
+        )
+
+    return internal_distances
+
+
 def _canonicalize_sparse_data(data):
     """Normalize CSR storage without changing the caller's arrays."""
     if not data.has_canonical_format or np.any(data.data == 0):
@@ -977,7 +1026,9 @@ class NNDescent:
     init_dist: np.ndarray (optional, default=None)
         2D array with the same shape as init_graph,
         such that metric(data[i], data[init_graph[i, j]]) equals
-        init_dist[i, j]
+        init_dist[i, j]. For dense data, these are distances in the metric's
+        user-facing units. Sparse initialization recomputes distances from
+        init_graph and does not use init_dist.
 
     random_state: int, RandomState instance or None, optional (default: None)
         If int, random_state is the seed used by the random number generator;
@@ -1303,8 +1354,11 @@ class NNDescent:
                         "The shapes of init graph and init distances do not match!"
                     )
                 else:
+                    internal_init_dist = _init_distances_to_internal(
+                        self.metric, init_dist
+                    )
                     _init_graph = initalize_heap_from_graph_indices_and_distances(
-                        _init_graph, init_graph, init_dist
+                        _init_graph, init_graph, internal_init_dist
                     )
 
             if verbose:

@@ -116,6 +116,169 @@ def test_sparse_storage_preserves_distances(
         np.testing.assert_array_equal(current, saved)
 
 
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "euclidean",
+        "l2",
+        "cosine",
+        "dot",
+        "true_angular",
+        "hellinger",
+        "jaccard",
+        "bit_jaccard",
+        "inner_product",
+        "direct_cosine",
+        "correlation",
+        "proxy_inner_product",
+    ],
+)
+@pytest.mark.parametrize("provide_init_dist", [False, True])
+def test_dense_init_dist_uses_user_metric_units(metric, provide_init_dist):
+    from pynndescent import distances
+
+    if metric == "bit_jaccard":
+        data = np.array([[9], [3], [6], [12]], dtype=np.uint8)
+    elif metric in (
+        "cosine",
+        "dot",
+        "true_angular",
+        "inner_product",
+        "direct_cosine",
+    ):
+        data = np.array(
+            [[1, 0, 0, 0], [0, 1, 0, 0], [-1, 0, 0, 0], [1, 1, 0, 0]],
+            dtype=np.float32,
+        )
+    elif metric in (
+        "hellinger",
+        "jaccard",
+        "correlation",
+    ):
+        data = np.array(
+            [[1, 0, 0, 1], [1, 1, 0, 0], [0, 1, 1, 0], [0, 0, 1, 1]],
+            dtype=np.float32,
+        )
+    else:
+        data = np.array(
+            [
+                [1.0, 1.0, 1.0, 1.0],
+                [1.0, 2.0, 3.0, 4.0],
+                [4.0, 3.0, 2.0, 1.0],
+                [2.0, 4.0, 1.0, 3.0],
+            ],
+            dtype=np.float32,
+        )
+    original_data = data.copy()
+    init_graph = np.array(
+        [[1, 2, -1], [0, 2, 3], [0, 1, 3], [0, 1, 2]], dtype=np.int32
+    )
+
+    def true_distance(i, j):
+        x, y = data[i], data[j]
+        if metric == "bit_jaccard":
+            x_bits = np.unpackbits(x)
+            y_bits = np.unpackbits(y)
+            union = np.count_nonzero(x_bits | y_bits)
+            return (
+                0.0
+                if union == 0
+                else 1.0 - np.count_nonzero(x_bits & y_bits) / union
+            )
+        if metric == "proxy_inner_product":
+            return distances.proxy_inner_product(x, y)
+        if metric in ("dot", "direct_cosine"):
+            x = x / np.linalg.norm(x)
+            y = y / np.linalg.norm(y)
+        if metric == "cosine":
+            cosine = np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y))
+            return 1.0 - max(0.0, cosine)
+        if metric == "true_angular":
+            cosine = np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y))
+            return 0.5 if cosine <= 0.0 else np.arccos(cosine) / np.pi
+        if metric == "inner_product":
+            return min(0.0, -np.dot(x, y))
+        return distances.named_distances[metric](x, y)
+
+    def is_representable_candidate(distance):
+        if metric == "true_angular":
+            return distance < 0.5
+        if metric in ("cosine", "dot", "hellinger", "jaccard", "bit_jaccard"):
+            return distance < 1.0
+        if metric == "inner_product":
+            return distance < 0.0
+        if metric == "proxy_inner_product":
+            return distance < distances.FLOAT32_MAX
+        return True
+
+    expected = np.full(init_graph.shape, np.nan, dtype=np.float64)
+    for i in range(init_graph.shape[0]):
+        for j in range(init_graph.shape[1]):
+            neighbor = init_graph[i, j]
+            if neighbor >= 0:
+                expected[i, j] = true_distance(i, neighbor)
+    init_dist = expected.copy()
+    original_init_dist = init_dist.copy()
+
+    index = NNDescent(
+        data,
+        metric=metric,
+        n_neighbors=3,
+        n_iters=0,
+        init_graph=init_graph,
+        init_dist=init_dist if provide_init_dist else None,
+        random_state=42,
+    )
+    indices, actual_distances = index.neighbor_graph
+
+    for i in range(len(data)):
+        expected_neighbors = {
+            neighbor
+            for j, neighbor in enumerate(init_graph[i])
+            if neighbor >= 0 and is_representable_candidate(expected[i, j])
+        }
+        actual_neighbors = set(indices[i, indices[i] >= 0])
+        assert expected_neighbors <= actual_neighbors
+        if np.all(init_graph[i] >= 0) and all(
+            is_representable_candidate(expected[i, j])
+            for j in range(init_graph.shape[1])
+        ):
+            assert actual_neighbors == set(init_graph[i])
+        for j, neighbor in enumerate(indices[i]):
+            if neighbor >= 0:
+                np.testing.assert_allclose(
+                    actual_distances[i, j], true_distance(i, neighbor), atol=1e-6
+                )
+    np.testing.assert_array_equal(data, original_data)
+    np.testing.assert_array_equal(init_dist, original_init_dist)
+
+
+def test_sparse_init_dist_is_recomputed_from_graph():
+    data = scipy.sparse.csr_matrix(
+        np.array([[0.0, 0.0], [3.0, 4.0], [6.0, 8.0]], dtype=np.float32)
+    )
+    init_graph = np.array([[1, 2], [0, 2], [0, 1]], dtype=np.int32)
+    init_dist = np.full(init_graph.shape, 123.0, dtype=np.float32)
+    original_init_dist = init_dist.copy()
+
+    index = NNDescent(
+        data,
+        metric="euclidean",
+        n_neighbors=2,
+        n_iters=0,
+        init_graph=init_graph,
+        init_dist=init_dist,
+        random_state=42,
+    )
+    indices, actual_distances = index.neighbor_graph
+    expected_distances = np.linalg.norm(
+        data.toarray()[:, None, :] - data.toarray()[indices], axis=2
+    )
+
+    np.testing.assert_array_equal(actual_distances, expected_distances)
+    np.testing.assert_array_equal(init_dist, original_init_dist)
+
+
 def test_haversine_antipodal_neighbor_graph():
     data = np.deg2rad(
         np.array(
