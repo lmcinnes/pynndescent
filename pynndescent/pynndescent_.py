@@ -2020,15 +2020,18 @@ class NNDescent:
         else:
             min_distance = self._min_distance
 
-        if dist == pynnd_dist.bit_hamming or dist == pynnd_dist.bit_jaccard:
-            data_type = numba.types.uint8[::1]
-            query_data_type = numba.types.uint8[::1]
-        elif self.quantization == "uint8" or self.quantization == "uint4":
-            data_type = numba.types.uint8[::1]
-            query_data_type = numba.types.float32[::1]
-        elif self.quantization == "int8":
+        if self.quantization == "int8":
             data_type = numba.types.int8[::1]
             query_data_type = numba.types.int8[::1]
+        elif self.quantization == "binary":
+            data_type = numba.types.uint8[::1]
+            query_data_type = numba.types.uint8[::1]
+        elif self.quantization in ("uint8", "uint4"):
+            data_type = numba.types.uint8[::1]
+            query_data_type = numba.types.float32[::1]
+        elif self._input_dtype == np.uint8:
+            data_type = numba.types.uint8[::1]
+            query_data_type = numba.types.uint8[::1]
         else:
             data_type = numba.types.float32[::1]
             query_data_type = numba.types.float32[::1]
@@ -2278,7 +2281,7 @@ class NNDescent:
                                     simple_heap_push(
                                         heap_priorities, heap_indices, d, candidate
                                     )
-                                    heapq.heappush(seed_set, (d, candidate))
+                                    heapq.heappush(seed_set, (d, np.int32(candidate)))
                                     # Update bound
                                     distance_bound = heap_priorities[0] + (
                                         epsilon * (heap_priorities[0] - min_distance)

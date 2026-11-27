@@ -552,6 +552,26 @@ def test_int8_quantized_query_and_width_controls(nn_data):
     assert index._query_workspace[0].shape[1] == 40
 
 
+def test_binary_quantized_query_uses_packed_query_points():
+    data = np.random.RandomState(42).normal(size=(20, 8)).astype(np.float32)
+    queries = data[:3].copy()
+    index = NNDescent(
+        data,
+        "euclidean",
+        n_neighbors=4,
+        n_trees=2,
+        n_iters=2,
+        random_state=42,
+        quantization="binary",
+    )
+
+    indices, distances = index.query(queries, k=3)
+
+    assert indices.shape == distances.shape == (3, 3)
+    assert np.all((indices >= 0) & (indices < len(data)))
+    assert np.all(np.isfinite(distances))
+
+
 def test_proxy_only_results_survive_later_queries(nn_data):
     index = NNDescent(
         nn_data[200:],
