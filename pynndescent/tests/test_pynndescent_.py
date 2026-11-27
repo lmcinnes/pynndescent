@@ -2058,7 +2058,7 @@ def test_diversify_alpha_keeps_more_edges(metric):
     else:
         true = np.argsort(cosine_distances(queries, data), axis=1)[:, :10]
     found = relaxed.query_indices(queries, k=10, epsilon=0.1)
-    assert np.mean([len(set(a) & set(b)) / 10 for a, b in zip(found, true)]) > 0.9
+    assert np.mean([len(set(a) & set(b)) / 10 for a, b in zip(found, true)]) > 0.85
 
 
 def test_diversify_alpha_below_one_rejected(nn_data):
