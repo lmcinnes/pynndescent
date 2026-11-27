@@ -455,10 +455,198 @@ def test_zero_angular_query_is_not_searched(nn_data, metric):
     queries[0] = 0.0
     indices, distances = index.query(queries, k=10, epsilon=0.2)
 
-    # Row 0 must be empty (corrected infinite distance), not a stale result
-    # left over in the reused workspace from the previous query.
-    np.testing.assert_array_equal(distances[0], 1.0)
+    # Row 0 must remain empty after index remapping and distance correction.
+    np.testing.assert_array_equal(indices[0], -1)
+    np.testing.assert_array_equal(distances[0], np.inf)
+    np.testing.assert_array_equal(
+        index.query_indices(queries[:1], k=10, epsilon=0.2), -1
+    )
     assert np.all(distances[1:] < 1.0)
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("return_distances", [False, True])
+def test_query_preserves_missing_neighbor_sentinels(fallback, return_distances):
+    data = np.arange(1, 49, dtype=np.float32).reshape(12, 4)
+    index = NNDescent(
+        data, metric="cosine", n_neighbors=5, n_trees=0, random_state=0, n_jobs=1
+    )
+    queries = np.zeros((1, 4), dtype=np.float32)
+    options = {"candidate_width": 8} if fallback else {}
+
+    result = index.query(
+        queries, k=6, return_distances=return_distances, **options
+    )
+    if return_distances:
+        indices, distances = result
+        np.testing.assert_array_equal(indices, -1)
+        np.testing.assert_array_equal(distances, np.inf)
+    else:
+        np.testing.assert_array_equal(result, -1)
+
+
+@pytest.mark.parametrize("metric", ["manhattan", "euclidean", "cosine", "hellinger"])
+def test_fast_dense_finisher_preserves_missing_neighbor_sentinels(metric):
+    data = np.arange(1, 49, dtype=np.float32).reshape(12, 4)
+    index = NNDescent(
+        data, metric=metric, n_neighbors=5, n_trees=0, random_state=0, n_jobs=1
+    )
+    index.prepare()
+
+    def empty_search(
+        query_points,
+        tree_query_points,
+        query_inv_norms,
+        result,
+        k,
+        epsilon,
+        visited,
+        query_is_normalized,
+        rng_state,
+    ):
+        return result
+
+    plan = index._fast_plan
+    index._fast_plan = (plan[0], empty_search, *plan[2:])
+    indices, distances = index.query(data[:1], k=6)
+
+    np.testing.assert_array_equal(indices, -1)
+    np.testing.assert_array_equal(distances, np.inf)
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("return_distances", [False, True])
+@pytest.mark.parametrize("metric", ["cosine", "hellinger"])
+def test_sparse_query_preserves_missing_neighbor_sentinels(
+    fallback, return_distances, metric
+):
+    data = scipy.sparse.csr_matrix(
+        np.arange(1, 49, dtype=np.float32).reshape(12, 4)
+    )
+    index = NNDescent(
+        data, metric=metric, n_neighbors=5, n_trees=0, random_state=0, n_jobs=1
+    )
+    index.prepare()
+
+    def empty_search(indices, indptr, values, k, epsilon, visited, rng_state):
+        n_queries = indptr.shape[0] - 1
+        return (
+            np.full((n_queries, k), -1, dtype=np.int32),
+            np.full((n_queries, k), np.inf, dtype=np.float32),
+            np.zeros((n_queries, k), dtype=np.uint8),
+        )
+
+    if fallback:
+        index._search_function = empty_search
+    else:
+        plan = index._fast_plan
+        index._fast_plan = (plan[0], empty_search, *plan[2:])
+
+    options = {"candidate_width": 8} if fallback else {}
+    result = index.query(data[:1], k=6, return_distances=return_distances, **options)
+    if return_distances:
+        indices, distances = result
+        np.testing.assert_array_equal(indices, -1)
+        np.testing.assert_array_equal(distances, np.inf)
+    else:
+        np.testing.assert_array_equal(result, -1)
+
+
+@pytest.mark.parametrize("return_distances", [False, True])
+def test_proxy_rerank_preserves_missing_neighbor_sentinels(return_distances):
+    data = np.arange(1, 25, dtype=np.float32).reshape(6, 4)
+    index = NNDescent(
+        data,
+        metric="cosine",
+        quantization="int8",
+        n_neighbors=4,
+        n_trees=0,
+        random_state=0,
+        n_jobs=1,
+    )
+    index.prepare()
+
+    def empty_search(
+        query_points,
+        tree_query_points,
+        query_inv_norms,
+        result,
+        k,
+        epsilon,
+        visited,
+        query_is_normalized,
+        rng_state,
+    ):
+        return result
+
+    index._search_function = empty_search
+    result = index.query(
+        data[:1],
+        k=3,
+        candidate_width=12,
+        rerank_width=10,
+        return_distances=return_distances,
+    )
+    if return_distances:
+        indices, distances = result
+        np.testing.assert_array_equal(indices, -1)
+        np.testing.assert_array_equal(distances, np.inf)
+    else:
+        np.testing.assert_array_equal(result, -1)
+
+
+@pytest.mark.parametrize("is_sparse", [False, True])
+def test_query_k_must_not_exceed_sample_count(is_sparse, monkeypatch):
+    data = np.arange(1, 25, dtype=np.float32).reshape(6, 4)
+    if is_sparse:
+        data = scipy.sparse.csr_matrix(data)
+    index = NNDescent(data, n_neighbors=3, n_trees=0, random_state=0, n_jobs=1)
+    monkeypatch.setattr(
+        index,
+        "prepare",
+        lambda: pytest.fail("query prepared the index before validating k"),
+    )
+
+    with pytest.raises(
+        ValueError, match="k cannot be greater than the number of samples"
+    ):
+        index.query(data[:1], k=data.shape[0] + 1)
+
+
+def test_query_k_equal_to_sample_count_and_wide_proxy_heap():
+    data = np.arange(1, 25, dtype=np.float32).reshape(6, 4)
+    index = NNDescent(
+        data,
+        metric="cosine",
+        n_neighbors=4,
+        quantization="int8",
+        n_trees=0,
+        random_state=0,
+        n_jobs=1,
+    )
+
+    indices, distances = index.query(data[:1], k=len(data), candidate_width=12)
+
+    assert indices.shape == distances.shape == (1, len(data))
+    assert indices.dtype == index._vertex_order.dtype
+    assert np.all((indices == -1) | ((indices >= 0) & (indices < len(data))))
+    assert np.all(np.isfinite(distances[indices >= 0]))
+    assert np.all(np.isinf(distances[indices < 0]))
+
+
+def test_transformer_omits_missing_neighbors():
+    data = np.arange(1, 33, dtype=np.float32).reshape(8, 4)
+    transformer = PyNNDescentTransformer(
+        metric="cosine", n_neighbors=3, n_trees=0, random_state=0, n_jobs=1
+    ).fit(data)
+    queries = np.vstack((np.zeros((1, 4), dtype=np.float32), data[:2]))
+
+    result = transformer.transform(queries).tocsr()
+
+    assert result.shape == (len(queries), len(data))
+    assert result[0].nnz == 0
+    assert result[1:].nnz > 0
+    assert np.all(result.indices >= 0)
 
 
 def test_int8_quantized_distance_self_similarity():

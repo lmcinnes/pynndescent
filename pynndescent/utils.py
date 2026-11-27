@@ -1252,8 +1252,12 @@ def finish_query_no_correction(indices, distances, vertex_order):
     out_distances = np.empty((n, k), dtype=np.float32)
     for i in range(n):
         for j in range(k):
-            out_indices[i, j] = vertex_order[indices[i, j]]
-            out_distances[i, j] = distances[i, j]
+            if indices[i, j] < 0:
+                out_indices[i, j] = -1
+                out_distances[i, j] = np.inf
+            else:
+                out_indices[i, j] = vertex_order[indices[i, j]]
+                out_distances[i, j] = distances[i, j]
     return out_indices, out_distances
 
 
@@ -1266,8 +1270,12 @@ def finish_query_sqrt(indices, distances, vertex_order):
     out_distances = np.empty((n, k), dtype=np.float32)
     for i in range(n):
         for j in range(k):
-            out_indices[i, j] = vertex_order[indices[i, j]]
-            out_distances[i, j] = np.sqrt(distances[i, j])
+            if indices[i, j] < 0:
+                out_indices[i, j] = -1
+                out_distances[i, j] = np.inf
+            else:
+                out_indices[i, j] = vertex_order[indices[i, j]]
+                out_distances[i, j] = np.sqrt(distances[i, j])
     return out_indices, out_distances
 
 
@@ -1281,10 +1289,14 @@ def finish_query_alternative_cosine(indices, distances, vertex_order):
     out_distances = np.empty((n, k), dtype=np.float64)
     for i in range(n):
         for j in range(k):
-            out_indices[i, j] = vertex_order[indices[i, j]]
-            out_distances[i, j] = max(
-                0.0, 1.0 - pow(2.0, -np.float64(distances[i, j]))
-            )
+            if indices[i, j] < 0:
+                out_indices[i, j] = -1
+                out_distances[i, j] = np.inf
+            else:
+                out_indices[i, j] = vertex_order[indices[i, j]]
+                out_distances[i, j] = max(
+                    0.0, 1.0 - pow(2.0, -np.float64(distances[i, j]))
+                )
     return out_indices, out_distances
 
 
@@ -1309,8 +1321,12 @@ def finish_query_alternative_hellinger(indices, distances, vertex_order):
     out_distances = np.empty((n, k), dtype=np.float64)
     for i in range(n):
         for j in range(k):
-            out_indices[i, j] = vertex_order[indices[i, j]]
-            out_distances[i, j] = np.sqrt(
-                max(0.0, 1.0 - pow(2.0, -np.float64(distances[i, j])))
-            )
+            if indices[i, j] < 0:
+                out_indices[i, j] = -1
+                out_distances[i, j] = np.inf
+            else:
+                out_indices[i, j] = vertex_order[indices[i, j]]
+                out_distances[i, j] = np.sqrt(
+                    max(0.0, 1.0 - pow(2.0, -np.float64(distances[i, j])))
+                )
     return out_indices, out_distances

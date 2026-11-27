@@ -2871,7 +2871,9 @@ class NNDescent:
             features as the indexed data.
 
         k: integer (default = 10)
-            The number of nearest neighbors to return
+            The number of nearest neighbors to return. Must not exceed the
+            number of indexed samples. If fewer than ``k`` neighbors are found,
+            missing entries have index ``-1`` and distance ``inf``.
 
         epsilon: float (optional, default=0.1)
             When searching for nearest neighbors of a query point this values
@@ -2923,6 +2925,11 @@ class NNDescent:
 
             If ``return_distances`` is False only ``indices`` is returned.
         """
+        if k > self._raw_data.shape[0]:
+            raise ValueError(
+                "k cannot be greater than the number of samples in the index"
+            )
+
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
 
@@ -3149,18 +3156,26 @@ class NNDescent:
                 indices = indices[:, :k]
                 dists = dists[:, :k]
 
-        # Sort to input graph_data order
-        indices = self._vertex_order[indices]
+        # Map valid indices to input data order without turning the -1 sentinel
+        # into the last vertex.
+        mapped_indices = np.full(indices.shape, -1, dtype=self._vertex_order.dtype)
+        valid_indices = indices >= 0
+        mapped_indices[valid_indices] = self._vertex_order[indices[valid_indices]]
+        indices = mapped_indices
 
         if not return_distances:
             return indices
 
+        missing_indices = indices < 0
         if self._distance_correction is not None:
             dists = self._distance_correction(dists)
         elif not self._is_sparse and not reranked:
             # Dense searches return views into the reused query workspace; copy
             # so results survive later queries.
             dists = dists.copy()
+        if np.any(missing_indices):
+            dists = dists.copy()
+            dists[missing_indices] = np.inf
 
         return indices, dists
 
@@ -3182,7 +3197,8 @@ class NNDescent:
         Returns
         -------
         indices: array of shape (n_queries, k)
-            The indices of the nearest neighbors of each query point.
+            The indices of the nearest neighbors of each query point. Missing
+            neighbors are represented by ``-1``.
         """
         return self.query(
             query_data,
@@ -3662,11 +3678,13 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         if self.verbose:
             print(ts(), "Constructing neighbor matrix")
         result = coo_array((n_samples_transform, self.n_samples_fit), dtype=np.float32)
-        result.row = np.repeat(
+        valid_indices = indices >= 0
+        rows = np.repeat(
             np.arange(indices.shape[0], dtype=np.int32), indices.shape[1]
-        )
-        result.col = indices.ravel()
-        result.data = distances.ravel()
+        ).reshape(indices.shape)
+        result.row = rows[valid_indices]
+        result.col = indices[valid_indices]
+        result.data = distances[valid_indices]
 
         return result.tocsr()
 

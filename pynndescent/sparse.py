@@ -1153,12 +1153,16 @@ def finish_query_sparse_alternative_cosine(indices, distances, vertex_order):
     out_distances = np.empty((n, k), dtype=np.float64)
     for i in range(n):
         for j in range(k):
-            out_indices[i, j] = vertex_order[indices[i, j]]
-            d = np.float64(distances[i, j])
-            if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
-                out_distances[i, j] = 0.0
+            if indices[i, j] < 0:
+                out_indices[i, j] = -1
+                out_distances[i, j] = np.inf
             else:
-                out_distances[i, j] = 1.0 - pow(2.0, -d)
+                out_indices[i, j] = vertex_order[indices[i, j]]
+                d = np.float64(distances[i, j])
+                if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
+                    out_distances[i, j] = 0.0
+                else:
+                    out_distances[i, j] = 1.0 - pow(2.0, -d)
     return out_indices, out_distances
 
 
@@ -1170,10 +1174,14 @@ def finish_query_sparse_alternative_hellinger(indices, distances, vertex_order):
     out_distances = np.empty((n, k), dtype=np.float64)
     for i in range(n):
         for j in range(k):
-            out_indices[i, j] = vertex_order[indices[i, j]]
-            d = np.float64(distances[i, j])
-            if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
-                out_distances[i, j] = 0.0
+            if indices[i, j] < 0:
+                out_indices[i, j] = -1
+                out_distances[i, j] = np.inf
             else:
-                out_distances[i, j] = np.sqrt(1.0 - pow(2.0, -d))
+                out_indices[i, j] = vertex_order[indices[i, j]]
+                d = np.float64(distances[i, j])
+                if isclose(0.0, abs(d), atol=1e-7) or d < 0.0:
+                    out_distances[i, j] = 0.0
+                else:
+                    out_distances[i, j] = np.sqrt(1.0 - pow(2.0, -d))
     return out_indices, out_distances
