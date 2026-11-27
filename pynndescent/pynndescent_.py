@@ -61,6 +61,7 @@ from pynndescent.utils import (
 
 from pynndescent.kernels import (
     KERNEL_ALT_DOT,
+    KERNEL_MIPS,
     KERNEL_PROXY_IP_QUERY,
     KERNEL_SQEUCLIDEAN,
     select_kernel,
@@ -857,6 +858,41 @@ def _quantize_int8_rows(data):
     return np.ascontiguousarray(scaled.astype(np.int8))
 
 
+def _mips_augment(data, max_norm):
+    """Append ``sqrt(max_norm**2 - |x|**2)`` to each row, so that all rows have
+    norm ``max_norm`` and, for a query padded with a zero, euclidean order is
+    inner-product order: ``|q' - x'|**2 = |q|**2 + max_norm**2 - 2 <q, x>``."""
+    data = np.asarray(data, dtype=np.float32)
+    squared_norms = np.einsum("ij,ij->i", data, data)
+    if squared_norms.size and squared_norms.max() > np.float32(max_norm) ** 2 * (
+        1.0 + 1e-5
+    ):
+        raise ValueError(
+            "With metric='mips' new data may not have a larger norm than the "
+            "data the index was built on; build a new index instead"
+        )
+    augmented = np.empty((data.shape[0], data.shape[1] + 1), dtype=np.float32)
+    augmented[:, :-1] = data
+    augmented[:, -1] = np.sqrt(
+        np.maximum(np.float32(max_norm) ** 2 - squared_norms, 0.0)
+    )
+    return augmented
+
+
+def _mips_pad_queries(query_data, n_features):
+    """Pad queries with a zero feature for a ``metric='mips'`` index; returns
+    the padded queries and their squared norms."""
+    query_data = np.asarray(query_data, dtype=np.float32)
+    if query_data.ndim != 2 or query_data.shape[1] != n_features:
+        raise ValueError(
+            "query_data must be a 2-D array with "
+            f"{n_features} features, got shape {query_data.shape}"
+        )
+    padded = np.zeros((query_data.shape[0], n_features + 1), dtype=np.float32)
+    padded[:, :-1] = query_data
+    return padded, np.einsum("ij,ij->i", query_data, query_data)
+
+
 def _int8_code_inv_norms(codes):
     """Return reciprocal L2 norms for rows of signed-int8 codes."""
     float_codes = codes.astype(np.float32)
@@ -911,11 +947,24 @@ class NNDescent:
             * yule
             * hellinger
             * wasserstein-1d
+            * mips
 
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
         appropriately; this will hopefully be fixed in the future.
+
+        ``mips`` (maximum inner product search, dense data only) finds the
+        points with the largest inner product with each query, without
+        normalizing the data. The index appends ``sqrt(M**2 - |x|**2)``, where
+        ``M`` is the largest norm in the data, to each point and queries are
+        padded with a zero, so that euclidean distance on the augmented data
+        orders points by inner product; the index is otherwise a euclidean
+        one. Query distances are negative inner products. As the augmented
+        distances share a large constant term, ``mips`` searches need much
+        smaller ``epsilon`` values than other metrics for the same recall
+        (typically 0.002 to 0.05 rather than the default 0.1, which can come
+        close to an exhaustive search).
 
     metric_kwds: dict (optional, default {})
         Arguments to pass on to the metric, such as the ``p`` value for
@@ -1301,6 +1350,15 @@ class NNDescent:
             data = normalize(data, norm="l2", copy=copy_on_normalize)
             self._raw_data = data
 
+        self._mips_max_norm = None
+        if metric == "mips":
+            if issparse(data):
+                raise ValueError("metric='mips' is only supported for dense data")
+            max_norm = np.sqrt(np.einsum("ij,ij->i", data, data).max(initial=0.0))
+            self._mips_max_norm = np.float32(max_norm)
+            data = _mips_augment(data, self._mips_max_norm)
+            self._raw_data = data
+
         self.rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
         )
@@ -1513,6 +1571,10 @@ class NNDescent:
             self._true_distance_func = pynnd_dist.proxy_distances[self.metric][
                 "true_dist"
             ]
+        elif self.metric == "mips":
+            # A euclidean index on the augmented data (see _mips_augment);
+            # query() turns its squared distances into inner products.
+            _distance_func = pynnd_dist.squared_euclidean
         elif self.metric in pynnd_dist.named_distances:
             if self.metric in pynnd_dist.fast_distance_alternatives:
                 _distance_func = pynnd_dist.fast_distance_alternatives[self.metric][
@@ -1567,6 +1629,8 @@ class NNDescent:
         return result
 
     def __setstate__(self, d):
+        # Indexes pickled before metric='mips' existed have no augmented data.
+        d.setdefault("_mips_max_norm", None)
         self.__dict__ = d
         self._set_distance_func()
         if self._is_sparse:
@@ -2760,8 +2824,17 @@ class NNDescent:
             neighbors and the distances to them, sorted by increasing distance.
             Each point is listed as its own first neighbor (at distance 0). Rows
             with fewer neighbors found are padded with -1 indices. Returns None,
-            with a warning, for compressed indexes.
+            with a warning, for compressed indexes. Not available for
+            ``metric='mips'``.
         """
+        if self._mips_max_norm is not None:
+            # The graph holds euclidean neighbours of the augmented points, whose
+            # distances |x' - y'|**2 = 2 M**2 - 2 <x, y> - 2 a_x a_y depend on
+            # the appended features a; it is not an inner-product k-NN graph.
+            raise NotImplementedError(
+                "metric='mips' indexes have no inner-product neighbor graph; "
+                "query the index with its data for one"
+            )
         if self.compressed and not hasattr(self, "_neighbor_graph"):
             warn("Compressed indexes do not have neighbor graph information.")
             return None
@@ -2842,11 +2915,13 @@ class NNDescent:
                 f"query_sample is not supported with {self.quantization} quantization"
             )
         query_sample = check_array(query_sample, dtype=np.float32, order="C")
-        if query_sample.shape[1] != self._raw_data.shape[1]:
+        if query_sample.shape[1] != self.dim:
             raise ValueError(
-                f"query_sample must have {self._raw_data.shape[1]} features, "
+                f"query_sample must have {self.dim} features, "
                 f"got {query_sample.shape[1]}"
             )
+        if self._mips_max_norm is not None:
+            query_sample, _ = _mips_pad_queries(query_sample, self.dim)
         if self._normalized_data:
             norms = np.linalg.norm(query_sample, axis=1, keepdims=True)
             query_sample = query_sample / np.where(norms > 0, norms, 1).astype(np.float32)
@@ -2882,10 +2957,17 @@ class NNDescent:
         helper.rng_state = self.rng_state.copy()
         helper.search_rng_state = self.search_rng_state.copy()
         helper.prepare()
-        indices, _ = helper.query(
-            query_sample, k=min(k, self._raw_data.shape[0]), epsilon=0.1
+        # The sample is already in the indexed data's form (normalized or padded).
+        return helper._query(
+            query_sample,
+            min(k, self._raw_data.shape[0]),
+            0.1,
+            None,
+            None,
+            None,
+            False,
+            False,
         )
-        return indices
 
     def prepare(self, compile_search=False, query_sample=None, query_neighbors=None):
         """Prepare the index for querying.
@@ -3152,25 +3234,33 @@ class NNDescent:
         ):
             raise ValueError(
                 f"{self.quantization} quantization supports dense float32 data with "
-                "euclidean, cosine or dot metrics and tree initialisation"
+                "euclidean, cosine, dot or mips metrics and tree initialisation"
             )
+        mips = self._mips_max_norm is not None
+        if mips:
+            kernel = KERNEL_MIPS
         bits = 8 if self.quantization == "sq8" else 4
         if not hasattr(self, "_sq_codes"):
-            # The data has already been reordered to match the search tree.
-            encoded = data
+            # The data has already been reordered to match the search tree. For
+            # mips only the original features are coded: queries never weight
+            # the appended one (see quantized_search).
+            encoded = data[:, :-1] if mips else data
+            query_pca_sample = getattr(self, "_query_pca_sample", None)
+            if mips and query_pca_sample is not None:
+                query_pca_sample = query_pca_sample[:, :-1]
             self._sq_projection = None
             dims = getattr(self, "quantization_dims", None)
             if dims is not None:
                 # Search over codes of the top principal components only;
                 # reranking still uses every feature.
                 self._sq_projection = fit_pca_projection(
-                    data,
+                    encoded,
                     dims,
                     random_state=int(self.rng_state[0]) & 0x7FFFFFFF,
-                    extra=getattr(self, "_query_pca_sample", None),
+                    extra=query_pca_sample,
                 )
                 if self._sq_projection is not None:
-                    encoded = project_rows(data, *self._sq_projection)
+                    encoded = project_rows(encoded, *self._sq_projection)
             clip = getattr(self, "_sq_clip_quantile", self._sq_clip_quantiles[bits])
             self._sq_offsets, self._sq_scales = fit_scalar_quantizer(
                 encoded,
@@ -3197,7 +3287,8 @@ class NNDescent:
             rerank_scale = self._sq_rerank_scale
 
         angular = self.metric in ("cosine", "direct_cosine", "dot")
-        min_distance = self._min_distance if kernel == KERNEL_SQEUCLIDEAN else 0.0
+        # mips distances are squared euclidean ones on the augmented data
+        min_distance = self._min_distance if kernel != KERNEL_ALT_DOT else 0.0
         self._search_function = make_quantized_search_function(
             self._sq_codes,
             data,
@@ -3222,6 +3313,7 @@ class NNDescent:
             projection_mean=projection_mean,
             integer_query=integer_query,
             vertex_order=self._vertex_order,
+            mips_norm2=float(self._mips_max_norm) ** 2 if mips else 0.0,
         )
         self._uses_cached_search = True
         self._deheap_function = deheap_sort_serial
@@ -3340,7 +3432,8 @@ class NNDescent:
             controls the trade-off between accuracy and search cost. Larger values
             produce more accurate nearest neighbor results at larger computational
             cost for the search. Values should be in the range 0.0 to 0.5, but
-            should probably not exceed 0.3 without good reason.
+            should probably not exceed 0.3 without good reason (``mips``
+            indexes need much smaller values; see the class documentation).
 
         proxy_beam_size: int or None (optional, default=None)
             Backward-compatible multiplier for the proxy candidate width.
@@ -3386,6 +3479,78 @@ class NNDescent:
 
             If ``return_distances`` is False only ``indices`` is returned.
         """
+        if self._mips_max_norm is not None:
+            return self._mips_query(
+                query_data,
+                k,
+                epsilon,
+                proxy_beam_size,
+                candidate_width,
+                rerank_width,
+                return_distances,
+                pre_normalized,
+            )
+        return self._query(
+            query_data,
+            k,
+            epsilon,
+            proxy_beam_size,
+            candidate_width,
+            rerank_width,
+            return_distances,
+            pre_normalized,
+        )
+
+    def _mips_query(
+        self,
+        query_data,
+        k,
+        epsilon,
+        proxy_beam_size,
+        candidate_width,
+        rerank_width,
+        return_distances,
+        pre_normalized,
+    ):
+        """query() for metric='mips': searches with zero-padded queries and
+        returns negative inner products as distances."""
+        if pre_normalized:
+            raise ValueError(
+                "pre_normalized is only supported for dense cosine, direct_cosine "
+                "and dot"
+            )
+        query_data, query_squared_norms = _mips_pad_queries(query_data, self.dim)
+        result = self._query(
+            query_data,
+            k,
+            epsilon,
+            proxy_beam_size,
+            candidate_width,
+            rerank_width,
+            return_distances,
+            False,
+        )
+        if not return_distances:
+            return result
+        indices, dists = result
+        # |q' - x'|**2 = |q|**2 + M**2 - 2 <q, x>
+        dists = np.float32(0.5) * (
+            dists - query_squared_norms[:, None] - self._mips_max_norm**2
+        )
+        return indices, dists
+
+    def _query(
+        self,
+        query_data,
+        k,
+        epsilon,
+        proxy_beam_size,
+        candidate_width,
+        rerank_width,
+        return_distances,
+        pre_normalized,
+    ):
+        """query() on the indexed data as stored (see query for the parameters)."""
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
 
@@ -3660,15 +3825,26 @@ class NNDescent:
         indices: array of shape (n_queries, k)
             The indices of the nearest neighbors of each query point.
         """
-        return self.query(
+        if self._mips_max_norm is not None:
+            return self._mips_query(
+                query_data,
+                k,
+                epsilon,
+                proxy_beam_size,
+                candidate_width,
+                rerank_width,
+                False,
+                pre_normalized,
+            )
+        return self._query(
             query_data,
-            k=k,
-            epsilon=epsilon,
-            proxy_beam_size=proxy_beam_size,
-            candidate_width=candidate_width,
-            rerank_width=rerank_width,
-            return_distances=False,
-            pre_normalized=pre_normalized,
+            k,
+            epsilon,
+            proxy_beam_size,
+            candidate_width,
+            rerank_width,
+            False,
+            pre_normalized,
         )
 
     def update(self, xs_fresh=None, xs_updated=None, updated_indices=None):
@@ -3758,6 +3934,10 @@ class NNDescent:
             )
             if self.metric == "dot":
                 xs_fresh = normalize(xs_fresh, norm="l2", copy=True)
+            if self._mips_max_norm is not None:
+                xs_fresh = _mips_augment(xs_fresh, self._mips_max_norm)
+        if self._mips_max_norm is not None and len(updated_indices) > 0:
+            xs_updated = _mips_augment(xs_updated, self._mips_max_norm)
         # data preparation
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)

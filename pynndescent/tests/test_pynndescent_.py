@@ -596,6 +596,138 @@ def test_proxy_inner_product_search_ranks_by_inner_product(
     np.testing.assert_array_equal(indices, expected)
 
 
+def _mips_data():
+    # Varied norms, so that the largest inner products are not the best angles
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(300, 8)) * rng.uniform(0.2, 3.0, size=(300, 1))
+    queries = rng.normal(size=(20, 8))
+    return data.astype(np.float32), queries.astype(np.float32)
+
+
+@pytest.mark.parametrize("quantization", [None, "sq8", "sq4"])
+@pytest.mark.parametrize("parallel_batch_queries", [False, True])
+def test_mips_query_ranks_by_inner_product(quantization, parallel_batch_queries):
+    data, queries = _mips_data()
+    index = NNDescent(
+        data,
+        "mips",
+        n_neighbors=15,
+        random_state=42,
+        quantization=quantization,
+        parallel_batch_queries=parallel_batch_queries,
+    )
+
+    indices, distances = index.query(queries, k=10, epsilon=0.5, candidate_width=60)
+
+    inner_products = queries @ data.T
+    expected = np.argsort(-inner_products, axis=1)[:, :10]
+    np.testing.assert_array_equal(indices, expected)
+    np.testing.assert_allclose(
+        distances, -np.take_along_axis(inner_products, indices, 1), atol=1e-4
+    )
+    np.testing.assert_array_equal(
+        index.query_indices(queries, k=10, epsilon=0.5, candidate_width=60), indices
+    )
+    restored = pickle.loads(pickle.dumps(index))
+    np.testing.assert_array_equal(
+        restored.query(queries, k=10, epsilon=0.5, candidate_width=60)[0], indices
+    )
+
+
+def _mips_recall(indices, queries, data):
+    expected = np.argsort(-(queries @ data.T), axis=1)[:, : indices.shape[1]]
+    return np.mean(
+        [len(set(a) & set(b)) / indices.shape[1] for a, b in zip(indices, expected)]
+    )
+
+
+@pytest.mark.parametrize("quantization", ["sq8", "sq4"])
+@pytest.mark.parametrize("integer_query", [True, False])
+@pytest.mark.parametrize("rerank_precision", ["float32", "float16"])
+def test_mips_quantized_search(quantization, integer_query, rerank_precision):
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(2000, 32)) * rng.uniform(0.2, 3.0, size=(2000, 1))
+    data = data.astype(np.float32)
+    queries = rng.normal(size=(30, 32)).astype(np.float32)
+    index = NNDescent(
+        data,
+        "mips",
+        n_neighbors=15,
+        random_state=42,
+        quantization=quantization,
+        rerank_precision=rerank_precision,
+    )
+    index._sq_integer_query = integer_query
+
+    indices, distances = index.query(queries, k=10, epsilon=0.1, candidate_width=100)
+
+    # Codes cover only the original features, not the appended one
+    assert index._sq_offsets.shape[0] == data.shape[1]
+    assert _mips_recall(indices, queries, data) >= 0.95
+    atol = 0.05 if rerank_precision == "float16" else 1e-3
+    np.testing.assert_allclose(
+        distances, -np.take_along_axis(queries @ data.T, indices, 1), atol=atol
+    )
+
+
+def test_mips_quantized_search_with_projection_and_query_sample():
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(2000, 32)) * rng.uniform(0.2, 3.0, size=(2000, 1))
+    data = data.astype(np.float32)
+    queries = rng.normal(size=(30, 32)).astype(np.float32)
+    sample = rng.normal(size=(300, 32)).astype(np.float32)
+    index = NNDescent(
+        data,
+        "mips",
+        n_neighbors=15,
+        random_state=42,
+        quantization="sq8",
+        quantization_dims=24,
+    )
+    index.prepare(query_sample=sample)
+
+    indices = index.query_indices(queries, k=10, epsilon=0.1, candidate_width=150)
+
+    assert index._sq_codes.shape[0] == data.shape[0]
+    assert _mips_recall(indices, queries, data) >= 0.9
+
+
+def test_mips_has_no_neighbor_graph():
+    # Its k-NN graph is built on the augmented data, so does not rank by inner product
+    data, _ = _mips_data()
+    index = NNDescent(data, "mips", n_neighbors=15, random_state=42)
+    with pytest.raises(NotImplementedError):
+        index.neighbor_graph
+
+
+def test_mips_query_sample_and_update():
+    data, queries = _mips_data()
+    expected = np.argsort(-(queries @ data.T), axis=1)[:, :10]
+    index = NNDescent(data[:250], "mips", n_neighbors=15, random_state=42)
+    with pytest.raises(ValueError, match="larger norm"):
+        index.update(xs_fresh=data[250:] * 100)
+
+    # Only points that do not exceed the indexed norms can be added
+    fresh = data[250:] * 0.1
+    index.update(xs_fresh=fresh)
+    combined = np.vstack([data[:250], fresh])
+    combined_expected = np.argsort(-(queries @ combined.T), axis=1)[:, :10]
+    np.testing.assert_array_equal(
+        index.query(queries, k=10, epsilon=0.5)[0], combined_expected
+    )
+
+    rng = np.random.default_rng(1)
+    sample = rng.normal(size=(100, 8)).astype(np.float32)
+    adapted = NNDescent(data, "mips", n_neighbors=15, random_state=42)
+    adapted.prepare(query_sample=sample)
+    np.testing.assert_array_equal(adapted.query(queries, k=10, epsilon=0.5)[0], expected)
+
+
+def test_mips_rejects_sparse_data(sparse_nn_data):
+    with pytest.raises(ValueError, match="dense"):
+        NNDescent(sparse_nn_data, "mips", n_neighbors=10)
+
+
 def test_direct_cosine_int8_quantized_query(nn_data):
     train = nn_data[200:]
     queries = nn_data[:50]

@@ -19,6 +19,15 @@ euclidean the code distance is ``sum_i scale_i**2 * (z_i - c_i)**2`` with
 ``z = (q - offset) / scale``; for dot it is ``1 - (sum_i q_i offset_i +
 sum_i q_i scale_i c_i)``, which approximates ``1 - <q, x>``.
 
+A ``metric='mips'`` index (``KERNEL_MIPS``) is a euclidean index of the data
+augmented with ``a = sqrt(M**2 - |x|**2)``, searched with queries padded with a
+zero, so its squared distances are ``|q|**2 + M**2 - 2 <q, x>``. Its codes are of
+the original features only and its code distance is that expression, with the
+dot code distance's estimate of ``<q, x>``: the appended feature, which the
+queries never weight, takes no code space, and its quantization error (which
+would enter a squared euclidean code distance through the per-row norm) none of
+the distances.
+
 Optionally (``quantization_dims``) the codes are of ``P^T (x - mean)`` for the
 top principal axes ``P`` instead of ``x``, and the query is projected the same
 way once (``<q, x> ~ <q, mean> + <P^T q, P^T (x - mean)>``); reranking still
@@ -43,6 +52,7 @@ from pynndescent.distances import alternative_dot, squared_euclidean
 from pynndescent.integer_dot import aligned_padded_codes, dot4_u4, dot4_u8, dot_u4, dot_u8
 from pynndescent.kernels import (
     KERNEL_ALT_DOT,
+    KERNEL_MIPS,
     KERNEL_SQEUCLIDEAN,
     alt_dot_from_dot,
     four_distances_at,
@@ -293,6 +303,7 @@ _FIELDS = [
     "prefetch_lines",
     "rerank_prefetch_lines",
     "adjacency_lines",
+    "mips_norm2",
 ]
 structref.define_proxy(QuantizedSearchIndex, QuantizedSearchIndexType, _FIELDS)
 
@@ -304,7 +315,7 @@ def _new_quantized_search_index(
     code_norms, adjacency, tree_hyperplanes,
     tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
     n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
-    prefetch_lines, rerank_prefetch_lines, adjacency_lines,
+    prefetch_lines, rerank_prefetch_lines, adjacency_lines, mips_norm2,
 ):
     return QuantizedSearchIndex(
         codes, data, rerank16, rerank_scale, rerank_half, projection8,
@@ -312,7 +323,7 @@ def _new_quantized_search_index(
         code_norms, adjacency, tree_hyperplanes,
         tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
         n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
-        prefetch_lines, rerank_prefetch_lines, adjacency_lines,
+        prefetch_lines, rerank_prefetch_lines, adjacency_lines, mips_norm2,
     )
 
 
@@ -542,7 +553,7 @@ def _four_float_code_distances(kernel, bits, a, b, base, codes, pending, r, out)
 @numba.njit(inline="always", fastmath=True)
 def _transform_query(kernel, bits, query, q_offsets, q_scales):
     """Return (a, b, base): the query in the form the code distances use."""
-    dim = query.shape[0]
+    dim = q_offsets.shape[0]  # a padded mips query has a feature more than the codes
     if bits == 8:
         a = np.empty(dim, dtype=np.float32)
         b = np.empty(dim, dtype=np.float32)
@@ -573,16 +584,19 @@ def _transform_query(kernel, bits, query, q_offsets, q_scales):
 
 
 @numba.njit(inline="always", fastmath=True)
-def _integer_query(kernel, bits, query, shift, q_offsets, q_scales, code_means, code_norms):
+def _integer_query(
+    kernel, bits, query, shift, mips_const, q_offsets, q_scales, code_means, code_norms
+):
     """The query as int8 weights ``w`` with ``d ~ offset + scale * <w, c> (+ norm)``.
 
     Both distances are linear in the codes: ``|q - x|^2 = |q - o|^2 - 2 <u, c> +
     |s c|^2`` and ``1 - <q, x> = 1 - <q, o> - <u, c>``, with ``u = s (q - o)``
-    (euclidean) or ``s q`` (dot). ``u`` is rounded to ``step * w``; the rounding's
+    (euclidean) or ``s q`` (dot and mips; mips distances are
+    ``mips_const - 2 <q, x>``). ``u`` is rounded to ``step * w``; the rounding's
     expected effect over the data, ``sum_j (step w_j - u_j) mean_j``, is
     subtracted, so the rounding mostly adds the same amount to every candidate.
     """
-    dim = query.shape[0]
+    dim = q_offsets.shape[0]  # a padded mips query has a feature more than the codes
     halves = code_means.shape[0]
     width = code_means.shape[1]
     u = np.zeros((halves, width), dtype=np.float32)
@@ -616,18 +630,21 @@ def _integer_query(kernel, bits, query, shift, q_offsets, q_scales, code_means, 
             correction += (step * w - u[h, t]) * code_means[h, t]
     if kernel == KERNEL_SQEUCLIDEAN:
         return weights, total + np.float32(2.0) * correction, np.float32(-2.0) * step, code_norms
+    if kernel == KERNEL_MIPS:
+        two = np.float32(2.0)
+        return weights, mips_const - two * (total + shift - correction), -two * step, code_norms
     return weights, np.float32(1.0) - (total + shift) + correction, -step, code_norms
 
 
 @numba.njit(inline="always", fastmath=True)
-def _query_state(integer, kernel, bits, query, shift, index):
+def _query_state(integer, kernel, bits, query, shift, mips_const, index):
     """The transformed query, ``(a, b, base, weights, offset, scale, norms)``: the
-    float kernels use ``(a, b, base)``, the integer kernels the rest (the unused
-    entries are empty)."""
+    float kernels use ``(a, b, base)`` (and, for mips, ``offset``), the integer
+    kernels the rest (the unused entries are empty)."""
     if integer:
         weights, offset, scale, norms = _integer_query(
-            kernel, bits, query, shift, index.q_offsets, index.q_scales, index.code_means,
-            index.code_norms,
+            kernel, bits, query, shift, mips_const, index.q_offsets, index.q_scales,
+            index.code_means, index.code_norms,
         )
         a = np.zeros((1, 0), dtype=np.float32)
         b = np.zeros((1, 0), dtype=np.float32)
@@ -636,7 +653,8 @@ def _query_state(integer, kernel, bits, query, shift, index):
         a, b, base = _transform_query(kernel, bits, query, index.q_offsets, index.q_scales)
         base += shift
         weights = np.zeros((1, 0), dtype=np.int8)
-        offset = np.float32(0.0)
+        # mips: the dot code distance d = 1 - <q, x> becomes 2 d + offset
+        offset = mips_const - np.float32(2.0) if kernel == KERNEL_MIPS else np.float32(0.0)
         scale = np.float32(0.0)
         norms = index.code_norms
     return a, b, base, weights, offset, scale, norms
@@ -661,7 +679,10 @@ def _code_distance(kernel, bits, integer, state, codes, candidate):
         return _integer_code_distance(
             kernel, bits, state[3], state[4], state[5], state[6], codes, candidate
         )
-    return _float_code_distance(kernel, bits, state[0], state[1], state[2], codes[candidate])
+    d = _float_code_distance(kernel, bits, state[0], state[1], state[2], codes[candidate])
+    if kernel == KERNEL_MIPS:
+        d = np.float32(2.0) * d + state[4]
+    return d
 
 
 @numba.njit(inline="always", fastmath=True)
@@ -698,6 +719,9 @@ def _four_code_distances(kernel, bits, integer, state, codes, pending, r, out):
         _four_float_code_distances(
             kernel, bits, state[0], state[1], state[2], codes, pending, r, out
         )
+        if kernel == KERNEL_MIPS:
+            for s in range(4):
+                out[s] = np.float32(2.0) * out[s] + state[4]
 
 
 @numba.njit(inline="always")
@@ -714,7 +738,7 @@ def _prefetch_code(integer, state, codes, candidate, n_lines):
 def _project_query(kernel, query, projection8, projection_scale, mean):
     """The query in the projected code space, and the dot product term lost by
     centring (zero for squared euclidean, where the query is centred instead)."""
-    dim = query.shape[0]
+    dim = projection8.shape[0]  # a padded mips query has a feature more
     n_components = projection8.shape[1]
     out = np.zeros(n_components, dtype=np.float32)
     shift = np.float32(0.0)
@@ -905,18 +929,24 @@ def _four_half_sums(kernel, x, y0, y1, y2, y3):
 
 
 @numba.njit(fastmath=True, inline="always")
-def _half_distance(kernel, s, factor):
+def _half_distance(kernel, s, factor, mips_const):
     if kernel == KERNEL_SQEUCLIDEAN:
         return np.float32(s * factor)
+    if kernel == KERNEL_MIPS:
+        return mips_const - np.float32(2.0) * s
     return alt_dot_from_dot(s)
 
 
 @numba.njit(inline="always", fastmath=True)
 def _rerank_half(
     query, candidates, n_rerank, rerank16, scale, out_priorities, out_indices, kernel,
-    prefetch_lines,
+    prefetch_lines, mips_const,
 ):
-    """As ``_rerank``, from the float16 copy ``rerank16`` (= data / scale)."""
+    """As ``_rerank``, from the float16 copy ``rerank16`` (= data / scale).
+
+    mips distances are ``mips_const - 2 <q, y>``: the padded query's zero leaves the
+    appended feature out, so its float16 rounding (large, as the feature is) does
+    not enter them, as it would a squared euclidean distance."""
     if prefetch_lines > 0:
         for j in range(n_rerank):
             prefetch_row(rerank16, candidates[j], prefetch_lines)
@@ -941,16 +971,26 @@ def _rerank_half(
         s0, s1, s2, s3 = _four_half_sums(
             kernel, x, rerank16[c0], rerank16[c1], rerank16[c2], rerank16[c3]
         )
-        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s0, factor), c0)
-        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s1, factor), c1)
-        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s2, factor), c2)
-        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s3, factor), c3)
+        simple_heap_push(
+            out_priorities, out_indices, _half_distance(kernel, s0, factor, mips_const), c0
+        )
+        simple_heap_push(
+            out_priorities, out_indices, _half_distance(kernel, s1, factor, mips_const), c1
+        )
+        simple_heap_push(
+            out_priorities, out_indices, _half_distance(kernel, s2, factor, mips_const), c2
+        )
+        simple_heap_push(
+            out_priorities, out_indices, _half_distance(kernel, s3, factor, mips_const), c3
+        )
         r += 4
     while r < n_rerank:
         c = candidates[r]
         row = rerank16[c]
         s0, _, _, _ = _four_half_sums(kernel, x, row, row, row, row)
-        simple_heap_push(out_priorities, out_indices, _half_distance(kernel, s0, factor), c)
+        simple_heap_push(
+            out_priorities, out_indices, _half_distance(kernel, s0, factor, mips_const), c
+        )
         r += 1
 
 
@@ -979,14 +1019,22 @@ def _search_quantized_serial(
         )
         if not ok:
             continue
+        mips_const = np.float32(0.0)
+        if kernel == KERNEL_MIPS:
+            # |q|**2 + M**2, so that distances are squared euclidean on the augmented data
+            for t in range(current_query.shape[0]):
+                mips_const += current_query[t] * current_query[t]
+            mips_const += index.mips_norm2
         if index.projection8.shape[1] > 0:
             projected, shift = _project_query(
                 kernel, current_query, index.projection8, index.projection_scale,
                 index.projection_mean,
             )
-            state = _query_state(integer, kernel, bits, projected, shift, index)
+            state = _query_state(integer, kernel, bits, projected, shift, mips_const, index)
         else:
-            state = _query_state(integer, kernel, bits, current_query, np.float32(0.0), index)
+            state = _query_state(
+                integer, kernel, bits, current_query, np.float32(0.0), mips_const, index
+            )
         _search_codes(
             state, tree_current_query, cand_priorities, cand_indices, n_candidates,
             epsilon, visited, internal_rng_state, codes, index.adjacency,
@@ -1011,12 +1059,14 @@ def _search_quantized_serial(
         if index.rerank_half:
             _rerank_half(
                 current_query, cand_indices, n_rerank, index.rerank16, index.rerank_scale,
-                out_priorities, out_indices, kernel, index.rerank_prefetch_lines,
+                out_priorities, out_indices, kernel, index.rerank_prefetch_lines, mips_const,
             )
         else:
+            # mips: exact squared euclidean distances on the augmented data
             _rerank(
                 current_query, cand_indices, n_rerank, data, out_priorities, out_indices,
-                kernel, index.rerank_prefetch_lines,
+                KERNEL_SQEUCLIDEAN if kernel == KERNEL_MIPS else kernel,
+                index.rerank_prefetch_lines,
             )
     return result
 
@@ -1147,6 +1197,47 @@ def search_sq4_alternative_dot_int(
     )
 
 
+@numba.njit(fastmath=True, cache=True)
+def search_sq8_mips(
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
+):
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_MIPS, 8, False,
+    )
+
+@numba.njit(fastmath=True, cache=True)
+def search_sq8_mips_int(
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
+):
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_MIPS, 8, True,
+    )
+
+@numba.njit(fastmath=True, cache=True)
+def search_sq4_mips(
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
+):
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_MIPS, 4, False,
+    )
+
+@numba.njit(fastmath=True, cache=True)
+def search_sq4_mips_int(
+    index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+    query_is_normalized, rng_state,
+):
+    return _search_and_finish(
+        index, query_points, k, candidate_width, epsilon, rerank_width, visited,
+        query_is_normalized, rng_state, KERNEL_MIPS, 4, True,
+    )
+
+
 _DISPATCH = {
     (8, KERNEL_SQEUCLIDEAN, False): search_sq8_sqeuclidean,
     (8, KERNEL_ALT_DOT, False): search_sq8_alternative_dot,
@@ -1156,6 +1247,10 @@ _DISPATCH = {
     (8, KERNEL_ALT_DOT, True): search_sq8_alternative_dot_int,
     (4, KERNEL_SQEUCLIDEAN, True): search_sq4_sqeuclidean_int,
     (4, KERNEL_ALT_DOT, True): search_sq4_alternative_dot_int,
+    (8, KERNEL_MIPS, False): search_sq8_mips,
+    (4, KERNEL_MIPS, False): search_sq4_mips,
+    (8, KERNEL_MIPS, True): search_sq8_mips_int,
+    (4, KERNEL_MIPS, True): search_sq4_mips_int,
 }
 
 
@@ -1173,7 +1268,7 @@ def make_quantized_search_function(
     n_neighbors, min_distance, normalize_query, tree_normalize_query, kernel, bits,
     prefetch_lines=None, rerank_prefetch_lines=None, adjacency_lines=None,
     rerank16=None, rerank_scale=1.0, projection8=None, projection_scale=None,
-    projection_mean=None, integer_query=False, vertex_order=None,
+    projection_mean=None, integer_query=False, vertex_order=None, mips_norm2=0.0,
 ):
     """Bind an index's arrays to the cached quantized search function.
 
@@ -1187,6 +1282,8 @@ def make_quantized_search_function(
     With ``integer_query`` the code distances are integer dot products with
     int8 query weights (``codes`` are then aligned and padded if they are not
     already, see ``aligned_padded_codes``).
+    For ``KERNEL_MIPS`` ``data`` (and ``rerank16``) are the augmented data, the
+    codes are of its features but the last, and ``mips_norm2`` is ``M**2``.
     """
     integer_query = bool(integer_query)
     dispatcher = _DISPATCH[(bits, kernel, integer_query)]
@@ -1214,7 +1311,7 @@ def make_quantized_search_function(
     rerank_half = rerank16 is not None
     if not rerank_half:
         rerank16 = np.empty((0, data.shape[1]), dtype=np.uint16)
-    dim = data.shape[1]
+    dim = q_offsets.shape[0] if kernel == KERNEL_MIPS else data.shape[1]
     if projection8 is None:
         # (dim, 0): the codes are in the data's own coordinates.
         projection8 = np.empty((dim, 0), dtype=np.int8)
@@ -1255,6 +1352,7 @@ def make_quantized_search_function(
         np.int64(prefetch_lines),
         np.int64(rerank_prefetch_lines),
         np.int64(adjacency_lines),
+        np.float32(mips_norm2),
     )
     signature = (
         numba.typeof(index),

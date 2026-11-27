@@ -28,6 +28,10 @@ KERNEL_GENERIC = 0
 KERNEL_SQEUCLIDEAN = 1
 KERNEL_ALT_DOT = 2
 KERNEL_PROXY_IP_QUERY = 3
+# Quantized search of a metric='mips' index (data augmented with sqrt(M**2 - |x|**2),
+# queries padded with a zero): squared euclidean distances on the augmented data,
+# computed as |q|**2 + M**2 - 2 <q, x> (see quantized_search).
+KERNEL_MIPS = 4
 
 
 def select_kernel(dist, data):
