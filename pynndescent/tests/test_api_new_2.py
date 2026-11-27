@@ -286,12 +286,12 @@ def test_nn_descent_internal_refines_random_graph():
 	init_random(k, data, graph, pynnd_dist.euclidean, rng_state)
 	untouched = graph[0].copy()
 	nn_descent_internal(
-		graph, data, k, rng_state, max_candidates=10, dist=pynnd_dist.euclidean,
+		graph, data, k, rng_state, numba.get_num_threads(), max_candidates=10, dist=pynnd_dist.euclidean,
 		n_iters=0, delta=0.001,
 	)
 	np.testing.assert_array_equal(graph[0], untouched)
 	nn_descent_internal(
-		graph, data, k, rng_state, max_candidates=10, dist=pynnd_dist.euclidean,
+		graph, data, k, rng_state, numba.get_num_threads(), max_candidates=10, dist=pynnd_dist.euclidean,
 		n_iters=10, delta=0.001,
 	)
 	indices, dists = deheap_sort(graph[0], graph[1])
@@ -308,7 +308,7 @@ def test_nn_descent_internal_stops_early_with_large_delta():
 		graph = make_heap(80, k)
 		init_random(k, data, graph, pynnd_dist.euclidean, _rng())
 		nn_descent_internal(
-			graph, data, k, rng_state.copy(), max_candidates=10, dist=pynnd_dist.euclidean,
+			graph, data, k, rng_state.copy(), numba.get_num_threads(), max_candidates=10, dist=pynnd_dist.euclidean,
 			n_iters=10, delta=delta,
 		)
 		return _rows_recall(deheap_sort(graph[0], graph[1])[0], truth)
