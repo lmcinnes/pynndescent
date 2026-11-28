@@ -1,13 +1,8 @@
-import sys
+import importlib.metadata as importlib_metadata
 
 import numba
 
 from .pynndescent_ import NNDescent, PyNNDescentTransformer
-
-if sys.version_info[:2] >= (3, 8):
-    import importlib.metadata as importlib_metadata
-else:
-    import importlib_metadata
 
 # Workaround: https://github.com/numba/numba/issues/3341
 if numba.config.THREADING_LAYER == "omp":

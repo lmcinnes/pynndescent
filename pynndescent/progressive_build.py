@@ -27,7 +27,7 @@ import numba
 import numpy as np
 
 from pynndescent.distances import alternative_dot, squared_euclidean
-from pynndescent.integer_dot import dot4_u8, dot_u8
+from pynndescent.integer_dot import MAX_CODE_BYTES, dot4_u8, dot_u8
 from pynndescent.kernels import (
     KERNEL_ALT_DOT,
     KERNEL_SQEUCLIDEAN,
@@ -99,7 +99,7 @@ def progressive_build_applies(kernel, data):
     return (
         kernel in (KERNEL_SQEUCLIDEAN, KERNEL_ALT_DOT)
         and data.ndim == 2
-        and data.shape[1] >= MIN_DIMENSION
+        and MIN_DIMENSION <= data.shape[1] <= MAX_CODE_BYTES
         and data.shape[0] > 1
     )
 

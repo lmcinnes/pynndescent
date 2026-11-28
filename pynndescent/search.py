@@ -90,7 +90,6 @@ _SEARCH_INDEX_FIELDS = [
     "normalize_query",
     "tree_normalize_query",
     "kernel",
-    "max_degree",
     "prefetch_lines",
     "adjacency_lines",
 ]
@@ -282,7 +281,6 @@ def _search_one(
     n_neighbors,
     min_distance,
     kernel,
-    max_degree,
     prefetch_lines,
     adjacency_lines,
 ):
@@ -446,7 +444,6 @@ def _search_dense_serial(
     min_distance = index.min_distance
     normalize_query = index.normalize_query
     tree_normalize_query = index.tree_normalize_query
-    max_degree = index.max_degree
     prefetch_lines = index.prefetch_lines
     adjacency_lines = index.adjacency_lines
     internal_rng_state = np.copy(rng_state)
@@ -468,7 +465,7 @@ def _search_dense_serial(
             epsilon, visited, internal_rng_state, data, adjacency,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
-            max_degree, prefetch_lines, adjacency_lines,
+            prefetch_lines, adjacency_lines,
         )
     return result
 
@@ -523,7 +520,6 @@ def search_dense_parallel(
     min_distance = index.min_distance
     normalize_query = index.normalize_query
     tree_normalize_query = index.tree_normalize_query
-    max_degree = index.max_degree
     prefetch_lines = index.prefetch_lines
     adjacency_lines = index.adjacency_lines
     kernel = index.kernel
@@ -547,7 +543,7 @@ def search_dense_parallel(
             epsilon, visited_nodes, internal_rng_state, data, adjacency,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
-            max_degree, prefetch_lines, adjacency_lines,
+            prefetch_lines, adjacency_lines,
         )
     return result
 
@@ -556,7 +552,7 @@ def search_dense_parallel(
 def _new_search_index(
     data, adjacency, tree_hyperplanes, tree_offsets, tree_children,
     tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
-    normalize_query, tree_normalize_query, kernel, max_degree, prefetch_lines,
+    normalize_query, tree_normalize_query, kernel, prefetch_lines,
     adjacency_lines,
 ):
     # Constructing the structref in a cached function avoids compiling its
@@ -564,7 +560,7 @@ def _new_search_index(
     return SearchIndex(
         data, adjacency, tree_hyperplanes, tree_offsets, tree_children,
         tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
-        normalize_query, tree_normalize_query, kernel, max_degree, prefetch_lines,
+        normalize_query, tree_normalize_query, kernel, prefetch_lines,
         adjacency_lines,
     )
 
@@ -677,7 +673,6 @@ def make_cached_search_function(
         bool(normalize_query),
         bool(tree_normalize_query),
         np.int64(kernel),
-        np.int64(adjacency.shape[1]),
         np.int64(default_prefetch_lines(data) if prefetch_lines is None else prefetch_lines),
         np.int64(adjacency_lines),
     )

@@ -1266,35 +1266,6 @@ def test_update_w_prepare_query_accuracy(nn_data, metric):
     )
 
 
-@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
-def test_update_w_prepare_query_accuracy(nn_data, metric):
-    nnd = NNDescent(
-        nn_data[200:800],
-        metric=metric,
-        n_neighbors=10,
-        random_state=None,
-        compressed=False,
-    )
-    nnd.prepare()
-
-    nnd.update(xs_fresh=nn_data[800:])
-    nnd.prepare()
-
-    knn_indices, _ = nnd.query(nn_data[:200], k=10, epsilon=0.2)
-
-    true_nnd = NearestNeighbors(metric=metric).fit(nn_data[200:])
-    true_indices = true_nnd.kneighbors(nn_data[:200], 10, return_distance=False)
-
-    num_correct = 0.0
-    for i in range(true_indices.shape[0]):
-        num_correct += np.sum(np.isin(true_indices[i], knn_indices[i]))
-
-    percent_correct = num_correct / (true_indices.shape[0] * 10)
-    assert percent_correct >= 0.95, (
-        "NN-descent query did not get 95% " "accuracy on nearest neighbors"
-    )
-
-
 @pytest.mark.parametrize("prepared", [False, True])
 @pytest.mark.parametrize("mode", ["append", "replace", "both"])
 def test_dot_update_distances(mode, prepared):
@@ -2204,6 +2175,60 @@ def test_query_sample_validation():
     sparse_index = NNDescent(scipy.sparse.csr_matrix(data), n_neighbors=10, random_state=42)
     with pytest.raises(NotImplementedError):
         sparse_index.prepare(query_sample=sample)
+
+
+def test_update_with_query_sample():
+    data, sample, queries = _out_of_distribution_problem()
+    fresh = data[6000:]
+    true = _exact_neighbors(data, queries, 10, "euclidean")
+    recalls = {}
+    for mode in ("dropped", "kept"):
+        index = NNDescent(data[:6000], n_neighbors=15, random_state=42)
+        index.prepare(query_sample=sample)
+        if mode == "dropped":
+            with pytest.warns(UserWarning, match="query_sample"):
+                index.update(xs_fresh=fresh)
+        else:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                index.update(xs_fresh=fresh, query_sample=sample)
+        found = index.query_indices(queries, k=10, epsilon=0.0)
+        recalls[mode] = _recall(found, true)
+    assert recalls["kept"] > recalls["dropped"] + 0.1
+    with pytest.raises(ValueError, match="requires query_sample"):
+        index.update(xs_fresh=fresh[:10], query_neighbors=np.zeros((5, 5), dtype=np.int32))
+
+
+@pytest.mark.parametrize(
+    "metric,quantization",
+    [
+        ("euclidean", "binary"),
+        ("euclidean", "uint8"),
+        ("cosine", "int8"),
+        ("euclidean", "sq8"),
+        ("cosine", "sq4"),
+    ],
+)
+def test_update_prepared_quantized_index(metric, quantization):
+    rng = np.random.default_rng(0)
+    data = rng.normal(size=(1500, 16)).astype(np.float32)
+    index = NNDescent(
+        data[:1000], metric=metric, n_neighbors=15, random_state=42,
+        quantization=quantization,
+    )
+    index.prepare()
+    index.update(xs_fresh=data[1000:])
+    fresh_build = NNDescent(
+        data, metric=metric, n_neighbors=15, random_state=42, quantization=quantization
+    )
+    # The fresh points must be quantized and searchable: each should find itself
+    # about as often as in an index built with them from the start
+    self_recall = {}
+    for name, nnd in (("updated", index), ("fresh_build", fresh_build)):
+        found = nnd.query_indices(data[1000:], k=1, epsilon=0.2)
+        self_recall[name] = np.mean(found[:, 0] == np.arange(1000, 1500))
+    assert self_recall["updated"] > self_recall["fresh_build"] - 0.05
+    assert self_recall["updated"] > 0.7
 
 
 def test_query_induced_edges_are_relative_neighbourhood_pruned():

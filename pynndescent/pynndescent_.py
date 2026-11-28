@@ -80,7 +80,7 @@ from pynndescent.progressive_build import (
 )
 from pynndescent.hub_tree import make_hub_search_tree
 from pynndescent.search_graph import build_search_graph, permute_graph, permute_rows
-from pynndescent.integer_dot import aligned_padded_codes
+from pynndescent.integer_dot import MAX_CODE_BYTES, aligned_padded_codes
 from pynndescent.quantized_search import (
     SQ_MODES,
     encode as sq_encode,
@@ -559,7 +559,10 @@ def run_nn_descent(
         and leaf_array is not None
         and leaf_array.shape[1] > 1
         and kernel in (KERNEL_SQEUCLIDEAN, KERNEL_ALT_DOT)
-        and (progressive is True or progressive_build_applies(kernel, data))
+        and (
+            (progressive is True and data.shape[1] <= MAX_CODE_BYTES)
+            or progressive_build_applies(kernel, data)
+        )
     ):
         return progressive_nn_descent(
             data, n_neighbors, rng_state, max_candidates, kernel, n_iters, delta,
@@ -1713,6 +1716,8 @@ class NNDescent:
     def __setstate__(self, d):
         # Indexes pickled before metric='mips' existed have no augmented data.
         d.setdefault("_mips_max_norm", None)
+        if "_vertex_order" in d:
+            d["_vertex_order"] = np.ascontiguousarray(d["_vertex_order"], dtype=np.int32)
         self.__dict__ = d
         self._set_distance_func()
         if self._is_sparse:
@@ -1955,6 +1960,7 @@ class NNDescent:
                     rows = np.sort(rng.choice(rows.shape[0], 100_000, replace=False))
                 self._query_pca_sample = query_sample[rows]
             del self._query_sample, self._query_neighbors
+            self._query_sample_used = True
 
         if self.verbose:
             print(
@@ -2013,7 +2019,9 @@ class NNDescent:
                 for tree in self._search_forest[:1]
             )
         else:
-            self._vertex_order = np.arange(self._raw_data.shape[0])
+            self._vertex_order = np.arange(self._raw_data.shape[0], dtype=np.int32)
+        # Query results are mapped through _vertex_order: keep them int32
+        self._vertex_order = np.ascontiguousarray(self._vertex_order, dtype=np.int32)
 
         n_vertices = self._raw_data.shape[0]
         self._search_graph = csr_array(
@@ -3353,7 +3361,10 @@ class NNDescent:
             self._sq_codes = sq_encode(encoded, self._sq_offsets, self._sq_scales, bits)
             del encoded
             self.__dict__.pop("_query_pca_sample", None)
-        integer_query = bool(getattr(self, "_sq_integer_query", False))
+        integer_query = (
+            bool(getattr(self, "_sq_integer_query", False))
+            and self._sq_codes.shape[1] <= MAX_CODE_BYTES
+        )
         if integer_query or getattr(self, "_sq_align_codes", False):
             self._sq_codes = aligned_padded_codes(self._sq_codes)
         projection = getattr(self, "_sq_projection", None)
@@ -3928,7 +3939,14 @@ class NNDescent:
             pre_normalized,
         )
 
-    def update(self, xs_fresh=None, xs_updated=None, updated_indices=None):
+    def update(
+        self,
+        xs_fresh=None,
+        xs_updated=None,
+        updated_indices=None,
+        query_sample=None,
+        query_neighbors=None,
+    ):
         """
         Updates the index with a) fresh data (that is appended to
         the existing data), and b) data that was only updated (but should not be appended
@@ -3951,6 +3969,18 @@ class NNDescent:
             If self is currently built from xs, then xs[update_indices[i]]
             will be replaced by xs_updated[i].
 
+        query_sample: array of shape (n_samples, n_features) (optional, default=None)
+            Example queries to prepare the updated index for, as in ``prepare``.
+            The sample given to an earlier ``prepare`` is not kept, so if the
+            index was prepared with one, pass it (or a new one) again here to
+            keep the adaptation; otherwise the updated index is prepared
+            without it, with a warning.
+
+        query_neighbors: array of shape (n_samples, n_query_neighbors) (optional, default=None)
+            The indices of each sample query's nearest neighbours in the
+            updated data (the original data followed by ``xs_fresh``), as in
+            ``prepare``. If None they are found with a search of the index.
+
         Returns
         -------
             None
@@ -3958,6 +3988,8 @@ class NNDescent:
         error_sparse_to_do = NotImplementedError("Sparse update not complete yet")
         if self._is_sparse:
             raise error_sparse_to_do
+        if query_neighbors is not None and query_sample is None:
+            raise ValueError("query_neighbors requires query_sample")
         current_random_state = check_random_state(self.random_state)
         rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
             np.int64
@@ -4063,6 +4095,10 @@ class NNDescent:
             raise error_sparse_to_do
         else:
             self.n_trees = self.n_trees_after_update
+            if self.quantization == "binary":
+                # prepare() searches bit trees over the packed codes, but the
+                # forest here is built on the raw data (prepare() resets this)
+                self._bit_trees = False
             leaf_array = self._build_init_forest(
                 self._raw_data, self.n_trees, rng_state, current_random_state
             )
@@ -4119,7 +4155,20 @@ class NNDescent:
                     if hasattr(self, attribute):
                         delattr(self, attribute)
 
-                self.prepare()
+                if query_sample is None and getattr(self, "_query_sample_used", False):
+                    warn(
+                        "This index was prepared with a query_sample, which is not "
+                        "kept; the updated index is prepared without it. Pass "
+                        "query_sample to update() to keep the adaptation."
+                    )
+                self._query_sample_used = False
+                self.prepare(
+                    compile_search=getattr(self, "_compile_search", False),
+                    query_sample=query_sample,
+                    query_neighbors=query_neighbors,
+                )
+            elif query_sample is not None:
+                self.prepare(query_sample=query_sample, query_neighbors=query_neighbors)
 
 
 class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
@@ -4267,6 +4316,24 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
     verbose: bool (optional, default=False)
         Whether to print status graph_data during the computation.
 
+    quantization: string or None (optional, default=None)
+        Quantize the indexed data to speed up the searches of ``transform``
+        (see :class:`NNDescent` for the options and the metrics each supports).
+        The k-neighbor graph of the training data returned by
+        ``fit_transform`` is not affected.
+
+    rerank_precision: string (optional, default="float32")
+        With ``"sq8"`` or ``"sq4"`` quantization, the precision of the data the
+        best candidates are reranked with (see :class:`NNDescent`).
+
+    quantization_dims: int, float or None (optional, default=None)
+        With ``"sq8"`` or ``"sq4"`` quantization, search over codes of the
+        data's top principal components (see :class:`NNDescent`).
+
+    progressive_build: "auto", True or False (optional, default="auto")
+        Whether to run the early phases of index construction on 8-bit codes
+        (see :class:`NNDescent`).
+
     Examples
     --------
     >>> from sklearn.manifold import Isomap
@@ -4297,6 +4364,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         early_termination_value=0.001,
         parallel_batch_queries=False,
         verbose=False,
+        quantization=None,
+        rerank_precision="float32",
+        quantization_dims=None,
+        progressive_build="auto",
     ):
 
         self.n_neighbors = n_neighbors
@@ -4317,6 +4388,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
         self.n_jobs = n_jobs
         self.parallel_batch_queries = parallel_batch_queries
         self.verbose = verbose
+        self.quantization = quantization
+        self.rerank_precision = rerank_precision
+        self.quantization_dims = quantization_dims
+        self.progressive_build = progressive_build
 
     def fit(self, X, compress_index=True):
         """Fit the PyNNDescent transformer to build KNN graphs with
@@ -4371,6 +4446,10 @@ class PyNNDescentTransformer(BaseEstimator, TransformerMixin):
             compressed=compress_index,
             parallel_batch_queries=self.parallel_batch_queries,
             verbose=self.verbose,
+            quantization=self.quantization,
+            rerank_precision=self.rerank_precision,
+            quantization_dims=self.quantization_dims,
+            progressive_build=self.progressive_build,
         )
 
         return self

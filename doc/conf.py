@@ -24,7 +24,12 @@ copyright = "2020, Leland McInnes"
 author = "Leland McInnes"
 
 # The full version, including alpha/beta/rc tags
-release = "0.5.0"
+try:
+    import importlib.metadata
+
+    release = importlib.metadata.version("pynndescent")
+except importlib.metadata.PackageNotFoundError:
+    release = "0.8.0"
 
 master_doc = "index"
 

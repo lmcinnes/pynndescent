@@ -4,3 +4,5 @@ include *.rst
 include requirements.txt
 recursive-include pynndescent *
 prune pynndescent/__pycache__
+prune pynndescent/tests/__pycache__
+global-exclude *.py[cod]

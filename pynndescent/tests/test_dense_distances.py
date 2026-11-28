@@ -815,13 +815,14 @@ def test_tsss_matches_reference_and_identity():
 
 
 def test_true_angular_known_angles():
-	"""Check hand angles (0, 45 and 60 degrees as fractions of pi); pins the current output of FLOAT32_MAX for angles of 90 degrees or more."""
+	"""Check hand angles as fractions of pi, including 90 degrees and more."""
 	x = np.array([1.0, 0.0])
 	assert dist.true_angular(x, np.array([2.0, 0.0])) == pytest.approx(0.0, abs=1e-6)
 	assert dist.true_angular(x, np.array([1.0, 1.0])) == pytest.approx(0.25)
 	assert dist.true_angular(x, np.array([1.0, np.sqrt(3.0)])) == pytest.approx(1.0 / 3.0)
-	assert dist.true_angular(x, np.array([0.0, 1.0])) == FLOAT32_MAX
-	assert dist.true_angular(x, np.array([-1.0, 0.0])) == FLOAT32_MAX
+	assert dist.true_angular(x, np.array([0.0, 1.0])) == pytest.approx(0.5)
+	assert dist.true_angular(x, np.array([-1.0, 1.0])) == pytest.approx(0.75)
+	assert dist.true_angular(x, np.array([-1.0, 0.0])) == pytest.approx(1.0)
 
 
 def test_true_angular_matches_arccos_cosine():
@@ -833,12 +834,25 @@ def test_true_angular_matches_arccos_cosine():
 
 
 def test_true_angular_zero_vectors():
-	"""Pins the current output: two zero vectors give 0, one zero vector gives FLOAT32_MAX."""
+	"""Two zero vectors give 0, one zero vector gives 0.5 (as cosine gives 1)."""
 	z = np.zeros(3)
 	x = np.array([1.0, 2.0, 3.0])
 	assert dist.true_angular(z, z) == 0.0
-	assert dist.true_angular(x, z) == FLOAT32_MAX
-	assert dist.true_angular(z, x) == FLOAT32_MAX
+	assert dist.true_angular(x, z) == 0.5
+	assert dist.true_angular(z, x) == 0.5
+
+
+def test_true_angular_from_cosine_matches_true_angular():
+	"""The fast path (cosine plus correction) matches true_angular at any angle."""
+	rng = np.random.default_rng(0)
+	for _ in range(20):
+		x, y = rng.normal(size=(2, 5))
+		assert dist.true_angular_from_cosine(dist.cosine(x, y)) == pytest.approx(
+			dist.true_angular(x, y), abs=1e-7
+		)
+	assert dist.true_angular_from_cosine(np.array([0.0, 1.0, 2.0])) == pytest.approx(
+		[0.0, 0.5, 1.0]
+	)
 
 
 def test_true_angular_from_alt_cosine_values_and_round_trip():

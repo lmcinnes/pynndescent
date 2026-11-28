@@ -1223,8 +1223,8 @@ def true_angular(x, y):
     .. math::
         D(x, y) = \frac{\arccos\left(\frac{\langle x, y \rangle}{\|x\| \|y\|}\right)}{\pi}
 
-    Returns 0 for identical directions. Non-positive inner products are treated
-    as infinitely far, as in alternative_cosine.
+    Returns 0 if both vectors are zero, and 0.5 (orthogonal) if exactly one
+    is, consistent with cosine distance.
     """
     result = 0.0
     norm_x = 0.0
@@ -1238,17 +1238,28 @@ def true_angular(x, y):
     if norm_x == 0.0 and norm_y == 0.0:
         return 0.0
     elif norm_x == 0.0 or norm_y == 0.0:
-        return FLOAT32_MAX
-    elif result <= 0.0:
-        return FLOAT32_MAX
+        return 0.5
     else:
         result = result / np.sqrt(norm_x * norm_y)
-        return np.arccos(result) / np.pi
+        return np.arccos(min(max(result, -1.0), 1.0)) / np.pi
+
+
+@numba.vectorize(fastmath=True)
+def true_angular_from_cosine(d):
+    r"""Convert cosine distance to true angular distance.
+
+    .. math::
+        D_{angular}(x, y) = \frac{\arccos(1 - D_{cos})}{\pi}
+    """
+    return np.arccos(min(max(1.0 - d, -1.0), 1.0)) / np.pi
 
 
 @numba.vectorize(fastmath=True)
 def true_angular_from_alt_cosine(d):
     r"""Convert alternative cosine distance to true angular distance.
+
+    Only valid for pairs with a positive inner product, which is all that
+    alternative cosine distance distinguishes.
 
     .. math::
         D_{angular}(x, y) = \frac{\arccos(2^{-D_{alt}})}{\pi}
@@ -1496,7 +1507,6 @@ def kantorovich(x, y, cost=_dummy_cost, max_iter=100000):
     )
     initialize_supply(a, -b, graph, node_arc_data.supply)
     initialize_cost(sub_cost, graph, node_arc_data.cost)
-    # initialize_cost(cost, graph, node_arc_data.cost)
     init_status = initialize_graph_structures(graph, node_arc_data, spanning_tree)
     if init_status == False:
         raise ValueError(
@@ -2309,10 +2319,7 @@ fast_distance_alternatives = {
         "dist": alternative_inner_product,
         "correction": correct_alternative_inner_product,
     },
-    "true_angular": {
-        "dist": alternative_cosine,
-        "correction": true_angular_from_alt_cosine,
-    },
+    "true_angular": {"dist": cosine, "correction": true_angular_from_cosine},
     "hellinger": {
         "dist": alternative_hellinger,
         "correction": correct_alternative_hellinger,

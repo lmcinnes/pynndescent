@@ -97,7 +97,7 @@ def query_induced_edges(data, dist, query_neighbors, n_candidates=64, max_edges=
     return indices, distances
 
 
-@numba.njit(parallel=True)
+@numba.njit(parallel=True, cache=True)
 def merge_edge_rows(indices, distances, extra_indices, extra_distances):
     """Append each row's extra edges (those not already present) to its edges."""
     n, width = indices.shape

@@ -299,7 +299,6 @@ _FIELDS = [
     "min_distance",
     "normalize_query",
     "tree_normalize_query",
-    "max_degree",
     "prefetch_lines",
     "rerank_prefetch_lines",
     "adjacency_lines",
@@ -314,7 +313,7 @@ def _new_quantized_search_index(
     projection_scale, projection_mean, vertex_order, q_offsets, q_scales, code_means,
     code_norms, adjacency, tree_hyperplanes,
     tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
-    n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
+    n_neighbors, min_distance, normalize_query, tree_normalize_query,
     prefetch_lines, rerank_prefetch_lines, adjacency_lines, mips_norm2,
 ):
     return QuantizedSearchIndex(
@@ -322,7 +321,7 @@ def _new_quantized_search_index(
         projection_scale, projection_mean, vertex_order, q_offsets, q_scales, code_means,
         code_norms, adjacency, tree_hyperplanes,
         tree_offsets, tree_children, tree_indices, n_search_trees, tree_leaf_budget,
-        n_neighbors, min_distance, normalize_query, tree_normalize_query, max_degree,
+        n_neighbors, min_distance, normalize_query, tree_normalize_query,
         prefetch_lines, rerank_prefetch_lines, adjacency_lines, mips_norm2,
     )
 
@@ -776,7 +775,7 @@ def _search_codes(
     state, tree_current_query, heap_priorities, heap_indices, k, epsilon, visited,
     rng_state, codes, adjacency, tree_hyperplanes, tree_offsets, tree_children,
     tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
-    bits, max_degree, prefetch_lines, adjacency_lines, integer,
+    bits, prefetch_lines, adjacency_lines, integer,
 ):
     seed_d = np.empty(SEED_CAPACITY, dtype=np.float32)
     seed_i = np.empty(SEED_CAPACITY, dtype=np.int32)
@@ -1040,7 +1039,7 @@ def _search_quantized_serial(
             epsilon, visited, internal_rng_state, codes, index.adjacency,
             index.tree_hyperplanes, index.tree_offsets, index.tree_children,
             index.tree_indices, index.n_search_trees, index.tree_leaf_budget,
-            index.n_neighbors, index.min_distance, kernel, bits, index.max_degree,
+            index.n_neighbors, index.min_distance, kernel, bits,
             index.prefetch_lines, index.adjacency_lines, integer,
         )
         # Keep the best rerank_width candidates (by code distance), then rerank.
@@ -1348,7 +1347,6 @@ def make_quantized_search_function(
         np.float32(min_distance),
         bool(normalize_query),
         bool(tree_normalize_query),
-        np.int64(adjacency.shape[1]),
         np.int64(prefetch_lines),
         np.int64(rerank_prefetch_lines),
         np.int64(adjacency_lines),

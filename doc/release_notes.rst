@@ -1,6 +1,104 @@
 Release Notes
 =============
 
+0.8.0
+-----
+
+PyNNDescent 0.8 adds fast quantized search, maximum inner product search,
+adaptation of the index to an out-of-distribution query workload, and a
+faster progressive build for high dimensional data. See
+:doc:`quantization_and_query_adaptation` for a guide to the new options.
+
+New features
+~~~~~~~~~~~~
+
+* ``quantization="sq8"`` and ``quantization="sq4"``: per-feature 8- and 4-bit
+  scalar quantization for ``euclidean``, ``cosine`` and ``dot`` metrics (and
+  ``mips``) on dense data. The float32 query is scored against the codes with
+  integer dot products (using AVX-512 VNNI where available) and the best
+  candidates are reranked exactly within the same compiled call. This is the
+  fastest search PyNNDescent offers; ``candidate_width`` acts as the beam
+  width.
+* ``rerank_precision="float16"`` keeps a half precision copy of the data and
+  reranks sq8/sq4 candidates from it, halving the memory traffic of the
+  reranking step.
+* ``quantization_dims`` searches sq8/sq4 codes of the data projected onto its
+  top principal components (a number of components, or a fraction of variance
+  to keep), which is faster for high dimensional data whose variance is
+  concentrated in fewer directions, such as many text embeddings.
+* ``metric="mips"``: maximum inner product search on unnormalized dense data,
+  via a euclidean index of the data augmented with one extra coordinate. Query
+  distances are negative inner products. ``mips`` searches need much smaller
+  ``epsilon`` values (typically 0.002 to 0.05) than other metrics.
+* ``prepare(query_sample=..., query_neighbors=...)`` adapts the index to a
+  query distribution that differs from the data's (text queries against image
+  embeddings, for example): the search graph gains edges among the sample
+  queries' nearest data points and searches start from a tree built over the
+  sample queries. Queries like the sample then reach a given recall with less
+  work. ``update()`` accepts the same arguments to keep the adaptation.
+* ``progressive_build`` (default ``"auto"``): for dense float32 data with
+  euclidean, cosine or dot metrics from 512 features up, the RP-tree leaf join
+  and the first NN-descent iterations run on 8-bit codes before refining with
+  exact distances, making index construction around 25-45% faster at equal or
+  better graph quality. From 1024 features the initialisation forest is built
+  on a random projection of the data.
+* ``PyNNDescentTransformer`` accepts ``quantization``, ``rerank_precision``,
+  ``quantization_dims`` and ``progressive_build``.
+
+Performance
+~~~~~~~~~~~
+
+* Graph search bounds candidate distance computations early and prefetches
+  the next candidates' vectors and adjacency rows, and the search graph is
+  stored as fixed-width, cache-line aligned adjacency rows.
+* The data and search graph are reordered with reverse Cuthill-McKee ordering
+  for better memory locality during search.
+* The NN-descent builds for ``euclidean``, ``cosine``, ``dot``,
+  ``inner_product`` and ``proxy_inner_product`` are compiled once and cached on
+  disk, as is the search function for ``proxy_inner_product``.
+* ``update()`` with only fresh data skips scanning the graph for edges to
+  updated rows, and int8 quantization needs one fewer copy of the data.
+
+Behaviour changes
+~~~~~~~~~~~~~~~~~
+
+* ``true_angular`` now returns the angle between vectors as a fraction of
+  pi, ``θ/π``, for every pair of vectors; in 0.7 it returned ``1 - θ/π`` (a
+  similarity), and pairs at 90 degrees or more were treated as infinitely
+  far apart. A zero vector is at distance 0.5 (orthogonal) from any non-zero
+  vector.
+* ``bit_jaccard`` indexes now report standard Jaccard distances, like
+  ``jaccard``; the ``bit_jaccard`` distance function itself uses ``log2``
+  rather than the natural logarithm.
+* Dense ``cosine``, ``dot`` and ``hellinger`` distances are clamped at 0, so
+  floating point rounding can no longer make them negative (or NaN).
+* ``proxy_inner_product`` search results are ranked by inner product, and a
+  zero inner product is treated as maximally distant.
+* ``circular_kantorovich`` centers the CDF difference with its median rather
+  than the median of its ``p``-th powers, and ``sinkhorn`` ignores zero-mass
+  bins and normalizes the marginals, so both give different (correct) values
+  from 0.7.
+* ``NNDescent`` validates its inputs (``n_neighbors`` and the data) up front,
+  and ``transform(None)`` on a compressed ``PyNNDescentTransformer`` raises a
+  clear error.
+* Sparse training and query data are canonicalized (sorted indices, no
+  duplicates) without modifying the caller's arrays, and ``update()`` on a
+  sparse index raises before changing any index state.
+* New ``NNDescent`` parameters (``rerank_precision``, ``quantization_dims``
+  and ``progressive_build``) are added after the existing ones, so positional
+  arguments keep their meaning.
+* Python 3.11 or later is required (3.10 is no longer supported), along with
+  numpy 1.23, scipy 1.9, scikit-learn 1.1 and numba 0.57 or later. Python 3.15
+  is supported.
+
+Bug fixes
+~~~~~~~~~
+
+* ``update()`` on an index prepared with ``quantization="binary"`` failed.
+* Packed-bit queries lost their dtype, and query shapes were not validated.
+* A spurious ``n_neighbors`` warning was raised when ``n_neighbors`` equalled
+  the number of samples.
+
 0.7.0
 -----
 

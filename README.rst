@@ -3,9 +3,9 @@
   :align: center
   :alt: PyNNDescent Logo
 
-.. image:: https://dev.azure.com/TutteInstitute/build-pipelines/_apis/build/status%2Flmcinnes.pynndescent?branchName=master
-    :target: https://dev.azure.com/TutteInstitute/build-pipelines/_build?definitionId=17
-    :alt: Azure Pipelines Build Status
+.. image:: https://github.com/lmcinnes/pynndescent/actions/workflows/run-tests.yml/badge.svg?branch=master
+    :target: https://github.com/lmcinnes/pynndescent/actions/workflows/run-tests.yml
+    :alt: Test Status
 .. image:: https://readthedocs.org/projects/pynndescent/badge/?version=latest
     :target: https://pynndescent.readthedocs.io/en/latest/?badge=latest
     :alt: Documentation Status
@@ -156,10 +156,10 @@ Installing
 PyNNDescent is designed to be easy to install being a pure python module with
 relatively light requirements:
 
-* numpy
-* scipy >= 1.0
-* scikit-learn >= 0.18
-* numba >= 0.55
+* numpy >= 1.23
+* scipy >= 1.9
+* scikit-learn >= 1.1
+* numba >= 0.57
 * joblib >= 0.11
 
 all of which should be pip or conda installable. The easiest way to install should be

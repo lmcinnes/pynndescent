@@ -5,7 +5,8 @@ folded into int8 weights ``w`` and ``c`` the unsigned codes. These intrinsics
 compute that sum 64 bytes at a time: with AVX-512 VNNI as ``vpdpbusd`` (64
 u8 x s8 products per instruction); elsewhere as portable vector IR that LLVM
 lowers to the best the target offers. Code rows and query rows must be padded
-(with zeros) to a multiple of ``CODE_ALIGNMENT`` bytes.
+(with zeros) to a multiple of ``CODE_ALIGNMENT`` bytes, and be at most
+``MAX_CODE_BYTES`` wide so the int32 sums cannot overflow.
 
 For 4-bit codes byte ``t`` packs dimension ``2t`` in its low nibble and
 ``2t + 1`` in its high nibble; the query is then a (2, n_bytes) array of the
@@ -18,6 +19,10 @@ from numba.core import cgutils, config
 from numba.extending import intrinsic
 
 CODE_ALIGNMENT = 64
+# Sums accumulate in int32: each byte adds at most 255 * 128 in magnitude (for
+# 4-bit codes, two nibble sums of at most 15 * 128 each), so rows of up to this
+# many bytes cannot overflow.
+MAX_CODE_BYTES = (2**31 - 1) // (255 * 128)
 
 _I8 = ir.IntType(8)
 _I32 = ir.IntType(32)

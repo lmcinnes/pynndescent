@@ -127,10 +127,10 @@ Installing
 PyNNDescent is designed to be easy to install being a pure python module with
 relatively light requirements:
 
-* numpy
-* scipy >= 1.0
-* scikit-learn >= 0.18
-* numba >= 0.55
+* numpy >= 1.23
+* scipy >= 1.9
+* scikit-learn >= 1.1
+* numba >= 0.57
 * joblib >= 0.11
 
 all of which should be pip or conda installable. The easiest way to install should be
@@ -155,6 +155,7 @@ or via pip:
    pynndescent_metrics
    sparse_data_with_pynndescent
    pynndescent_in_pipelines
+   quantization_and_query_adaptation
 
 .. toctree::
    :maxdepth: 2

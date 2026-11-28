@@ -415,7 +415,8 @@ def test_resort_tree_indices_reorders_and_keeps_other_fields():
 	)
 	order = np.array([2, 0, 3, 1])
 	new = resort_tree_indices(tree, order)
-	np.testing.assert_array_equal(new.indices, tree.indices[order])
+	# tree_order[old] is the new index of old point old
+	np.testing.assert_array_equal(new.indices, order[tree.indices])
 	assert new.indices.dtype == np.int32 and new.indices.flags["C_CONTIGUOUS"]
 	assert new.hyperplanes is tree.hyperplanes
 	assert new.offsets is tree.offsets

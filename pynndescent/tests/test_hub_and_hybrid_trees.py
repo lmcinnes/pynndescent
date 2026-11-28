@@ -34,7 +34,7 @@ from pynndescent.rp_trees import (
 	sparse_angular_hub_split,
 	sparse_euclidean_hub_split,
 )
-from pynndescent.tests.test_trees_new import (
+from pynndescent.tests.test_rp_trees import (
 	POPCOUNT,
 	_bits,
 	_brute_knn,
