@@ -2043,7 +2043,7 @@ def test_quantization_dims_requires_scalar_quantization(nn_data):
 def test_diversify_alpha_keeps_more_edges(metric):
     rng = np.random.default_rng(0)
     data = rng.normal(size=(3000, 16)).astype(np.float32)
-    queries = rng.normal(size=(40, 16)).astype(np.float32)
+    queries = rng.normal(size=(400, 16)).astype(np.float32)
     graphs = {}
     for alpha in (None, 1.0, 1.3):
         kwargs = {} if alpha is None else {"diversify_alpha": alpha}
@@ -2057,8 +2057,17 @@ def test_diversify_alpha_keeps_more_edges(metric):
         true = np.argsort(((queries[:, None] - data[None]) ** 2).sum(-1), axis=1)[:, :10]
     else:
         true = np.argsort(cosine_distances(queries, data), axis=1)[:, :10]
-    found = relaxed.query_indices(queries, k=10, epsilon=0.1)
-    assert np.mean([len(set(a) & set(b)) / 10 for a, b in zip(found, true)]) > 0.85
+
+    def recall(index):
+        found = index.query_indices(queries, k=10, epsilon=0.1)
+        return np.mean([len(set(a) & set(b)) / 10 for a, b in zip(found, true)])
+
+    # The extra edges improve search (by ~0.09 at every thread count). Absolute
+    # recall here varies by about +-0.02 with the thread count, which changes
+    # how NN-descent splits its work, so the floor leaves room for that.
+    relaxed_recall = recall(relaxed)
+    assert relaxed_recall > recall(default) + 0.04
+    assert relaxed_recall > 0.85
 
 
 def test_diversify_alpha_below_one_rejected(nn_data):
@@ -2180,3 +2189,116 @@ def test_query_induced_edges_are_relative_neighbourhood_pruned():
     assert edges[4] == [3, 5]
     assert edges[5] == [4]
     assert distances[0, 0] == 1.0
+
+
+def _clustered(n, dim, seed=0):
+    rng = np.random.default_rng(seed)
+    centers = rng.normal(size=(40, dim)).astype(np.float32) * 3
+    return (centers[rng.integers(0, 40, n)] + rng.normal(size=(n, dim))).astype(np.float32)
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_progressive_build_matches_exact_build(metric):
+    data = _clustered(3000, 320)
+    k = 15
+    true = NearestNeighbors(n_neighbors=k, metric=metric, algorithm="brute").fit(data)
+    true_dist, true_ind = true.kneighbors(data)
+
+    def recall(index):
+        ind = index.neighbor_graph[0]
+        return np.mean([np.intersect1d(a, b).shape[0] / k for a, b in zip(ind, true_ind)])
+
+    exact = NNDescent(data, metric=metric, n_neighbors=k, random_state=1,
+                      progressive_build=False)
+    progressive = NNDescent(data, metric=metric, n_neighbors=k, random_state=1,
+                            progressive_build=True)
+    assert recall(progressive) > 0.95
+    assert recall(progressive) >= recall(exact) - 0.005
+    # the graph carries exact distances, not code distances
+    ind, dist = progressive.neighbor_graph
+    if metric == "euclidean":
+        exact_dist = np.linalg.norm(data[ind] - data[:, None, :], axis=2)
+    else:
+        unit = normalize(data)
+        exact_dist = 1.0 - np.einsum("id,ikd->ik", unit, unit[ind])
+    np.testing.assert_allclose(dist, exact_dist, rtol=1e-3, atol=1e-4)
+
+
+def test_progressive_build_auto_selection(monkeypatch):
+    import pynndescent.pynndescent_ as pynnd
+
+    calls = []
+    original = pynnd.progressive_nn_descent
+
+    def recording(*args, **kwargs):
+        calls.append(args[0].shape)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pynnd, "progressive_nn_descent", recording)
+    wide = _clustered(1000, 600)
+    narrow = _clustered(1000, 64)
+    NNDescent(wide, n_neighbors=10, random_state=0)
+    NNDescent(narrow, n_neighbors=10, random_state=0)
+    NNDescent(wide, n_neighbors=10, random_state=0, progressive_build=False)
+    NNDescent(wide, n_neighbors=10, random_state=0, metric="manhattan")
+    NNDescent(wide, n_neighbors=10, random_state=0, tree_init=False)
+    assert calls == [wide.shape]
+    NNDescent(narrow, n_neighbors=10, random_state=0, progressive_build=True)
+    assert calls == [wide.shape, narrow.shape]
+
+
+def test_progressive_build_validation():
+    with pytest.raises(ValueError, match="progressive_build"):
+        NNDescent(_clustered(200, 300), n_neighbors=5, progressive_build="yes")
+
+
+def test_projected_trees_for_wide_data(monkeypatch):
+    import pynndescent.pynndescent_ as pynnd
+
+    calls = []
+    original = pynnd.project_for_trees
+
+    def recording(data, *args, **kwargs):
+        calls.append(data.shape)
+        return original(data, *args, **kwargs)
+
+    monkeypatch.setattr(pynnd, "project_for_trees", recording)
+    wide = _clustered(2000, 2048)
+    k = 10
+    projected = NNDescent(wide, metric="cosine", n_neighbors=k, random_state=0)
+    assert calls == [wide.shape]
+    exact = NNDescent(wide, metric="cosine", n_neighbors=k, random_state=0,
+                      progressive_build=False)
+    NNDescent(_clustered(2000, 784), n_neighbors=k, random_state=0)
+    assert calls == [wide.shape]
+    true_ind = NearestNeighbors(n_neighbors=k, metric="cosine", algorithm="brute").fit(
+        wide).kneighbors(wide)[1]
+
+    def recall(index):
+        return np.mean([np.intersect1d(a, b).shape[0] / k
+                        for a, b in zip(index.neighbor_graph[0], true_ind)])
+
+    assert recall(projected) >= recall(exact) - 0.005
+    projected.prepare()
+    assert projected.query(wide[:20], k=k)[0].shape == (20, k)
+
+
+def test_cosine_normalization_copies_only_when_needed():
+    data = _clustered(500, 40)
+    data[7] = 0.0
+    original = data.copy()
+    index = NNDescent(data, metric="cosine", n_neighbors=5, random_state=0)
+    np.testing.assert_array_equal(data, original)
+    expected = normalize(original)
+    np.testing.assert_allclose(index._raw_data, expected, rtol=1e-6, atol=1e-7)
+    assert np.all(index._raw_data[7] == 0.0)
+
+    unit = np.ascontiguousarray(expected, dtype=np.float32)
+    index = NNDescent(unit, metric="cosine", n_neighbors=5, random_state=0)
+    assert index._raw_data is unit
+
+    # rounded through float16: close to, but not, unit norm
+    rounded = unit.astype(np.float16).astype(np.float32)
+    index = NNDescent(rounded, metric="cosine", n_neighbors=5, random_state=0)
+    assert index._raw_data is not rounded
+    np.testing.assert_allclose(np.linalg.norm(index._raw_data[:7], axis=1), 1.0, atol=1e-6)

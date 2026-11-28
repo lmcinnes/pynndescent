@@ -317,7 +317,7 @@ def siftdown(heap1, heap2, elt):
             elt = swap
 
 
-@numba.njit(parallel=True, cache=False)
+@numba.njit(parallel=True, cache=True)
 def deheap_sort(indices, distances):
     """Given two arrays representing a heap (indices and distances), reorder the
      arrays by increasing distance. This is effectively just the second half of
@@ -687,7 +687,7 @@ def _push_candidate(priorities, indices, row, d, n):
 
 @numba.njit(
     parallel=True,
-    cache=False,
+    cache=True,
     locals={"idx": numba.types.int64, "owner": numba.types.int64, "k": numba.types.int64},
 )
 def build_candidates_owner(
@@ -1027,7 +1027,7 @@ def apply_graph_update_array(
 
 @numba.njit(
     parallel=True,
-    cache=False,
+    cache=True,
     locals={
         "p": numba.int32,
         "q": numba.int32,
@@ -1093,7 +1093,7 @@ def sort_updates_by_block(
 
 @numba.njit(
     parallel=True,
-    cache=False,
+    cache=True,
     locals={
         "p": numba.int32,
         "q": numba.int32,
@@ -1368,6 +1368,52 @@ def l2_normalize_rows(X):
     norms[norms == 0.0] = 1.0
     X /= norms[:, np.newaxis]
     return X
+
+
+# Row norms within this of 1 count as already normalised: float32 rows
+# normalised by sklearn deviate by up to ~1e-6 (at 4096 features), while
+# rows rounded through float16 deviate by ~2e-4, enough to cost graph recall.
+UNIT_NORM_TOLERANCE = 1e-5
+
+
+@numba.njit(parallel=True, fastmath=True, cache=True)
+def _rows_are_unit_norm(X, tolerance, n_chunks):
+    n = X.shape[0]
+    chunk = (n + n_chunks - 1) // n_chunks
+    failed = np.zeros(n_chunks, dtype=np.uint8)
+    for c in numba.prange(n_chunks):
+        for i in range(c * chunk, min(n, (c + 1) * chunk)):
+            s = 0.0
+            for j in range(X.shape[1]):
+                s += np.float64(X[i, j]) * np.float64(X[i, j])
+            if s > 0.0 and abs(np.sqrt(s) - 1.0) > tolerance:
+                # Unnormalised data fails within a few rows of every chunk,
+                # so the check costs next to nothing when it fails.
+                failed[c] = 1
+                break
+    return failed.max() == 0
+
+
+def rows_are_unit_norm(X, tolerance=UNIT_NORM_TOLERANCE):
+    """Whether every non-zero row of dense ``X`` has L2 norm within ``tolerance``
+    of 1 (a read-only parallel pass)."""
+    if X.shape[0] == 0:
+        return True
+    return bool(_rows_are_unit_norm(X, tolerance, 4 * numba.get_num_threads()))
+
+
+@numba.njit(parallel=True, fastmath=True, cache=True)
+def l2_normalize_rows_into(X, out):
+    """L2-normalise the rows of dense ``X`` into ``out`` (which may be ``X``),
+    in parallel. Zero rows are left as zeros."""
+    for i in numba.prange(X.shape[0]):
+        s = 0.0
+        for j in range(X.shape[1]):
+            s += np.float64(X[i, j]) * np.float64(X[i, j])
+        scale = 1.0 / np.sqrt(s) if s > 0.0 else 1.0
+        for j in range(X.shape[1]):
+            out[i, j] = X[i, j] * scale
+    return out
 
 
 # Corrections alone, for results that are already sorted and mapped (the
