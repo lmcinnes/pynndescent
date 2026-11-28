@@ -21,11 +21,10 @@ keep them as fast as the closure:
   skipping the dispatcher's per-argument type resolution (which would otherwise
   cost one to two microseconds per single-vector query). Argument types are
   fixed when the search function is built, and query() validates the query;
-* the seed heap is pushed to directly rather than through a helper, which
-  would add reference counting to every push.
+* the seed heap is a pair of arrays rather than a list of tuples, so pushes
+  and pops involve no reference counting.
 """
 import functools
-import heapq
 
 import numba
 import numpy as np
@@ -41,13 +40,14 @@ from pynndescent.kernels import (
     KERNEL_ALT_DOT,
     KERNEL_PROXY_IP_QUERY,
     KERNEL_SQEUCLIDEAN,
-    four_distances,
+    four_distances_at,
 )
 from pynndescent.rp_trees import select_side
 from pynndescent.utils import (
     check_and_mark_visited,
     make_heap,
     mark_visited,
+    prefetch_row,
     simple_heap_push,
     siftdown,
     tau_rand_int,
@@ -78,8 +78,7 @@ class SearchIndex(structref.StructRefProxy):
 
 _SEARCH_INDEX_FIELDS = [
     "data",
-    "indptr",
-    "indices",
+    "adjacency",
     "tree_hyperplanes",
     "tree_offsets",
     "tree_children",
@@ -91,6 +90,9 @@ _SEARCH_INDEX_FIELDS = [
     "normalize_query",
     "tree_normalize_query",
     "kernel",
+    "max_degree",
+    "prefetch_lines",
+    "adjacency_lines",
 ]
 structref.define_proxy(SearchIndex, SearchIndexType, _SEARCH_INDEX_FIELDS)
 
@@ -162,6 +164,92 @@ def _tree_spill_leaves(point, rng_state, leaves, tree_hyperplanes, tree_offsets,
     return leaf_count
 
 
+# The seed (frontier) min-heap is held in a pair of arrays, ordered by
+# (distance, index) as heapq orders tuples, so the search visits vertices in
+# the same order heapq would; it avoids the reflected list's per-item overhead.
+SEED_CAPACITY = 1024
+
+
+@numba.njit(inline="always")
+def _seed_push(seed_d, seed_i, n_seeds, d, candidate):
+    """Push (d, candidate) onto the heap ``seed_d/seed_i[:n_seeds]``; return its size."""
+    j = n_seeds
+    while j > 0:
+        parent = (j - 1) >> 1
+        parent_d = seed_d[parent]
+        if parent_d < d or (parent_d == d and seed_i[parent] < candidate):
+            break
+        seed_d[j] = parent_d
+        seed_i[j] = seed_i[parent]
+        j = parent
+    seed_d[j] = d
+    seed_i[j] = candidate
+    return n_seeds + 1
+
+
+@numba.njit(inline="always")
+def _seed_pop(seed_d, seed_i, n_seeds):
+    """Remove the heap's root; return its new size.
+
+    As heapq does, the hole left at the root moves down to a leaf along the
+    smaller children, and the last entry is then sifted up from there.
+    """
+    n_seeds -= 1
+    d = seed_d[n_seeds]
+    candidate = seed_i[n_seeds]
+    j = 0
+    child = 1
+    while child < n_seeds:
+        right = child + 1
+        if right < n_seeds and (
+            seed_d[right] < seed_d[child]
+            or (seed_d[right] == seed_d[child] and seed_i[right] < seed_i[child])
+        ):
+            child = right
+        seed_d[j] = seed_d[child]
+        seed_i[j] = seed_i[child]
+        j = child
+        child = 2 * j + 1
+    while j > 0:
+        parent = (j - 1) >> 1
+        parent_d = seed_d[parent]
+        if parent_d < d or (parent_d == d and seed_i[parent] < candidate):
+            break
+        seed_d[j] = parent_d
+        seed_i[j] = seed_i[parent]
+        j = parent
+    seed_d[j] = d
+    seed_i[j] = candidate
+    return n_seeds
+
+
+@numba.njit
+def _grow_seeds(seed_d, seed_i, n_seeds, needed):
+    capacity = seed_d.shape[0]
+    while capacity < needed:
+        capacity *= 2
+    new_d = np.empty(capacity, dtype=np.float32)
+    new_i = np.empty(capacity, dtype=np.int32)
+    new_d[:n_seeds] = seed_d[:n_seeds]
+    new_i[:n_seeds] = seed_i[:n_seeds]
+    return new_d, new_i
+
+
+@numba.njit(inline="always")
+def _distance_bound(heap_priorities, heap_indices, epsilon, min_distance):
+    """Search radius: the worst retained distance, relaxed by epsilon.
+
+    Until the result heap is full its root is an empty slot (index -1 and an
+    infinite priority) and there is no bound; returning that priority directly
+    avoids computing epsilon * inf, which is NaN (ending the search) when
+    epsilon is 0.
+    """
+    top = heap_priorities[0]
+    if heap_indices[0] < 0:
+        return top
+    return top + epsilon * (top - min_distance)
+
+
 @numba.njit(
     inline="always",
     fastmath=True,
@@ -184,8 +272,7 @@ def _search_one(
     visited,
     rng_state,
     data,
-    indptr,
-    indices,
+    adjacency,
     tree_hyperplanes,
     tree_offsets,
     tree_children,
@@ -195,11 +282,13 @@ def _search_one(
     n_neighbors,
     min_distance,
     kernel,
+    max_degree,
+    prefetch_lines,
+    adjacency_lines,
 ):
-    # seed_set is pushed to directly throughout: passing the list to a helper
-    # (even an inlined one) adds reference counting to every push, which cost
-    # ~1.5% of query instructions.
-    seed_set = [(np.float32(np.inf), np.int32(-1)) for j in range(0)]
+    seed_d = np.empty(SEED_CAPACITY, dtype=np.float32)
+    seed_i = np.empty(SEED_CAPACITY, dtype=np.int32)
+    n_seeds = 0
 
     # Initialise from all retained trees (or several leaves of the first tree)
     n_initial_points = 0
@@ -214,7 +303,9 @@ def _search_one(
                 if check_and_mark_visited(visited, candidate) == 0:
                     d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
+                    if n_seeds == seed_d.shape[0]:
+                        seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
+                    n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                     n_initial_points += 1
     else:
         leaf_bounds = np.empty((tree_leaf_budget, 2), dtype=np.int32)
@@ -228,7 +319,9 @@ def _search_one(
                 if check_and_mark_visited(visited, candidate) == 0:
                     d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                     simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                    heapq.heappush(seed_set, (d, candidate))
+                    if n_seeds == seed_d.shape[0]:
+                        seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
+                    n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
                     n_initial_points += 1
 
     # Random samples if needed
@@ -239,57 +332,76 @@ def _search_one(
             if check_and_mark_visited(visited, candidate) == 0:
                 d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
                 simple_heap_push(heap_priorities, heap_indices, d, candidate)
-                heapq.heappush(seed_set, (d, candidate))
+                if n_seeds == seed_d.shape[0]:
+                    seed_d, seed_i = _grow_seeds(seed_d, seed_i, n_seeds, n_seeds + 1)
+                n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
 
-    if len(seed_set) == 0:
+    if n_seeds == 0:
         return
 
     # Graph search
-    distance_bound = heap_priorities[0] + (
-        epsilon * (heap_priorities[0] - min_distance)
-    )
-    d_vertex, vertex = heapq.heappop(seed_set)
-    pending = np.empty(4, dtype=np.int32)
+    distance_bound = _distance_bound(heap_priorities, heap_indices, epsilon, min_distance)
+    d_vertex = seed_d[0]
+    vertex = seed_i[0]
+    n_seeds = _seed_pop(seed_d, seed_i, n_seeds)
+    pending = np.empty(adjacency.shape[1] + 4, dtype=np.int32)
     pending_d = np.empty(4, dtype=np.float32)
 
     while d_vertex < distance_bound:
-        # Unvisited neighbours are compared four at a time and then considered
-        # in their original order, so the search path is unchanged.
+        if n_seeds + adjacency.shape[1] > seed_d.shape[0]:
+            seed_d, seed_i = _grow_seeds(
+                seed_d, seed_i, n_seeds, n_seeds + adjacency.shape[1]
+            )
+        if adjacency_lines > 0 and n_seeds > 0:
+            # The closest remaining candidate is likely expanded next: fetch its
+            # adjacency row (at a fixed, cache-aligned offset) while this vertex
+            # is processed.
+            prefetch_row(adjacency, seed_i[0], adjacency_lines)
+        # Gather the unvisited neighbours first, prefetching their vectors, then
+        # compare them four at a time. They are considered in their original
+        # order, so the search path is unchanged.
         n_pending = 0
-        for j in range(indptr[vertex], indptr[vertex + 1]):
-            candidate = indices[j]
+        row = adjacency[vertex]
+        for j in range(row.shape[0]):
+            candidate = row[j]
+            if candidate < 0:
+                break
             if check_and_mark_visited(visited, candidate) == 0:
                 pending[n_pending] = candidate
                 n_pending += 1
-                if n_pending == 4:
-                    if kernel == KERNEL_PROXY_IP_QUERY:
-                        for r in range(4):
-                            pending_d[r] = _distance(
-                                kernel, current_query, data[pending[r]], query_inv_norm
-                            )
-                    else:
-                        four_distances(current_query, data, pending, pending_d, kernel)
-                    for r in range(4):
-                        d = pending_d[r]
-                        if d < distance_bound:
-                            simple_heap_push(heap_priorities, heap_indices, d, pending[r])
-                            heapq.heappush(seed_set, (d, pending[r]))
-                            distance_bound = heap_priorities[0] + (
-                                epsilon * (heap_priorities[0] - min_distance)
-                            )
-                    n_pending = 0
-        for r in range(n_pending):
-            d = np.float32(_distance(kernel, current_query, data[pending[r]], query_inv_norm))
-            if d < distance_bound:
-                simple_heap_push(heap_priorities, heap_indices, d, pending[r])
-                heapq.heappush(seed_set, (d, pending[r]))
-                distance_bound = heap_priorities[0] + (
-                    epsilon * (heap_priorities[0] - min_distance)
-                )
+                if prefetch_lines > 0:
+                    prefetch_row(data, candidate, prefetch_lines)
 
-        if len(seed_set) == 0:
+        r = 0
+        if kernel != KERNEL_PROXY_IP_QUERY:
+            while r + 4 <= n_pending:
+                four_distances_at(current_query, data, pending, r, pending_d, kernel)
+                for s in range(4):
+                    d = pending_d[s]
+                    if d < distance_bound:
+                        candidate = pending[r + s]
+                        simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                        n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
+                        distance_bound = _distance_bound(
+                            heap_priorities, heap_indices, epsilon, min_distance
+                        )
+                r += 4
+        while r < n_pending:
+            candidate = pending[r]
+            d = np.float32(_distance(kernel, current_query, data[candidate], query_inv_norm))
+            if d < distance_bound:
+                simple_heap_push(heap_priorities, heap_indices, d, candidate)
+                n_seeds = _seed_push(seed_d, seed_i, n_seeds, d, candidate)
+                distance_bound = _distance_bound(
+                    heap_priorities, heap_indices, epsilon, min_distance
+                )
+            r += 1
+
+        if n_seeds == 0:
             break
-        d_vertex, vertex = heapq.heappop(seed_set)
+        d_vertex = seed_d[0]
+        vertex = seed_i[0]
+        n_seeds = _seed_pop(seed_d, seed_i, n_seeds)
 
 
 @numba.njit(inline="always")
@@ -323,8 +435,7 @@ def _search_dense_serial(
     visited, query_is_normalized, rng_state, kernel,
 ):
     data = index.data
-    indptr = index.indptr
-    indices = index.indices
+    adjacency = index.adjacency
     tree_hyperplanes = index.tree_hyperplanes
     tree_offsets = index.tree_offsets
     tree_children = index.tree_children
@@ -335,6 +446,9 @@ def _search_dense_serial(
     min_distance = index.min_distance
     normalize_query = index.normalize_query
     tree_normalize_query = index.tree_normalize_query
+    max_degree = index.max_degree
+    prefetch_lines = index.prefetch_lines
+    adjacency_lines = index.adjacency_lines
     internal_rng_state = np.copy(rng_state)
     for i in range(query_points.shape[0]):
         visited[:] = 0
@@ -351,9 +465,10 @@ def _search_dense_serial(
         _search_one(
             current_query, query_inv_norms[i], tree_current_query, heap_priorities,
             heap_indices, k,
-            epsilon, visited, internal_rng_state, data, indptr, indices,
+            epsilon, visited, internal_rng_state, data, adjacency,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
+            max_degree, prefetch_lines, adjacency_lines,
         )
     return result
 
@@ -397,8 +512,7 @@ def search_dense_parallel(
     visited, query_is_normalized, rng_state,
 ):
     data = index.data
-    indptr = index.indptr
-    indices = index.indices
+    adjacency = index.adjacency
     tree_hyperplanes = index.tree_hyperplanes
     tree_offsets = index.tree_offsets
     tree_children = index.tree_children
@@ -409,6 +523,9 @@ def search_dense_parallel(
     min_distance = index.min_distance
     normalize_query = index.normalize_query
     tree_normalize_query = index.tree_normalize_query
+    max_degree = index.max_degree
+    prefetch_lines = index.prefetch_lines
+    adjacency_lines = index.adjacency_lines
     kernel = index.kernel
     internal_rng_state = np.copy(rng_state)
     for i in numba.prange(query_points.shape[0]):
@@ -427,25 +544,28 @@ def search_dense_parallel(
         _search_one(
             current_query, query_inv_norms[i], tree_current_query, heap_priorities,
             heap_indices, k,
-            epsilon, visited_nodes, internal_rng_state, data, indptr, indices,
+            epsilon, visited_nodes, internal_rng_state, data, adjacency,
             tree_hyperplanes, tree_offsets, tree_children, tree_indices,
             n_search_trees, tree_leaf_budget, n_neighbors, min_distance, kernel,
+            max_degree, prefetch_lines, adjacency_lines,
         )
     return result
 
 
 @numba.njit(cache=True)
 def _new_search_index(
-    data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
+    data, adjacency, tree_hyperplanes, tree_offsets, tree_children,
     tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
-    normalize_query, tree_normalize_query, kernel,
+    normalize_query, tree_normalize_query, kernel, max_degree, prefetch_lines,
+    adjacency_lines,
 ):
     # Constructing the structref in a cached function avoids compiling its
     # constructor in every process.
     return SearchIndex(
-        data, indptr, indices, tree_hyperplanes, tree_offsets, tree_children,
+        data, adjacency, tree_hyperplanes, tree_offsets, tree_children,
         tree_indices, n_search_trees, tree_leaf_budget, n_neighbors, min_distance,
-        normalize_query, tree_normalize_query, kernel,
+        normalize_query, tree_normalize_query, kernel, max_degree, prefetch_lines,
+        adjacency_lines,
     )
 
 
@@ -473,9 +593,55 @@ def stack_search_forest(search_forest, n_points):
     return hyperplanes, offsets, children, indices
 
 
+@numba.njit(cache=True)
+def _fill_padded_adjacency(indptr, indices, out):
+    for i in range(out.shape[0]):
+        start = indptr[i]
+        degree = indptr[i + 1] - start
+        for j in range(degree):
+            out[i, j] = indices[start + j]
+        for j in range(degree, out.shape[1]):
+            out[i, j] = -1
+
+
+def padded_adjacency(indptr, indices, alignment=64):
+    """The CSR graph as fixed-width rows, -1 padded, each row starting on a cache line.
+
+    Row ``v`` lives at a fixed offset, so the search can locate (and prefetch) a
+    vertex's neighbours without first reading ``indptr[v]``.
+    """
+    n = indptr.shape[0] - 1
+    per_line = alignment // 4
+    max_degree = int(np.max(np.diff(indptr))) if n > 0 else 0
+    slots = max(per_line, -(-max_degree // per_line) * per_line)
+    buffer = np.empty(n * slots + per_line, dtype=np.int32)
+    offset = (-buffer.ctypes.data % alignment) // 4
+    adjacency = buffer[offset : offset + n * slots].reshape(n, slots)
+    _fill_padded_adjacency(indptr, indices, adjacency)
+    return adjacency
+
+
+def default_adjacency_lines(adjacency):
+    """Cache lines of the next vertex's adjacency row to prefetch (at most 2)."""
+    return min(2, adjacency.shape[1] * adjacency.itemsize // 64)
+
+
+def default_prefetch_lines(data):
+    """Cache lines to prefetch per candidate vector.
+
+    Whole rows up to 1KB; for longer rows only the first 8 lines (the hardware
+    prefetcher follows the rest, and prefetching whole long rows measured 4-8%
+    slower than this on 768- and 1024-dimensional float32 data).
+    """
+    lines = -(-data.shape[1] * data.itemsize // 64)
+    return lines if lines <= 16 else 8
+
+
 def make_cached_search_function(
     data, indptr, indices, search_forest, tree_leaf_budget, n_neighbors,
     min_distance, normalize_query, tree_normalize_query, kernel, parallel,
+    prefetch_lines=None,
+    adjacency_lines=None,
 ):
     """Bind an index's arrays to the cached search function.
 
@@ -494,10 +660,12 @@ def make_cached_search_function(
     hyperplanes, offsets, children, tree_indices = stack_search_forest(
         search_forest, data.shape[0]
     )
+    adjacency = padded_adjacency(indptr, indices)
+    if adjacency_lines is None:
+        adjacency_lines = default_adjacency_lines(adjacency)
     index = _new_search_index(
         _readonly(data, np.float32),
-        _readonly(indptr, np.int32),
-        _readonly(indices, np.int32),
+        _readonly(adjacency, np.int32),
         _readonly(hyperplanes, np.float32),
         _readonly(offsets, np.float32),
         _readonly(children, np.int32),
@@ -509,6 +677,9 @@ def make_cached_search_function(
         bool(normalize_query),
         bool(tree_normalize_query),
         np.int64(kernel),
+        np.int64(adjacency.shape[1]),
+        np.int64(default_prefetch_lines(data) if prefetch_lines is None else prefetch_lines),
+        np.int64(adjacency_lines),
     )
     signature = (
         numba.typeof(index),  # index arrays and settings

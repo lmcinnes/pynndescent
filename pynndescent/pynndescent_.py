@@ -3,6 +3,7 @@
 # License: BSD 2 clause
 
 from warnings import warn
+import numbers
 
 import numba
 import numpy as np
@@ -16,6 +17,7 @@ from scipy.sparse import (
     vstack as sparse_vstack,
     issparse,
 )
+from scipy.sparse.csgraph import reverse_cuthill_mckee
 
 import heapq
 
@@ -28,6 +30,9 @@ from pynndescent.utils import (
     finish_query_no_correction,
     finish_query_sqrt,
     finish_query_alternative_cosine,
+    correct_sorted_sqrt,
+    correct_sorted_alternative_cosine,
+    correct_sorted_alternative_hellinger,
     l2_normalize_rows,
     hash_uniform,
     int32_bits_as_float32,
@@ -56,6 +61,7 @@ from pynndescent.utils import (
 
 from pynndescent.kernels import (
     KERNEL_ALT_DOT,
+    KERNEL_MIPS,
     KERNEL_PROXY_IP_QUERY,
     KERNEL_SQEUCLIDEAN,
     select_kernel,
@@ -65,7 +71,23 @@ from pynndescent.kernels import (
 from pynndescent.hybrid_forest import make_hybrid_leaf_array
 from pynndescent.hub_tree import make_hub_search_tree
 from pynndescent.search_graph import build_search_graph, permute_graph, permute_rows
+from pynndescent.integer_dot import aligned_padded_codes
+from pynndescent.quantized_search import (
+    SQ_MODES,
+    encode as sq_encode,
+    encode_float16,
+    fit_pca_projection,
+    fit_scalar_quantizer,
+    make_quantized_search_function,
+    project_rows,
+)
+from pynndescent.query_sample import (
+    merge_edge_rows,
+    query_induced_edges,
+    query_search_tree,
+)
 from pynndescent.search import (
+    _distance_bound,
     make_cached_search_function,
     deheap_sort_serial,
     deheap_sort_parallel,
@@ -541,12 +563,16 @@ def _prune_edge(prune_probability, seed, i, j, m):
 
 
 @numba.njit(parallel=True)
-def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
+def diversify(
+    indices, distances, data, dist, rng_state, prune_probability=1.0, relax=1.0
+):
     """Relative-neighbourhood pruning of each row of a k-NN graph, in place.
 
     Each row is scanned in order of increasing distance; a candidate u is dropped
     if some already retained neighbour c (other than an exact duplicate of the
-    row's point) is closer to u than the row's point is, with probability
+    row's point) is closer to u than the row's point is -- by a factor
+    ``relax`` (``relax * dist(u, c) < dist(row, u)``, so ``relax > 1`` keeps
+    more of the longer edges, as in alpha-pruning) -- with probability
     ``prune_probability`` per such c. Retained neighbours keep their order and
     the row is padded with (-1, inf).
     """
@@ -563,7 +589,7 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
             keep = True
             for m in range(n_retained):
                 if distances[i, m] > FLOAT32_EPS:
-                    if dist(data[u], data[indices[i, m]]) < d_iu:
+                    if relax * dist(data[u], data[indices[i, m]]) < d_iu:
                         if _prune_edge(prune_probability, seed, i, j, m):
                             keep = False
                             break
@@ -583,18 +609,22 @@ def diversify(indices, distances, data, dist, rng_state, prune_probability=1.0):
 # on-disk cache (its argument type differs between processes), so these fix the
 # distance at compile time; other distances compile diversify per process.
 @numba.njit(cache=True)
-def diversify_squared_euclidean(indices, distances, data, rng_state, prune_probability):
+def diversify_squared_euclidean(
+    indices, distances, data, rng_state, prune_probability, relax=1.0
+):
     return diversify(
         indices, distances, data, pynnd_dist.squared_euclidean, rng_state,
-        prune_probability,
+        prune_probability, relax,
     )
 
 
 @numba.njit(cache=True)
-def diversify_alternative_dot(indices, distances, data, rng_state, prune_probability):
+def diversify_alternative_dot(
+    indices, distances, data, rng_state, prune_probability, relax=1.0
+):
     return diversify(
         indices, distances, data, pynnd_dist.alternative_dot, rng_state,
-        prune_probability,
+        prune_probability, relax,
     )
 
 
@@ -782,12 +812,15 @@ def compute_degrees_csr(graph_indptr, graph_indices):
 
 
 def resort_tree_indices(tree, tree_order):
-    """Given a new data indexing, resort the tree indices to match"""
+    """Given a new data indexing, resort the tree indices to match
+
+    ``tree_order[old]`` is the new index of old point ``old``.
+    """
     new_tree = FlatTree(
         tree.hyperplanes,
         tree.offsets,
         tree.children,
-        tree.indices[tree_order].astype(np.int32, order="C"),
+        np.asarray(tree_order)[tree.indices].astype(np.int32, order="C"),
         tree.leaf_size,
     )
     return new_tree
@@ -823,6 +856,41 @@ def _quantize_int8_rows(data):
     np.rint(scaled, out=scaled)
     np.clip(scaled, -127.0, 127.0, out=scaled)
     return np.ascontiguousarray(scaled.astype(np.int8))
+
+
+def _mips_augment(data, max_norm):
+    """Append ``sqrt(max_norm**2 - |x|**2)`` to each row, so that all rows have
+    norm ``max_norm`` and, for a query padded with a zero, euclidean order is
+    inner-product order: ``|q' - x'|**2 = |q|**2 + max_norm**2 - 2 <q, x>``."""
+    data = np.asarray(data, dtype=np.float32)
+    squared_norms = np.einsum("ij,ij->i", data, data)
+    if squared_norms.size and squared_norms.max() > np.float32(max_norm) ** 2 * (
+        1.0 + 1e-5
+    ):
+        raise ValueError(
+            "With metric='mips' new data may not have a larger norm than the "
+            "data the index was built on; build a new index instead"
+        )
+    augmented = np.empty((data.shape[0], data.shape[1] + 1), dtype=np.float32)
+    augmented[:, :-1] = data
+    augmented[:, -1] = np.sqrt(
+        np.maximum(np.float32(max_norm) ** 2 - squared_norms, 0.0)
+    )
+    return augmented
+
+
+def _mips_pad_queries(query_data, n_features):
+    """Pad queries with a zero feature for a ``metric='mips'`` index; returns
+    the padded queries and their squared norms."""
+    query_data = np.asarray(query_data, dtype=np.float32)
+    if query_data.ndim != 2 or query_data.shape[1] != n_features:
+        raise ValueError(
+            "query_data must be a 2-D array with "
+            f"{n_features} features, got shape {query_data.shape}"
+        )
+    padded = np.zeros((query_data.shape[0], n_features + 1), dtype=np.float32)
+    padded[:, :-1] = query_data
+    return padded, np.einsum("ij,ij->i", query_data, query_data)
 
 
 def _int8_code_inv_norms(codes):
@@ -879,11 +947,24 @@ class NNDescent:
             * yule
             * hellinger
             * wasserstein-1d
+            * mips
 
         Metrics that take arguments (such as minkowski, mahalanobis etc.)
         can have arguments passed via the metric_kwds dictionary. At this
         time care must be taken and dictionary elements must be ordered
         appropriately; this will hopefully be fixed in the future.
+
+        ``mips`` (maximum inner product search, dense data only) finds the
+        points with the largest inner product with each query, without
+        normalizing the data. The index appends ``sqrt(M**2 - |x|**2)``, where
+        ``M`` is the largest norm in the data, to each point and queries are
+        padded with a zero, so that euclidean distance on the augmented data
+        orders points by inner product; the index is otherwise a euclidean
+        one. Query distances are negative inner products. As the augmented
+        distances share a large constant term, ``mips`` searches need much
+        smaller ``epsilon`` values than other metrics for the same recall
+        (typically 0.002 to 0.05 rather than the default 0.1, which can come
+        close to an exhaustive search).
 
     metric_kwds: dict (optional, default {})
         Arguments to pass on to the metric, such as the ``p`` value for
@@ -936,6 +1017,13 @@ class NNDescent:
         up to about 10% more edges than standard diversification, 3.0 up to
         about 25%).
 
+    diversify_alpha: float (optional, default=1.0)
+        Relaxation of the standard diversification for dense euclidean, cosine
+        and dot data: an edge to a neighbor is only pruned when a retained
+        neighbor is closer to it by a factor of ``diversify_alpha`` (as in
+        alpha-pruning). Values above 1.0 keep more long edges, giving a denser
+        but easier to navigate search graph.
+
     n_search_trees: int (optional, default=None)
         No longer has any effect; a single search tree is always used.
 
@@ -962,9 +1050,35 @@ class NNDescent:
               l2, cosine and dot metrics.
             * ``"int8"``: symmetric signed 8-bit codes with a per-row scale;
               cosine, direct_cosine and dot metrics on dense data.
+            * ``"sq8"`` / ``"sq4"``: per-feature affine codes of 8 or 4 bits
+              (two 4-bit codes per byte), searched with the float32 query
+              against the codes, with the best candidates reranked exactly in
+              the same compiled call; euclidean, cosine and dot metrics on dense
+              data. The fastest quantized search: ``candidate_width`` plays the
+              role of a search beam width.
 
         Quantization is applied when the index is prepared. The full precision
         data is kept for reranking, so it does not reduce memory use.
+
+    rerank_precision: string (optional, default="float32")
+        With ``"sq8"`` or ``"sq4"`` quantization, the precision of the data the
+        best candidates are reranked with. ``"float16"`` keeps an extra half
+        precision copy (2 bytes per feature) and reranks from it: half the
+        memory traffic for the reranking step, which dominates its cost, with
+        distances accurate to about three significant digits.
+
+    quantization_dims: int, float or None (optional, default=None)
+        With ``"sq8"`` or ``"sq4"`` quantization, search over codes of the data
+        projected onto its top principal components rather than over every
+        feature; candidates are still reranked with all features. An integer
+        is the number of components; a float in (0, 1) keeps the fewest
+        components that explain that fraction of the variance. Shorter codes
+        make each search step cheaper, at the cost of a less exact search
+        distance (so a larger ``candidate_width`` may be needed) and of
+        projecting each query. This pays off for high dimensional data whose
+        variance is concentrated in fewer directions (such as many text
+        embeddings); if more than two thirds of the features would be kept no
+        projection is used. None (the default) searches every feature.
 
     tree_init: bool (optional, default=True)
         Whether to use random projection trees for initialization.
@@ -1064,6 +1178,7 @@ class NNDescent:
         diversify_prob=1.0,
         diversify_method="standard",
         degree_prune_aggressiveness=1.0,
+        diversify_alpha=1.0,
         n_search_trees=None,
         search_tree_leaf_size=None,
         max_search_tree_depth=None,
@@ -1084,6 +1199,8 @@ class NNDescent:
         bit_metric=False,
         angular_trees=False,
         search_tree_leaf_budget=1,
+        rerank_precision="float32",
+        quantization_dims=None,
     ):
 
         if n_neighbors < 1:
@@ -1125,6 +1242,9 @@ class NNDescent:
         self.diversify_prob = diversify_prob
         self.diversify_method = diversify_method
         self.degree_prune_aggressiveness = degree_prune_aggressiveness
+        if diversify_alpha < 1.0:
+            raise ValueError("diversify_alpha must be at least 1")
+        self.diversify_alpha = diversify_alpha
         if n_search_trees is not None:
             warn(
                 "n_search_trees no longer has any effect and will be removed in "
@@ -1140,6 +1260,29 @@ class NNDescent:
         self.max_rptree_depth = max_rptree_depth
         self.max_candidates = max_candidates
         self.quantization = quantization
+        if rerank_precision not in ("float32", "float16"):
+            raise ValueError(
+                f"rerank_precision must be 'float32' or 'float16', got {rerank_precision!r}"
+            )
+        if rerank_precision == "float16" and quantization not in SQ_MODES:
+            raise ValueError("rerank_precision='float16' requires sq8 or sq4 quantization")
+        self.rerank_precision = rerank_precision
+        if quantization_dims is not None:
+            if quantization not in SQ_MODES:
+                raise ValueError("quantization_dims requires sq8 or sq4 quantization")
+            if isinstance(quantization_dims, (bool, np.bool_)) or not (
+                (isinstance(quantization_dims, numbers.Integral) and quantization_dims >= 1)
+                or (
+                    isinstance(quantization_dims, numbers.Real)
+                    and not isinstance(quantization_dims, numbers.Integral)
+                    and 0.0 < quantization_dims < 1.0
+                )
+            ):
+                raise ValueError(
+                    "quantization_dims must be a positive integer or a fraction of "
+                    f"variance in (0, 1), got {quantization_dims!r}"
+                )
+        self.quantization_dims = quantization_dims
         self.low_memory = low_memory
         self.n_iters = n_iters
         self.delta = delta
@@ -1205,6 +1348,15 @@ class NNDescent:
 
         if self._normalized_data:
             data = normalize(data, norm="l2", copy=copy_on_normalize)
+            self._raw_data = data
+
+        self._mips_max_norm = None
+        if metric == "mips":
+            if issparse(data):
+                raise ValueError("metric='mips' is only supported for dense data")
+            max_norm = np.sqrt(np.einsum("ij,ij->i", data, data).max(initial=0.0))
+            self._mips_max_norm = np.float32(max_norm)
+            data = _mips_augment(data, self._mips_max_norm)
             self._raw_data = data
 
         self.rng_state = current_random_state.randint(INT32_MIN, INT32_MAX, 3).astype(
@@ -1419,6 +1571,10 @@ class NNDescent:
             self._true_distance_func = pynnd_dist.proxy_distances[self.metric][
                 "true_dist"
             ]
+        elif self.metric == "mips":
+            # A euclidean index on the augmented data (see _mips_augment);
+            # query() turns its squared distances into inner products.
+            _distance_func = pynnd_dist.squared_euclidean
         elif self.metric in pynnd_dist.named_distances:
             if self.metric in pynnd_dist.fast_distance_alternatives:
                 _distance_func = pynnd_dist.fast_distance_alternatives[self.metric][
@@ -1463,6 +1619,8 @@ class NNDescent:
         result.pop("_query_finisher_fn", None)
         result.pop("_query_ones", None)
         result.pop("_fast_plan", None)
+        result.pop("_sq_plan", None)
+        result.pop("_sq_workspace", None)
         if "_query_workspace" in result:
             del result["_query_workspace"]
         result["_search_forest"] = tuple(
@@ -1471,12 +1629,14 @@ class NNDescent:
         return result
 
     def __setstate__(self, d):
+        # Indexes pickled before metric='mips' existed have no augmented data.
+        d.setdefault("_mips_max_norm", None)
         self.__dict__ = d
         self._set_distance_func()
         if self._is_sparse:
             # _set_distance_func only knows the dense distances
             self._set_sparse_distance_func()
-        if self.quantization is not None:
+        if self.quantization is not None and self.quantization not in SQ_MODES:
             # _set_distance_func resets the proxy state that prepare() set up
             self._is_proxy_distance = True
             self._true_distance_func = self._distance_func
@@ -1506,6 +1666,34 @@ class NNDescent:
             if self.max_search_tree_depth is not None
             else self.max_rptree_depth
         )
+
+        query_sample = getattr(self, "_query_sample", None)
+        query_tree = False
+        if (
+            query_sample is not None
+            and self.tree_init
+            and self._query_tree_leaf_size
+            and not hasattr(self, "_search_forest")
+        ):
+            if self.verbose:
+                print(ts(), "Building search tree over the query sample")
+            self._search_forest = [
+                query_search_tree(
+                    query_sample,
+                    self._query_neighbors,
+                    self._raw_data.shape[0],
+                    self._query_tree_leaf_size,
+                    self._query_tree_entries,
+                    self._query_tree_ranks,
+                    self._angular_trees,
+                    self.rng_state,
+                    check_random_state(self.random_state),
+                    self.n_jobs,
+                )
+            ]
+            query_tree = True
+            if hasattr(self, "_rp_forest"):
+                del self._rp_forest
 
         if not hasattr(self, "_search_forest"):
             if self._rp_forest is None:
@@ -1609,13 +1797,18 @@ class NNDescent:
                     rows = self._neighbor_graph[0].copy()
                     dists = self._neighbor_graph[1].copy()
                 kernel = select_kernel(self._distance_func, self._raw_data)
+                # Both distances behave like squared distances, so an alpha
+                # relaxation of the (unsquared) distance is alpha**2 here.
+                relax = np.float32(getattr(self, "diversify_alpha", 1.0)) ** 2
                 if kernel == KERNEL_SQEUCLIDEAN:
                     diversified_rows, diversified_data = diversify_squared_euclidean(
-                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob,
+                        relax,
                     )
                 elif kernel == KERNEL_ALT_DOT:
                     diversified_rows, diversified_data = diversify_alternative_dot(
-                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob
+                        rows, dists, self._raw_data, self.rng_state, self.diversify_prob,
+                        relax,
                     )
                 elif self._distance_func is pynnd_dist.proxy_inner_product:
                     diversified_rows, diversified_data = diversify_proxy_inner_product(
@@ -1638,6 +1831,24 @@ class NNDescent:
                         self.diversify_prob,
                     )
 
+        if query_sample is not None and self._query_edges > 0:
+            if self.verbose:
+                print(ts(), "Adding query-induced edges")
+            extra_indices, extra_distances = query_induced_edges(
+                self._raw_data,
+                self._distance_func,
+                self._query_neighbors,
+                self._query_edge_candidates,
+                self._query_edges,
+                self._query_edge_pivots,
+            )
+            diversified_rows, diversified_data = merge_edge_rows(
+                np.ascontiguousarray(diversified_rows, dtype=np.int32),
+                np.ascontiguousarray(diversified_data, dtype=np.float32),
+                extra_indices,
+                extra_distances,
+            )
+
         # Preserve any distance 0 points
         diversified_data[diversified_data == 0.0] = FLOAT32_EPS
 
@@ -1648,6 +1859,20 @@ class NNDescent:
         graph_indptr, graph_indices, self._min_distance = build_search_graph(
             diversified_rows, diversified_data, max_degree
         )
+
+        if query_sample is not None:
+            if (
+                self._query_pca
+                and self.quantization in SQ_MODES
+                and getattr(self, "quantization_dims", None) is not None
+            ):
+                # Kept (a sample of it) until the quantization projection is fitted
+                rng = np.random.default_rng(int(self.rng_state[0]) & 0x7FFFFFFF)
+                rows = np.arange(query_sample.shape[0])
+                if rows.shape[0] > 100_000:
+                    rows = np.sort(rng.choice(rows.shape[0], 100_000, replace=False))
+                self._query_pca_sample = query_sample[rows]
+            del self._query_sample, self._query_neighbors
 
         if self.verbose:
             print(
@@ -1662,12 +1887,27 @@ class NNDescent:
             (self._raw_data.shape[0] // 8) + 1, dtype=np.uint8, order="C"
         )
 
-        # reorder according to the search tree leaf order
+        # reorder: vertices are numbered so that graph neighbours get nearby indices
+        # (reverse Cuthill-McKee on the search graph), so the rows a search touches
+        # when it expands a vertex sit close together in memory. The rp-tree leaf
+        # order (``_vertex_order_method = "tree"``) is kept as an alternative.
         if self.verbose:
-            print(ts(), "Resorting data and graph based on tree order")
+            print(ts(), "Resorting data and graph")
 
         if self.tree_init:
             self._vertex_order = self._search_forest[0].indices
+            # A query search tree's leaves need not list every point once, so its
+            # order cannot be the vertex order.
+            if getattr(self, "_vertex_order_method", "rcm") == "rcm" or query_tree:
+                graph = csr_array(
+                    (
+                        np.ones(graph_indices.shape[0], dtype=np.uint8),
+                        graph_indices,
+                        graph_indptr,
+                    ),
+                    shape=(self._raw_data.shape[0], self._raw_data.shape[0]),
+                )
+                self._vertex_order = reverse_cuthill_mckee(graph, symmetric_mode=False)
             graph_indptr, graph_indices = permute_graph(
                 graph_indptr, graph_indices, self._vertex_order
             )
@@ -1761,6 +2001,8 @@ class NNDescent:
             angular_query,
             kernel,
             self.parallel_batch_queries,
+            prefetch_lines=getattr(self, "_prefetch_lines", None),
+            adjacency_lines=getattr(self, "_adjacency_lines", None),
         )
         self._uses_cached_search = True
         self._deheap_function = (
@@ -1792,6 +2034,10 @@ class NNDescent:
 
         if self.verbose:
             print(ts(), "Building and compiling search function")
+
+        if self.quantization in SQ_MODES:
+            self._init_sq_search_function()
+            return
 
         # The shared, disk-cached search function is used unless
         # prepare(compile_search=True) asked for a specialised one; this also
@@ -2209,8 +2455,8 @@ class NNDescent:
                             heapq.heappush(seed_set, (d, candidate))
 
                 ############ Search ##############
-                distance_bound = heap_priorities[0] + (
-                    epsilon * (heap_priorities[0] - min_distance)
+                distance_bound = _distance_bound(
+                    heap_priorities, heap_indices, epsilon, min_distance
                 )
 
                 # Find smallest seed point
@@ -2247,9 +2493,8 @@ class NNDescent:
                                                 pending[r],
                                             )
                                             heapq.heappush(seed_set, (d, pending[r]))
-                                            distance_bound = heap_priorities[0] + (
-                                                epsilon
-                                                * (heap_priorities[0] - min_distance)
+                                            distance_bound = _distance_bound(
+                                                heap_priorities, heap_indices, epsilon, min_distance
                                             )
                                     n_pending = 0
                         for r in range(n_pending):
@@ -2259,8 +2504,8 @@ class NNDescent:
                                     heap_priorities, heap_indices, d, pending[r]
                                 )
                                 heapq.heappush(seed_set, (d, pending[r]))
-                                distance_bound = heap_priorities[0] + (
-                                    epsilon * (heap_priorities[0] - min_distance)
+                                distance_bound = _distance_bound(
+                                    heap_priorities, heap_indices, epsilon, min_distance
                                 )
                     else:
                         for j in range(indptr[vertex], indptr[vertex + 1]):
@@ -2280,8 +2525,8 @@ class NNDescent:
                                     )
                                     heapq.heappush(seed_set, (d, candidate))
                                     # Update bound
-                                    distance_bound = heap_priorities[0] + (
-                                        epsilon * (heap_priorities[0] - min_distance)
+                                    distance_bound = _distance_bound(
+                                        heap_priorities, heap_indices, epsilon, min_distance
                                     )
 
                     # find new smallest seed point
@@ -2579,8 +2824,17 @@ class NNDescent:
             neighbors and the distances to them, sorted by increasing distance.
             Each point is listed as its own first neighbor (at distance 0). Rows
             with fewer neighbors found are padded with -1 indices. Returns None,
-            with a warning, for compressed indexes.
+            with a warning, for compressed indexes. Not available for
+            ``metric='mips'``.
         """
+        if self._mips_max_norm is not None:
+            # The graph holds euclidean neighbours of the augmented points, whose
+            # distances |x' - y'|**2 = 2 M**2 - 2 <x, y> - 2 a_x a_y depend on
+            # the appended features a; it is not an inner-product k-NN graph.
+            raise NotImplementedError(
+                "metric='mips' indexes have no inner-product neighbor graph; "
+                "query the index with its data for one"
+            )
         if self.compressed and not hasattr(self, "_neighbor_graph"):
             warn("Compressed indexes do not have neighbor graph information.")
             return None
@@ -2623,7 +2877,99 @@ class NNDescent:
         gc.collect()
         return
 
-    def prepare(self, compile_search=False):
+    # How a query_sample adapts the index (see pynndescent.query_sample):
+    # query-induced edges kept per point (0: none), the nearest data points of each
+    # sample query offered them, and the neighbours of each sample query they
+    # are drawn from; sample queries per query search tree leaf (0: no query
+    # tree), the most data points a leaf lists, and how many of each sample
+    # query's nearest data points leaves draw from; and whether a
+    # quantization_dims projection is fitted to the queries as well as the data.
+    _query_edges = 16
+    _query_edge_pivots = 4
+    _query_edge_candidates = 64
+    _query_tree_leaf_size = 30
+    _query_tree_entries = 32
+    _query_tree_ranks = 10
+    _query_pca = True
+
+    # Quantized search: score candidates with integer dot products of the codes
+    # and int8 query weights (pynndescent.integer_dot), and keep code rows in
+    # whole, aligned cache lines (one line fewer per candidate).
+    _sq_integer_query = True
+    _sq_align_codes = True
+    # Each feature's code range runs between these quantiles of the data (None:
+    # its full min to max range), by code bits: sixteen 4-bit levels are too few
+    # to spend on rare outliers. Setting _sq_clip_quantile overrides both.
+    _sq_clip_quantiles = {8: None, 4: 0.003}
+
+    def _set_query_sample(self, query_sample, query_neighbors):
+        if hasattr(self, "_search_graph"):
+            raise ValueError(
+                "query_sample must be given before the search index is built: call "
+                "prepare(query_sample=...) before the index is first queried"
+            )
+        if self._is_sparse:
+            raise NotImplementedError("query_sample is not supported for sparse data")
+        if self.quantization is not None and self.quantization not in SQ_MODES:
+            raise NotImplementedError(
+                f"query_sample is not supported with {self.quantization} quantization"
+            )
+        query_sample = check_array(query_sample, dtype=np.float32, order="C")
+        if query_sample.shape[1] != self.dim:
+            raise ValueError(
+                f"query_sample must have {self.dim} features, "
+                f"got {query_sample.shape[1]}"
+            )
+        if self._mips_max_norm is not None:
+            query_sample, _ = _mips_pad_queries(query_sample, self.dim)
+        if self._normalized_data:
+            norms = np.linalg.norm(query_sample, axis=1, keepdims=True)
+            query_sample = query_sample / np.where(norms > 0, norms, 1).astype(np.float32)
+        if query_neighbors is None:
+            query_neighbors = self._query_sample_neighbors(
+                query_sample, self._query_edge_candidates
+            )
+        query_neighbors = np.asarray(query_neighbors)
+        if query_neighbors.ndim != 2 or query_neighbors.shape[0] != query_sample.shape[0]:
+            raise ValueError(
+                "query_neighbors must be a 2-D array with a row for each sample query"
+            )
+        if not np.issubdtype(query_neighbors.dtype, np.integer):
+            raise ValueError("query_neighbors must hold integer indices")
+        if query_neighbors.size and query_neighbors.max() >= self._raw_data.shape[0]:
+            raise ValueError("query_neighbors holds indices beyond the indexed data")
+        self._query_sample = np.ascontiguousarray(query_sample, dtype=np.float32)
+        self._query_neighbors = np.ascontiguousarray(query_neighbors, dtype=np.int32)
+
+    def _query_sample_neighbors(self, query_sample, k):
+        """Approximate nearest neighbours of the sample queries, found with a
+        temporary copy of the index prepared without them."""
+        helper = NNDescent.__new__(NNDescent)
+        helper.__dict__.update(self.__dict__)
+        # Exact distances and a parallel batch search, sharing no state that
+        # preparing modifies with this index.
+        helper.quantization = None
+        helper.quantization_dims = None
+        helper.rerank_precision = "float32"
+        helper.compressed = False
+        helper.parallel_batch_queries = True
+        helper.verbose = False
+        helper.rng_state = self.rng_state.copy()
+        helper.search_rng_state = self.search_rng_state.copy()
+        helper.prepare()
+        # The sample is already in the indexed data's form (normalized or padded).
+        return helper._query(
+            query_sample,
+            min(k, self._raw_data.shape[0]),
+            0.1,
+            None,
+            None,
+            None,
+            False,
+            False,
+        )
+
+    def prepare(self, compile_search=False, query_sample=None, query_neighbors=None):
         """Prepare the index for querying.
 
         Builds the search tree (a graph-informed "hub" tree, built in parallel)
@@ -2644,8 +2990,34 @@ class NNDescent:
             time an index is prepared. Other metrics and data types always use a
             compiled, specialised search function. The choice is kept when the
             index is pickled.
+
+        query_sample: array of shape (n_samples, n_features) (optional, default=None)
+            Example queries, drawn from the distribution of the queries the
+            index will answer. This matters most when that distribution differs
+            from the data's (text queries against image embeddings, say):
+            the search graph gains edges among each sample query's nearest data
+            points, and searches start from a random projection tree built over
+            the sample queries, whose leaves list their nearest data points.
+            With ``quantization_dims``, the projection is also fitted to the
+            queries as well as the data. Searches of queries like the sample
+            reach a given recall with less work; a few tens of thousands of
+            sample queries or more work best. Only dense data, and no
+            quantization or sq8/sq4 quantization, are supported. The sample
+            must be given before the search index is built, that is before
+            the index is first queried or prepared.
+
+        query_neighbors: array of shape (n_samples, n_query_neighbors) (optional, default=None)
+            The indices, nearest first, of each sample query's nearest
+            neighbours in the indexed data (as ``query`` would return them;
+            negative values are ignored); 64 or more are best. If None, they are
+            found with a search of the index prepared without the sample, which
+            adds that preparation and search to the cost of this one.
         """
         compile_search = bool(compile_search)
+        if query_sample is not None:
+            self._set_query_sample(query_sample, query_neighbors)
+        elif query_neighbors is not None:
+            raise ValueError("query_neighbors requires query_sample")
         if (
             hasattr(self, "_search_function")
             and getattr(self, "_compile_search", False) != compile_search
@@ -2654,7 +3026,7 @@ class NNDescent:
             del self._search_function
         self._compile_search = compile_search
 
-        if self.quantization is not None:
+        if self.quantization is not None and self.quantization not in SQ_MODES:
             if self.quantization == "binary":
                 # Quantize data to binary and set bit-based distance functions
                 self._quantized_data = np.packbits(
@@ -2851,6 +3223,188 @@ class NNDescent:
             self._query_finisher_fn = finisher
         return finisher
 
+    def _init_sq_search_function(self):
+        """Fit the scalar quantizer (once) and bind the cached quantized search."""
+        data = self._raw_data
+        kernel = select_kernel(self._distance_func, data)
+        if (
+            self._is_sparse
+            or not self.tree_init
+            or kernel not in (KERNEL_SQEUCLIDEAN, KERNEL_ALT_DOT)
+        ):
+            raise ValueError(
+                f"{self.quantization} quantization supports dense float32 data with "
+                "euclidean, cosine, dot or mips metrics and tree initialisation"
+            )
+        mips = self._mips_max_norm is not None
+        if mips:
+            kernel = KERNEL_MIPS
+        bits = 8 if self.quantization == "sq8" else 4
+        if not hasattr(self, "_sq_codes"):
+            # The data has already been reordered to match the search tree. For
+            # mips only the original features are coded: queries never weight
+            # the appended one (see quantized_search).
+            encoded = data[:, :-1] if mips else data
+            query_pca_sample = getattr(self, "_query_pca_sample", None)
+            if mips and query_pca_sample is not None:
+                query_pca_sample = query_pca_sample[:, :-1]
+            self._sq_projection = None
+            dims = getattr(self, "quantization_dims", None)
+            if dims is not None:
+                # Search over codes of the top principal components only;
+                # reranking still uses every feature.
+                self._sq_projection = fit_pca_projection(
+                    encoded,
+                    dims,
+                    random_state=int(self.rng_state[0]) & 0x7FFFFFFF,
+                    extra=query_pca_sample,
+                )
+                if self._sq_projection is not None:
+                    encoded = project_rows(encoded, *self._sq_projection)
+            clip = getattr(self, "_sq_clip_quantile", self._sq_clip_quantiles[bits])
+            self._sq_offsets, self._sq_scales = fit_scalar_quantizer(
+                encoded,
+                bits,
+                clip_quantile=clip,
+                random_state=int(self.rng_state[0]) & 0x7FFFFFFF,
+            )
+            self._sq_codes = sq_encode(encoded, self._sq_offsets, self._sq_scales, bits)
+            del encoded
+            self.__dict__.pop("_query_pca_sample", None)
+        integer_query = bool(getattr(self, "_sq_integer_query", False))
+        if integer_query or getattr(self, "_sq_align_codes", False):
+            self._sq_codes = aligned_padded_codes(self._sq_codes)
+        projection = getattr(self, "_sq_projection", None)
+        projection_mean, projection8, projection_scale = (
+            projection if projection is not None else (None, None, None)
+        )
+        rerank16 = None
+        rerank_scale = 1.0
+        if getattr(self, "rerank_precision", "float32") == "float16":
+            if not hasattr(self, "_sq_rerank16"):
+                self._sq_rerank16, self._sq_rerank_scale = encode_float16(data)
+            rerank16 = self._sq_rerank16
+            rerank_scale = self._sq_rerank_scale
+
+        angular = self.metric in ("cosine", "direct_cosine", "dot")
+        # mips distances are squared euclidean ones on the augmented data
+        min_distance = self._min_distance if kernel != KERNEL_ALT_DOT else 0.0
+        self._search_function = make_quantized_search_function(
+            self._sq_codes,
+            data,
+            self._sq_offsets,
+            self._sq_scales,
+            self._search_graph.indptr,
+            self._search_graph.indices,
+            self._search_forest,
+            self.search_tree_leaf_budget,
+            self.n_neighbors,
+            min_distance,
+            angular,
+            angular,
+            kernel,
+            bits,
+            prefetch_lines=getattr(self, "_prefetch_lines", None),
+            adjacency_lines=getattr(self, "_adjacency_lines", None),
+            rerank16=rerank16,
+            rerank_scale=rerank_scale,
+            projection8=projection8,
+            projection_scale=projection_scale,
+            projection_mean=projection_mean,
+            integer_query=integer_query,
+            vertex_order=self._vertex_order,
+            mips_norm2=float(self._mips_max_norm) ** 2 if mips else 0.0,
+        )
+        self._uses_cached_search = True
+        self._deheap_function = deheap_sort_serial
+        self._fast_plan = None
+        # Per-index decisions for _sq_query, made once: the search function, the
+        # number of features, whether pre_normalized queries are allowed, and the
+        # distance correction (None when the search's distances need none).
+        self._sq_plan = (
+            self._search_function,
+            int(data.shape[1]),
+            bool(self._uses_normalized_data()),
+            self._sq_distance_correction(),
+        )
+
+    def _sq_distance_correction(self):
+        """The correction for sorted quantized-search distances: a compiled
+        function bound to the search's result type (skipping per-call type
+        resolution), the index's own correction if it has no compiled form, or
+        None when the distances need no correction."""
+        correction = self._distance_correction
+        if correction is None:
+            return None
+        if correction is np.sqrt:
+            corrector = correct_sorted_sqrt
+        elif (
+            correction is pynnd_dist.correct_alternative_cosine
+            or correction is pynnd_dist.correct_alternative_jaccard
+        ):
+            # Same formula (1 - 2**-d) as correct_alternative_cosine
+            corrector = correct_sorted_alternative_cosine
+        elif correction is pynnd_dist.correct_alternative_hellinger:
+            corrector = correct_sorted_alternative_hellinger
+        else:
+            return correction
+        sample = np.zeros((1, 1), dtype=np.float32)
+        corrector(sample)  # compile
+        try:
+            return corrector.overloads[(numba.typeof(sample),)].entry_point
+        except (AttributeError, KeyError, TypeError):
+            return corrector
+
+    def _sq_query(
+        self,
+        query_data,
+        k,
+        epsilon,
+        proxy_beam_size,
+        candidate_width,
+        rerank_width,
+        return_distances,
+        pre_normalized,
+    ):
+        search, n_features, normalizes, correct = self._sq_plan
+        if pre_normalized and not normalizes:
+            raise ValueError(
+                "pre_normalized is only supported for dense cosine, direct_cosine "
+                "and dot"
+            )
+        if candidate_width is None:
+            candidate_width = proxy_beam_size * k if proxy_beam_size is not None else 2 * k
+        if candidate_width < k:
+            raise ValueError("candidate_width must be at least k")
+        if rerank_width is None or rerank_width == candidate_width:
+            rerank_width = 0  # all candidates
+        elif not k <= rerank_width <= candidate_width:
+            raise ValueError(
+                f"with {self.quantization} quantization rerank_width must be between k "
+                "and candidate_width"
+            )
+
+        # The search only reads the queries, so they need no copy.
+        query_data = np.ascontiguousarray(query_data, dtype=np.float32)
+        if query_data.ndim != 2 or query_data.shape[1] != n_features:
+            raise ValueError(
+                "query_data must be a 2-D array with "
+                f"{n_features} features, got shape {query_data.shape}"
+            )
+        indices, dists = search(
+            query_data,
+            k,
+            candidate_width,
+            epsilon,
+            rerank_width,
+            self._visited,
+            pre_normalized,
+            self.search_rng_state,
+        )
+        if not return_distances:
+            return indices
+        return indices, (dists if correct is None else correct(dists))
+
     def query(
         self,
         query_data,
@@ -2878,7 +3432,8 @@ class NNDescent:
             controls the trade-off between accuracy and search cost. Larger values
             produce more accurate nearest neighbor results at larger computational
             cost for the search. Values should be in the range 0.0 to 0.5, but
-            should probably not exceed 0.3 without good reason.
+            should probably not exceed 0.3 without good reason (``mips``
+            indexes need much smaller values; see the class documentation).
 
         proxy_beam_size: int or None (optional, default=None)
             Backward-compatible multiplier for the proxy candidate width.
@@ -2888,13 +3443,14 @@ class NNDescent:
             Absolute number of proxy candidates retained before exact reranking.
             Only applies to proxy and quantized searches and must be at least
             ``k``. Defaults to ``proxy_beam_size * k`` if ``proxy_beam_size`` is
-            given, otherwise ``int(1.66 * k)`` for int8 quantization and
-            ``4 * k`` for other proxy searches.
+            given, otherwise ``int(1.66 * k)`` for int8 quantization, ``2 * k``
+            for sq8/sq4 quantization and ``4 * k`` for other proxy searches.
 
         rerank_width: int or None (optional, default=None)
             Number of proxy finalists to score with the exact distance. Defaults
             to all proxy candidates. Set to zero to return proxy-ranked results
-            without retaining the cost of exact reranking. For
+            without retaining the cost of exact reranking (not available with
+            sq8/sq4 quantization, which needs ``k <= rerank_width``). For
             ``proxy_inner_product`` these results are ranked, and their distances
             given, by ``-log2(<q, y> / (|q| * max |y|))``.
 
@@ -2923,8 +3479,92 @@ class NNDescent:
 
             If ``return_distances`` is False only ``indices`` is returned.
         """
+        if self._mips_max_norm is not None:
+            return self._mips_query(
+                query_data,
+                k,
+                epsilon,
+                proxy_beam_size,
+                candidate_width,
+                rerank_width,
+                return_distances,
+                pre_normalized,
+            )
+        return self._query(
+            query_data,
+            k,
+            epsilon,
+            proxy_beam_size,
+            candidate_width,
+            rerank_width,
+            return_distances,
+            pre_normalized,
+        )
+
+    def _mips_query(
+        self,
+        query_data,
+        k,
+        epsilon,
+        proxy_beam_size,
+        candidate_width,
+        rerank_width,
+        return_distances,
+        pre_normalized,
+    ):
+        """query() for metric='mips': searches with zero-padded queries and
+        returns negative inner products as distances."""
+        if pre_normalized:
+            raise ValueError(
+                "pre_normalized is only supported for dense cosine, direct_cosine "
+                "and dot"
+            )
+        query_data, query_squared_norms = _mips_pad_queries(query_data, self.dim)
+        result = self._query(
+            query_data,
+            k,
+            epsilon,
+            proxy_beam_size,
+            candidate_width,
+            rerank_width,
+            return_distances,
+            False,
+        )
+        if not return_distances:
+            return result
+        indices, dists = result
+        # |q' - x'|**2 = |q|**2 + M**2 - 2 <q, x>
+        dists = np.float32(0.5) * (
+            dists - query_squared_norms[:, None] - self._mips_max_norm**2
+        )
+        return indices, dists
+
+    def _query(
+        self,
+        query_data,
+        k,
+        epsilon,
+        proxy_beam_size,
+        candidate_width,
+        rerank_width,
+        return_distances,
+        pre_normalized,
+    ):
+        """query() on the indexed data as stored (see query for the parameters)."""
         if not hasattr(self, "_search_graph") or not hasattr(self, "_search_function"):
             self.prepare()
+
+        if self.quantization in SQ_MODES:
+            return self._sq_query(
+                query_data,
+                k,
+                epsilon,
+                proxy_beam_size,
+                candidate_width,
+                rerank_width,
+                return_distances,
+                pre_normalized,
+            )
 
         # Fast path for plain dense and sparse queries; every per-index decision
         # (including whether the index is sparse) is made once, in the plan.
@@ -3184,15 +3824,26 @@ class NNDescent:
         indices: array of shape (n_queries, k)
             The indices of the nearest neighbors of each query point.
         """
-        return self.query(
+        if self._mips_max_norm is not None:
+            return self._mips_query(
+                query_data,
+                k,
+                epsilon,
+                proxy_beam_size,
+                candidate_width,
+                rerank_width,
+                False,
+                pre_normalized,
+            )
+        return self._query(
             query_data,
-            k=k,
-            epsilon=epsilon,
-            proxy_beam_size=proxy_beam_size,
-            candidate_width=candidate_width,
-            rerank_width=rerank_width,
-            return_distances=False,
-            pre_normalized=pre_normalized,
+            k,
+            epsilon,
+            proxy_beam_size,
+            candidate_width,
+            rerank_width,
+            False,
+            pre_normalized,
         )
 
     def update(self, xs_fresh=None, xs_updated=None, updated_indices=None):
@@ -3282,6 +3933,10 @@ class NNDescent:
             )
             if self.metric == "dot":
                 xs_fresh = normalize(xs_fresh, norm="l2", copy=True)
+            if self._mips_max_norm is not None:
+                xs_fresh = _mips_augment(xs_fresh, self._mips_max_norm)
+        if self._mips_max_norm is not None and len(updated_indices) > 0:
+            xs_updated = _mips_augment(xs_updated, self._mips_max_norm)
         # data preparation
         if hasattr(self, "_vertex_order"):
             original_order = np.argsort(self._vertex_order)
@@ -3368,6 +4023,17 @@ class NNDescent:
 
                 if hasattr(self, "_search_function"):
                     del self._search_function
+                for attribute in (
+                    "_sq_codes",
+                    "_sq_offsets",
+                    "_sq_scales",
+                    "_sq_rerank16",
+                    "_sq_rerank_scale",
+                    "_sq_projection",
+                    "_sq_workspace",
+                ):
+                    if hasattr(self, attribute):
+                        delattr(self, attribute)
 
                 self.prepare()
 

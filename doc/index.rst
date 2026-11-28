@@ -81,6 +81,7 @@ supporting a wide variety of distance metrics by default:
 - direct_cosine
 - dot
 - inner_product
+- mips (maximum inner product search on unnormalized data)
 - correlation
 - spearmanr
 - tsss

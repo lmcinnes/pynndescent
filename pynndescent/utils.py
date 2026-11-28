@@ -46,6 +46,77 @@ def float32_bits_as_int32(typingctx, x):
     return _nb_types.int32(x), codegen
 
 
+@_nb_intrinsic
+def float16_bits_as_float32(typingctx, x):
+    """Widen IEEE half precision bits (stored as uint16) to float32.
+
+    numba has no CPU float16 type; this bitcasts to LLVM ``half`` and extends,
+    which vectorizes to ``vcvtph2ps`` on CPUs with F16C.
+    """
+    if x != _nb_types.uint16:
+        return None
+
+    def codegen(context, builder, sig, args):
+        half = builder.bitcast(args[0], _llvm_ir.HalfType())
+        return builder.fpext(half, _llvm_ir.FloatType())
+
+    return _nb_types.float32(x), codegen
+
+
+def _emit_prefetch(context, builder, pointer):
+    from numba.core import cgutils
+
+    byte_pointer = _llvm_ir.IntType(8).as_pointer()
+    int32 = _llvm_ir.IntType(32)
+    function_type = _llvm_ir.FunctionType(
+        _llvm_ir.VoidType(), [byte_pointer, int32, int32, int32]
+    )
+    prefetch = cgutils.get_or_insert_function(
+        builder.module, function_type, "llvm.prefetch.p0"
+    )
+    # read access, high temporal locality, data cache
+    builder.call(
+        prefetch,
+        [builder.bitcast(pointer, byte_pointer), int32(0), int32(3), int32(1)],
+    )
+
+
+@_nb_intrinsic
+def prefetch_element(typingctx, data, row, col):
+    """Hint the CPU to fetch the cache line holding ``data[row, col]`` (2-D C array)."""
+    if not isinstance(data, _nb_types.Array) or data.ndim != 2:
+        return None
+
+    def codegen(context, builder, sig, args):
+        from numba.core import cgutils
+
+        array_type = sig.args[0]
+        array = context.make_array(array_type)(context, builder, args[0])
+        r = context.cast(builder, args[1], sig.args[1], _nb_types.intp)
+        c = context.cast(builder, args[2], sig.args[2], _nb_types.intp)
+        pointer = cgutils.get_item_pointer(
+            context, builder, array_type, array, [r, c], wraparound=False
+        )
+        _emit_prefetch(context, builder, pointer)
+        return context.get_dummy_value()
+
+    return _nb_types.void(data, row, col), codegen
+
+
+@numba.njit(inline="always")
+def prefetch_row(data, row, n_lines):
+    """Prefetch up to ``n_lines`` 64-byte cache lines of ``data[row]``."""
+    step = max(1, 64 // data.itemsize)
+    n_columns = data.shape[1]
+    end = min(n_columns, n_lines * step)
+    for col in range(0, end, step):
+        prefetch_element(data, row, col)
+    if end == n_columns and n_columns > 0:
+        # Rows need not start on a cache line, so the last element may sit on
+        # one more line than the stride covers.
+        prefetch_element(data, row, n_columns - 1)
+
+
 @numba.njit("void(i8[:], i8)", cache=True)
 def seed(rng_state, seed):
     """Seed the random number generator with a given seed."""
@@ -1297,6 +1368,38 @@ def l2_normalize_rows(X):
     norms[norms == 0.0] = 1.0
     X /= norms[:, np.newaxis]
     return X
+
+
+# Corrections alone, for results that are already sorted and mapped (the
+# quantized search does both in its own compiled call): each matches the
+# distances (values and dtype) of the finish_query_* function of that name.
+
+
+@numba.njit(cache=True)
+def correct_sorted_sqrt(distances):
+    out = np.empty(distances.shape, dtype=np.float32)
+    for i in range(distances.shape[0]):
+        for j in range(distances.shape[1]):
+            out[i, j] = np.sqrt(distances[i, j])
+    return out
+
+
+@numba.njit(cache=True, fastmath=True)
+def correct_sorted_alternative_cosine(distances):
+    out = np.empty(distances.shape, dtype=np.float64)
+    for i in range(distances.shape[0]):
+        for j in range(distances.shape[1]):
+            out[i, j] = max(0.0, 1.0 - pow(2.0, -np.float64(distances[i, j])))
+    return out
+
+
+@numba.njit(cache=True, fastmath=True)
+def correct_sorted_alternative_hellinger(distances):
+    out = np.empty(distances.shape, dtype=np.float64)
+    for i in range(distances.shape[0]):
+        for j in range(distances.shape[1]):
+            out[i, j] = np.sqrt(max(0.0, 1.0 - pow(2.0, -np.float64(distances[i, j]))))
+    return out
 
 
 @numba.njit(cache=True, fastmath=True)
